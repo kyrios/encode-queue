@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: ffmpeg with libx265 and libx264, for the test that runs a real encode
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - name: the macOS worker builds
+        run: GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o /dev/null ./cmd/encode-worker
+      - name: the API specs are valid OpenAPI 3.1
+        run: npx --yes @redocly/cli@1.25.0 lint api/helper.yaml api/pipeline-admin.yaml api/worker-control.yaml
+
+  images:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/queue.Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: encode-queue:ci
+          cache-from: type=gha,scope=queue
+          cache-to: type=gha,mode=max,scope=queue
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/worker.Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: encode-worker:ci
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+      - name: the images start, and the worker's tools are there
+        run: |
+          docker run --rm encode-queue:ci -version
+          docker run --rm encode-worker:ci versions | tee versions.json
+          for t in ffmpeg libx265 libx264 whisper.cpp; do jq -e --arg t "$t" '.tools[] | select(.name == $t)' versions.json >/dev/null; done
+          jq -e '.fonts | index("Inter ExtraBold")' versions.json >/dev/null
