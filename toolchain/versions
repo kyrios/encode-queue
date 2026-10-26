@@ -1,0 +1,33 @@
+# The one toolchain: every tool the worker and the pipeline run, built from these sources for
+# linux/amd64 (the image ghcr.io/kyrios/encode-toolchain) and macOS arm64 (a release asset),
+# so a helper's file is the file `encoder` makes (infra docs/work/encode-helpers.md §1.8).
+# Each source is checked by its sha256 before it is built. TOOLCHAIN names the set: raise it
+# with every change here, and tag the commit toolchain-<TOOLCHAIN>.
+TOOLCHAIN=1
+
+FFMPEG_VERSION=9.0.2
+FFMPEG_URL=https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+FFMPEG_SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+
+X265_VERSION=4.2
+X265_URL=https://bitbucket.org/multicoreware/x265_git/downloads/x265_4.2.tar.gz
+X265_SHA256=40b1ea0453e0309f0eba934e0ddf533f8f6295966679e8894e8f1c1c8d5e1210
+
+# x264 has no release tarballs: its stable branch at this commit, which is revision 3222 of
+# API 165 (the version x264 would read from git, written by hand as Debian does).
+X264_COMMIT=b35605ace3ddf7c1a5d67a2eb553f034aef41d55
+X264_REV=3222
+X264_URL=https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz
+X264_SHA256=cd71a7515b0e9a012e1ac9b1f8415bebcaf6fc97d4db32286642ac4c0fbe24f9
+
+VMAF_VERSION=3.2.1
+VMAF_URL=https://github.com/Netflix/vmaf/archive/refs/tags/v3.2.1.tar.gz
+VMAF_SHA256=5df7386911bc15fd1ca783132528748d219768ae4fc5f8e0b61184f041648092
+
+LAME_VERSION=3.100
+LAME_URL=https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+LAME_SHA256=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+
+WHISPER_VERSION=v1.9.5
+WHISPER_URL=https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.5.tar.gz
+WHISPER_SHA256=ff1a9053feb509ff9d7729703355541ae9690073a6b1c40eb692c962e0dc1720
