@@ -1,0 +1,924 @@
+openapi: 3.1.0
+info:
+  title: encode-queue pipeline and admin API
+  version: 1.0.0
+  license: { name: MIT, identifier: MIT }
+  summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
+  description: |
+    The queue server (`encode-queue`) serves this API on its own TCP listener (`EQ_API_LISTEN`),
+    which on `encoder` sits on the queue's Docker network. It is never reachable through the
+    WireGuard tunnel; workers use [helper.yaml](helper.yaml) there.
+
+    **Two callers, two tokens** (bearer, each from a file the queue reads at start):
+
+    - **The pipeline** (`iPhoneblog-web/video-pipeline`, token `EQ_PIPELINE_TOKEN_FILE`)
+      submits jobs, watches them, fetches each result and **accepts or rejects it against
+      ADR-0005's floors**. The queue never judges quality: it only moves files and states.
+    - **The upload center's Encoder page** (token `EQ_ADMIN_TOKEN_FILE`) lists the queue and
+      the workers, reorders and cancels jobs, pauses, adds and removes workers.
+
+    Each operation names which token it takes; reads take either.
+
+    **The life of a job**
+
+    1. The pipeline puts the job (`PUT /jobs/{job_id}`): its kind, priority, parameters and its
+       source, a file under the queue's source directory (`EQ_SOURCE_DIR`, a volume the
+       pipeline and the queue share). The job is `queued`.
+    2. A worker claims it (helper API): the job is `leased`, attempt 1. The worker fetches the
+       source from the queue, encodes, reports progress, and uploads the result to the queue.
+    3. The result arrives: the job is `checking`. The pipeline sees it in `GET /changes`,
+       fetches the file (`GET /jobs/{id}/attempts/{n}/file`, or reads `path` under the result
+       directory `EQ_RESULT_DIR` if it shares that volume), runs its checks and puts a verdict.
+    4. **`accepted`**: the job is `done`; any other attempt still running is stopped
+       (`410 job_done`), any other result waiting is `superseded`. **`rejected`**: the job goes
+       back to `queued` and is never again offered to the worker that made it; after
+       `max_failures` rejections and failures together it is `failed`.
+    5. A lease that runs out, a worker that goes offline, a pause held past 60 s, a removed
+       worker, a job of higher priority that needs the worker (`preempted`): the attempt ends
+       and the job is `queued` again, the next attempt with the next number. A result that
+       arrives late is still taken and judged; the first one accepted wins.
+    6. The pipeline forgets a finished job (`DELETE /jobs/{job_id}`), which deletes its files
+       on the queue. Finished jobs it never forgets go after `EQ_DONE_KEEP` (7 days).
+
+    **Priorities and order.** Every job has a priority, ADR-0005's: `stage1`, then `stage2`,
+    then `archive`, and a place within it. The queue hands out the first job in that order a
+    worker may run. The Encoder page moves a job (`POST /jobs/{id}/move`), and a job moved next
+    to a job of another priority takes that priority. When a `stage1` or `stage2` job is queued
+    and no free worker may run it, the queue preempts the active lease with the lowest priority
+    whose worker may run it.
+
+    **Rules every call follows** are helper.yaml's: problem+json errors with a stable `code`,
+    JSON Merge Patch, `Prefer: wait=N` long polls (at most 25 s), UTC times, sizes in bytes.
+
+    **Not here.** `/metrics` (Prometheus, no token) and `/healthz` are on the same listener,
+    outside `/v1`; the README lists the series.
+servers:
+  - url: '{base}'
+    description: The queue's API listener on its Docker network.
+    variables:
+      base:
+        default: http://encode-queue.invalid/v1
+        description: The queue's container name or address and `EQ_API_LISTEN`'s port, plus `/v1`. Configuration, not part of the API.
+tags:
+  - name: Jobs
+    description: Submitting, reading and steering jobs.
+  - name: Results
+    description: Fetching a result and putting the pipeline's verdict on it.
+  - name: Workers
+    description: The workers, `encoder`'s own included; adding one by its public key and removing it.
+  - name: Queue
+    description: The queue itself.
+security:
+  - pipeline: []
+  - admin: []
+
+paths:
+  /status:
+    get:
+      tags: [Queue]
+      operationId: getStatus
+      summary: The queue itself
+      description: Its version, counts, the reference tools the jobs default to, and the tunnel's public side.
+      responses:
+        '200':
+          description: The status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /jobs:
+    get:
+      tags: [Jobs]
+      operationId: listJobs
+      summary: The queue, in order (the Encoder page's Warteschlange)
+      description: |
+        Jobs that are not finished come first, in the order the queue hands them out
+        (`leased` and `checking` before `queued`, each by priority and place); finished jobs
+        follow, newest first. `counts` covers every job, the archive included.
+      parameters:
+        - name: state
+          in: query
+          description: Only jobs in these states.
+          style: form
+          explode: false
+          schema: { type: array, items: { $ref: '#/components/schemas/JobState' } }
+        - name: priority
+          in: query
+          style: form
+          explode: false
+          schema: { type: array, items: { $ref: '#/components/schemas/Priority' } }
+        - name: kind
+          in: query
+          style: form
+          explode: false
+          schema: { type: array, items: { $ref: '#/components/schemas/JobKind' } }
+        - name: upload_id
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - name: cursor
+          in: query
+          description: '`next` from the previous page.'
+          schema: { type: string }
+      responses:
+        '200':
+          description: One page of the queue.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /jobs/{job_id}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    put:
+      tags: [Jobs]
+      operationId: submitJob
+      summary: Submit a job (pipeline)
+      description: |
+        Idempotent: the pipeline chooses the id, so it can put a job again after a crash.
+        The same job again answers `200`; a different one under an id that is not finished
+        answers `409 job_exists`. A finished job (`done`, `failed`, `cancelled`) is replaced by
+        the new one, which starts with attempt 1 again.
+
+        The source must be a file under `EQ_SOURCE_DIR` with the given size; the queue checks
+        the size, not the sha256 (the worker checks that). `requires` defaults to the reference
+        tools for the kind (`GET /status`); the pipeline names them only to pin a job to other
+        versions.
+      security: [{ pipeline: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/JobSubmit' }
+      responses:
+        '200':
+          description: This job was there already, unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '201':
+          description: Queued.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Invalid' }
+    get:
+      tags: [Jobs]
+      operationId: getJob
+      summary: One job, with every attempt so far
+      responses:
+        '200':
+          description: The job.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Jobs]
+      operationId: forgetJob
+      summary: Forget a finished job and delete its files on the queue (pipeline)
+      description: Only a `done`, `failed` or `cancelled` job; cancel an active one first. The pipeline calls this once it has taken the accepted file.
+      security: [{ pipeline: [] }]
+      responses:
+        '204': { description: Forgotten. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /jobs/{job_id}/move:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    post:
+      tags: [Jobs]
+      operationId: moveJob
+      summary: Reorder a queued job (the Encoder page's Prio)
+      description: |
+        Exactly one of `before`, `after` or `to`. A job moved next to a job of another priority
+        takes that priority; `to: top` and `to: bottom` stay within the job's own priority
+        unless `priority` names another. Only `queued` jobs move (`409 not_queued`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Move' }
+      responses:
+        '200':
+          description: The job in its new place.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Invalid' }
+
+  /jobs/{job_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    post:
+      tags: [Jobs]
+      operationId: cancelJob
+      summary: Cancel a job
+      description: |
+        The job is `cancelled`; a worker that holds it stops at its next progress report
+        (`410 lease_cancelled`), and results still waiting are dropped. The pipeline learns it
+        through `/changes`. A finished job answers `409 finished`.
+      responses:
+        '200':
+          description: The job, cancelled.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /jobs/{job_id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    post:
+      tags: [Jobs]
+      operationId: retryJob
+      summary: Queue a failed or cancelled job again
+      description: It keeps its attempts and their numbers; the count of failures starts again at 0 and every worker may take it again.
+      responses:
+        '200':
+          description: The job, queued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /changes:
+    get:
+      tags: [Jobs]
+      operationId: listChanges
+      summary: Every job that changed since a revision (long poll)
+      description: |
+        Every change to a job (state, attempt, progress, verdict, place) raises the queue's
+        `revision`, and the job carries the revision of its last change. This answers the jobs
+        whose revision is above `since`, oldest change first, each once in its current form,
+        and waits up to `Prefer: wait` seconds when there is none. A forgotten job comes once as
+        `{"job_id": ..., "forgotten": true}`. Start with `since=0`; keep the answer's
+        `revision` for the next call. When `since` is above the queue's revision (its state was
+        restored from an older copy), the answer has `reset: true` and every job.
+      parameters:
+        - name: since
+          in: query
+          required: true
+          schema: { type: integer, minimum: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 500 }
+        - name: Prefer
+          in: header
+          schema: { type: string, examples: ['wait=25'] }
+      responses:
+        '200':
+          description: The changes; `items` is empty when the wait ran out.
+          headers:
+            Preference-Applied: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Changes' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /jobs/{job_id}/attempts/{attempt}/file:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+      - $ref: '#/components/parameters/Attempt'
+    get:
+      tags: [Results]
+      operationId: getResultFile
+      summary: The file an attempt delivered (pipeline)
+      description: Resumes with `Range`. `ETag` is its sha256, which the queue checked on arrival. Gone once the attempt is rejected or superseded, or the job is forgotten.
+      security: [{ pipeline: [] }]
+      parameters:
+        - name: Range
+          in: header
+          schema: { type: string }
+      responses:
+        '200':
+          description: The whole file.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        '206':
+          description: The requested part.
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /jobs/{job_id}/attempts/{attempt}/verdict:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+      - $ref: '#/components/parameters/Attempt'
+    put:
+      tags: [Results]
+      operationId: putVerdict
+      summary: Accept or reject an attempt's result (pipeline)
+      description: |
+        Only for an attempt whose result is `checking`. **`accepted`** makes the job `done`
+        with this attempt's file; every other waiting result becomes `superseded`, every other
+        active lease ends (`410 job_done`). **`rejected`** deletes the file, counts against the
+        worker (`encode_queue_worker_results_rejected_total`), and puts the job back to
+        `queued` without that worker, or `failed` once it reached `max_failures`. A verdict on
+        a job that is already `done` answers `409 job_done` and the attempt is `superseded`.
+      security: [{ pipeline: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Verdict' }
+      responses:
+        '200':
+          description: The job after the verdict.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Invalid' }
+
+  /leases/{lease_id}/logs:
+    parameters:
+      - name: lease_id
+        in: path
+        required: true
+        schema: { type: string, pattern: '^ls_[0-9A-Z]{26}$' }
+    get:
+      tags: [Jobs]
+      operationId: listLeaseLogs
+      summary: The log lines of one attempt
+      description: The last 2,000 lines the worker sent, oldest first. Poll with `after` for new ones.
+      parameters:
+        - name: after
+          in: query
+          description: Only lines after this sequence number.
+          schema: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: The lines.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/LogLine' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /workers:
+    get:
+      tags: [Workers]
+      operationId: listWorkers
+      summary: Every worker (the Encoder page's Encoder table)
+      responses:
+        '200':
+          description: The workers, `encoder`'s own included, by name.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, server_time]
+                properties:
+                  server_time: { type: string, format: date-time }
+                  items: { type: array, items: { $ref: '#/components/schemas/Worker' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Workers]
+      operationId: addWorker
+      summary: Add a worker by its public key (admin)
+      description: |
+        The Encoder page sends the name and the WireGuard public key it got from the worker,
+        pasted or through the Safari extension (ADR-0007 §5). The queue gives the worker the
+        next free address of its subnet and adds the peer to its own WireGuard at once; the peer
+        list is the queue's state. The answer is the worker's tunnel configuration, as an object
+        and as the one line the worker reads from a file or an environment variable. Nothing in
+        it is secret; the private key never leaves the worker.
+      security: [{ admin: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkerCreate' }
+      responses:
+        '201':
+          description: Added.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Enrolment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Invalid' }
+  /workers/{worker_id}:
+    parameters:
+      - name: worker_id
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/WorkerId' }
+    get:
+      tags: [Workers]
+      operationId: getWorker
+      summary: One worker
+      responses:
+        '200':
+          description: The worker.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Worker' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Workers]
+      operationId: updateWorker
+      summary: Rename or pause a worker (admin)
+      description: A pause set here holds as one set from the worker's menu bar; the worker learns it with its next presence (at most 30 s).
+      security: [{ admin: [] }]
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/WorkerPatch' }
+      responses:
+        '200':
+          description: The worker.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Worker' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Invalid' }
+    delete:
+      tags: [Workers]
+      operationId: removeWorker
+      summary: Remove a worker and its peer (admin)
+      description: Its key stops working at once; its active leases end (`cancelled`) and their jobs go back to the queue.
+      security: [{ admin: [] }]
+      responses:
+        '204': { description: Removed. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /workers/{worker_id}/tunnel:
+    parameters:
+      - name: worker_id
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/WorkerId' }
+    get:
+      tags: [Workers]
+      operationId: getWorkerTunnel
+      summary: The worker's tunnel configuration again (admin)
+      description: The same as the enrolment gave, for a worker whose configuration was lost.
+      security: [{ admin: [] }]
+      responses:
+        '200':
+          description: The configuration.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Enrolment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    pipeline:
+      type: http
+      scheme: bearer
+      description: The pipeline's token (`EQ_PIPELINE_TOKEN_FILE`).
+    admin:
+      type: http
+      scheme: bearer
+      description: The upload center's token (`EQ_ADMIN_TOKEN_FILE`). Workers never hold either.
+
+  parameters:
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/JobId' }
+    Attempt:
+      name: attempt
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+
+  responses:
+    Unauthorized:
+      description: No token, or an unknown one (`unauthorized`).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: The other caller's operation (`forbidden`).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: No such job, attempt, lease, file or worker (`not_found`).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: The state forbids this (`job_exists`, `not_queued`, `finished`, `not_finished`, `not_checking`, `job_done`, `key_exists`, `name_exists`, `subnet_full`).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Invalid:
+      description: The body breaks the schema or a rule (`invalid`, `source_missing`, `source_size`).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457.
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code:
+          type: string
+          enum: [unauthorized, forbidden, not_found, job_exists, not_queued, finished, not_finished, not_checking,
+                 job_done, key_exists, name_exists, subnet_full, invalid, source_missing, source_size]
+
+    JobId:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9_-]{0,63}\.[a-z0-9-]{1,32}$'
+      description: The upload's id and what the job makes; the pipeline chooses it.
+      examples: ['one_528.2160-stage2', 'one_528.whisper']
+    WorkerId:
+      type: string
+      pattern: '^wk_[a-z0-9]{8}$'
+    JobKind:
+      type: string
+      enum: [rung, whisper]
+    JobState:
+      type: string
+      enum: [queued, leased, checking, done, failed, cancelled]
+      description: |
+        `queued` waits for a worker; `leased` has an active lease; `checking` has a result
+        that waits for the pipeline's verdict (it may have an active lease as well, when the
+        result came late); `done`, `failed` and `cancelled` are finished.
+    Priority:
+      type: string
+      enum: [stage1, stage2, archive]
+      description: ADR-0005's order. Stage 1 of a new upload first.
+    LeaseState:
+      type: string
+      enum: [active, delivered, given_back, expired, preempted, cancelled, failed]
+
+    Tool:
+      type: object
+      required: [name, version]
+      description: A tool and its exact version string; how each is read is in helper.yaml's `Tool`.
+      properties:
+        name: { type: string, enum: [ffmpeg, libx265, libx264, whisper.cpp] }
+        version: { type: string }
+    Requires:
+      type: object
+      description: |
+        What a worker must run to get the job. Tools match as text; models by sha256 (a whisper
+        job's `model_sha256` is added on its own); fonts by family name (a rung's
+        `captions.font` is added on its own).
+      properties:
+        tools: { type: array, items: { $ref: '#/components/schemas/Tool' } }
+        models: { type: array, items: { type: string, pattern: '^[0-9a-f]{64}$' } }
+        fonts: { type: array, items: { type: string } }
+
+    RungParams:
+      description: helper.yaml's `RungParams`, unchanged; the worker builds its ffmpeg arguments from it.
+      $ref: 'helper.yaml#/components/schemas/RungParams'
+    WhisperParams:
+      description: helper.yaml's `WhisperParams`, unchanged.
+      $ref: 'helper.yaml#/components/schemas/WhisperParams'
+
+    FileIn:
+      type: object
+      required: [path, bytes, sha256]
+      properties:
+        path: { type: string, description: 'Relative to `EQ_SOURCE_DIR`; no `..`.', examples: ['one_528/master.mov'] }
+        bytes: { type: integer, minimum: 1 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    SourceIn:
+      allOf:
+        - $ref: '#/components/schemas/FileIn'
+        - type: object
+          properties:
+            container: { type: string, examples: [mov, mp4, wav] }
+            duration_s: { type: number, description: For progress and time left. }
+            frames: { type: integer, description: For progress. }
+            width: { type: integer }
+            height: { type: integer }
+    JobSubmit:
+      type: object
+      required: [kind, priority, params, source, result]
+      properties:
+        kind: { $ref: '#/components/schemas/JobKind' }
+        priority: { $ref: '#/components/schemas/Priority' }
+        upload_id: { type: string, examples: [one_528] }
+        title: { type: string, examples: ['#one 528: Die Vorschau'] }
+        stage: { type: [integer, 'null'], enum: [1, 2, null], description: 'The ladder stage the job belongs to, for the Encoder page ("Stufe").' }
+        params:
+          oneOf:
+            - $ref: '#/components/schemas/RungParams'
+            - $ref: '#/components/schemas/WhisperParams'
+          description: '`RungParams` for `rung`, `WhisperParams` for `whisper`.'
+        source: { $ref: '#/components/schemas/SourceIn' }
+        inputs:
+          type: object
+          description: More files the job needs, by name (for example `captions`).
+          additionalProperties: { $ref: '#/components/schemas/FileIn' }
+        result:
+          type: object
+          required: [name, max_bytes]
+          properties:
+            name: { type: string, pattern: '^[A-Za-z0-9._-]{1,64}$', examples: ['2160.mp4', 'whisper.json'] }
+            max_bytes: { type: integer, minimum: 1, description: The most the result may be; the queue leases only while its disk has room for it. }
+        requires: { $ref: '#/components/schemas/Requires' }
+        max_failures: { type: integer, minimum: 1, description: 'Rejections and failures before the job is `failed`; the queue''s `EQ_MAX_FAILURES` (3) if left out.' }
+
+    Progress:
+      $ref: 'helper.yaml#/components/schemas/Progress'
+    Check:
+      $ref: 'helper.yaml#/components/schemas/Check'
+    WorkerRef:
+      type: object
+      required: [worker_id, name]
+      properties:
+        worker_id: { $ref: '#/components/schemas/WorkerId' }
+        name: { type: string }
+    Attempt:
+      type: object
+      required: [attempt, lease_id, worker, state, started_at]
+      properties:
+        attempt: { type: integer, minimum: 1 }
+        lease_id: { type: string }
+        worker: { $ref: '#/components/schemas/WorkerRef' }
+        state: { $ref: '#/components/schemas/LeaseState' }
+        started_at: { type: string, format: date-time }
+        expires_at: { type: [string, 'null'], format: date-time, description: While `active`. }
+        ended_at: { type: [string, 'null'], format: date-time }
+        end_code: { type: [string, 'null'], description: 'Why it ended without a result: the release reason, or `lease_expired`, `offline`, `preempted`, `paused`, `worker_removed`, `job_cancelled`, `job_done`.' }
+        progress: { oneOf: [{ $ref: '#/components/schemas/Progress' }, { type: 'null' }] }
+        result:
+          type: [object, 'null']
+          description: What it delivered.
+          properties:
+            outcome: { type: string, enum: [file, failed] }
+            verdict: { type: string, enum: [checking, accepted, rejected, superseded, failed] }
+            sha256: { type: string }
+            bytes: { type: integer }
+            frames: { type: integer }
+            encode_s: { type: number }
+            tools: { type: array, items: { $ref: '#/components/schemas/Tool' } }
+            path: { type: [string, 'null'], description: 'The file, relative to `EQ_RESULT_DIR`, while it exists.', examples: ['one_528.2160-stage2/1/2160.mp4'] }
+            file_url: { type: [string, 'null'], description: '`/jobs/{id}/attempts/{n}/file`, while the file exists.' }
+            failure_code: { type: [string, 'null'] }
+            message: { type: [string, 'null'], description: 'A failure''s line, or the reason of a rejection.' }
+            checks: { type: array, items: { $ref: '#/components/schemas/Check' } }
+            delivered_at: { type: string, format: date-time }
+            decided_at: { type: [string, 'null'], format: date-time }
+    Job:
+      type: object
+      required: [job_id, kind, priority, state, revision, attempts, queued_at]
+      properties:
+        job_id: { $ref: '#/components/schemas/JobId' }
+        upload_id: { type: [string, 'null'] }
+        title: { type: [string, 'null'] }
+        kind: { $ref: '#/components/schemas/JobKind' }
+        stage: { type: [integer, 'null'] }
+        priority: { $ref: '#/components/schemas/Priority' }
+        position: { type: [integer, 'null'], description: 'Its place among all `queued` jobs, 1 first; null otherwise.' }
+        state: { $ref: '#/components/schemas/JobState' }
+        rung: { type: [string, 'null'], description: 'The rung''s name, or null for whisper.' }
+        resolution: { type: [string, 'null'], description: '"Auflösung": the output size, `WIDTHxHEIGHT`.', examples: ['3840x2160'] }
+        quality: { type: [string, 'null'], description: '"Qualität": the preset and the CRF, or the whisper model.', examples: ['slower CRF 29', 'ggml-medium.bin'] }
+        worker: { oneOf: [{ $ref: '#/components/schemas/WorkerRef' }, { type: 'null' }], description: '"Encoder": the worker of the active attempt, or of the accepted one.' }
+        progress: { oneOf: [{ $ref: '#/components/schemas/Progress' }, { type: 'null' }], description: "The active attempt's last report: phase, share, fps, speed, time left." }
+        params: { type: object, description: As submitted. }
+        source: { $ref: '#/components/schemas/SourceIn' }
+        inputs: { type: object, additionalProperties: { $ref: '#/components/schemas/FileIn' } }
+        result_spec:
+          type: object
+          properties:
+            name: { type: string }
+            max_bytes: { type: integer }
+        requires: { $ref: '#/components/schemas/Requires' }
+        failures: { type: integer, description: Rejections and failures so far. }
+        max_failures: { type: integer }
+        excluded_workers: { type: array, items: { $ref: '#/components/schemas/WorkerRef' }, description: Workers whose result failed or was rejected; they get this job no more. }
+        accepted_attempt: { type: [integer, 'null'] }
+        attempts: { type: array, items: { $ref: '#/components/schemas/Attempt' }, description: Oldest first. }
+        queued_at: { type: string, format: date-time }
+        started_at: { type: [string, 'null'], format: date-time, description: When the active or accepted attempt started. }
+        finished_at: { type: [string, 'null'], format: date-time }
+        elapsed_s: { type: [number, 'null'], description: '"Zeit": since `started_at`, or how long the accepted attempt took.' }
+        revision: { type: integer, description: "The queue's revision of this job's last change." }
+    JobList:
+      type: object
+      required: [items, counts, server_time, revision]
+      properties:
+        server_time: { type: string, format: date-time }
+        revision: { type: integer }
+        counts:
+          type: object
+          description: Every job by state, and by priority for those not finished.
+          properties:
+            by_state: { type: object, additionalProperties: { type: integer }, examples: [{ queued: 412, leased: 3, checking: 1, done: 17 }] }
+            by_priority: { type: object, additionalProperties: { type: integer }, examples: [{ stage1: 1, stage2: 2, archive: 413 }] }
+        items: { type: array, items: { $ref: '#/components/schemas/Job' } }
+        next: { type: [string, 'null'], description: Cursor for the next page. }
+    Changes:
+      type: object
+      required: [revision, items]
+      properties:
+        revision: { type: integer, description: "Pass as `since` next time." }
+        reset: { type: boolean, description: '`since` was above the queue''s revision; `items` holds every job.' }
+        items:
+          type: array
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/Job'
+              - type: object
+                required: [job_id, forgotten, revision]
+                properties:
+                  job_id: { $ref: '#/components/schemas/JobId' }
+                  forgotten: { type: boolean, const: true }
+                  revision: { type: integer }
+    Move:
+      type: object
+      description: Exactly one of `before`, `after`, `to`.
+      properties:
+        before: { $ref: '#/components/schemas/JobId' }
+        after: { $ref: '#/components/schemas/JobId' }
+        to: { type: string, enum: [top, bottom] }
+        priority: { $ref: '#/components/schemas/Priority' }
+    Verdict:
+      type: object
+      required: [verdict]
+      properties:
+        verdict: { type: string, enum: [accepted, rejected] }
+        reason: { type: string, description: 'One line: the check that failed.', examples: ['ssim 0.931 below 0.95'] }
+        checks: { type: array, items: { $ref: '#/components/schemas/Check' } }
+
+    Limits:
+      $ref: 'helper.yaml#/components/schemas/Limits'
+    WorkerCounts:
+      $ref: 'helper.yaml#/components/schemas/WorkerCounts'
+    Worker:
+      type: object
+      required: [worker_id, name, state, added_at]
+      properties:
+        worker_id: { $ref: '#/components/schemas/WorkerId' }
+        name: { type: string, examples: [encoder, 'Mac Studio Thorsten'] }
+        owner: { type: [string, 'null'] }
+        state: { type: string, enum: [idle, working, paused, offline], description: '"Status".' }
+        paused_until: { type: [string, 'null'], format: date-time }
+        public_key: { type: string }
+        tunnel_address: { type: string, examples: ['10.10.20.11'] }
+        app_version: { type: [string, 'null'] }
+        os: { type: [string, 'null'] }
+        tools: { type: array, items: { $ref: '#/components/schemas/Tool' }, description: What it said it runs. }
+        models: { type: array, items: { type: object, properties: { name: { type: string }, sha256: { type: string } } } }
+        fonts: { type: array, items: { type: string } }
+        hardware: { type: [object, 'null'] }
+        limits: { $ref: '#/components/schemas/Limits' }
+        accepted_kinds: { type: array, items: { $ref: '#/components/schemas/JobKind' } }
+        refused:
+          type: array
+          description: Kinds it may not take, and why (a tool version that differs from the reference).
+          items:
+            type: object
+            properties:
+              kind: { $ref: '#/components/schemas/JobKind' }
+              reason: { type: string }
+        jobs:
+          type: array
+          description: '"Job" and "Tempo": its active attempts.'
+          items:
+            type: object
+            required: [job_id, lease_id, attempt]
+            properties:
+              job_id: { $ref: '#/components/schemas/JobId' }
+              title: { type: [string, 'null'] }
+              rung: { type: [string, 'null'] }
+              lease_id: { type: string }
+              attempt: { type: integer }
+              phase: { type: [string, 'null'] }
+              fraction: { type: [number, 'null'] }
+              fps: { type: [number, 'null'] }
+              speed: { type: [number, 'null'] }
+              eta_s: { type: [integer, 'null'] }
+        last_seen: { type: [string, 'null'], format: date-time, description: '"Zuletzt".' }
+        added_at: { type: string, format: date-time }
+        counts: { $ref: '#/components/schemas/WorkerCounts' }
+    WorkerCreate:
+      type: object
+      required: [name, public_key]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        owner: { type: string }
+        public_key: { type: string, description: 'The worker''s WireGuard public key, base64 (44 characters).' }
+    WorkerPatch:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        paused_until: { type: [string, 'null'], format: date-time }
+    TunnelConfig:
+      type: object
+      required: [address, server_public_key, endpoint, allowed_ips, api]
+      properties:
+        address: { type: string, examples: ['10.10.20.11/32'], description: "The worker's tunnel address." }
+        server_public_key: { type: string }
+        endpoint: { type: string, description: 'Where the worker sends its UDP: the public host and port the queue was configured with (`EQ_WG_ENDPOINT`). A worker beside the queue may override it.', examples: ['vpn.example.org:51821'] }
+        allowed_ips: { type: string, examples: ['10.10.20.1/32'] }
+        persistent_keepalive_s: { type: integer, examples: [25] }
+        api: { type: string, format: uri, description: 'The helper API''s base URL inside the tunnel., examples: [''http://10.10.20.1:8090/v1'']' }
+    Enrolment:
+      type: object
+      required: [worker, tunnel, config_line]
+      properties:
+        worker: { $ref: '#/components/schemas/Worker' }
+        tunnel: { $ref: '#/components/schemas/TunnelConfig' }
+        config_line:
+          type: string
+          description: |
+            The same as one line of text, which the worker reads from `EQ_TUNNEL` or the file
+            `EQ_TUNNEL_FILE`: `eqtunnel1` and then `key=value` pairs separated by single spaces,
+            in this order: `address`, `server_public_key`, `endpoint`, `allowed_ips`,
+            `keepalive`, `api`. A value never holds a space; a reader splits each pair at its
+            first `=`.
+          examples: ['eqtunnel1 address=10.10.20.11/32 server_public_key=Zm9v...= endpoint=vpn.example.org:51821 allowed_ips=10.10.20.1/32 keepalive=25 api=http://10.10.20.1:8090/v1']
+
+    Status:
+      type: object
+      required: [version, server_time, revision]
+      properties:
+        version: { type: string, examples: ['0.1.0'] }
+        server_time: { type: string, format: date-time }
+        revision: { type: integer }
+        draining: { type: boolean }
+        reference_worker: { type: [string, 'null'], description: 'The worker whose tools are the reference (`EQ_REFERENCE_WORKER`, `encoder`''s own).' }
+        reference_tools:
+          type: object
+          description: The tools each kind requires by default, from the reference worker's last capabilities.
+          additionalProperties: { type: array, items: { $ref: '#/components/schemas/Tool' } }
+          examples: [{ rung: [{ name: ffmpeg, version: 7.1.2-0+deb13u1 }], whisper: [{ name: whisper.cpp, version: v1.9.5 }] }]
+        tunnel:
+          type: object
+          properties:
+            public_key: { type: string }
+            endpoint: { type: string }
+            address: { type: string }
+            subnet: { type: string }
+            peers: { type: integer }
+        counts: { $ref: '#/components/schemas/JobList/properties/counts' }
+        timings:
+          type: object
+          properties:
+            lease_s: { type: integer, examples: [120] }
+            renew_every_s: { type: integer, examples: [30] }
+            long_poll_s: { type: integer, examples: [25] }
+            presence_every_s: { type: integer, examples: [30] }
+            pause_give_back_s: { type: integer, examples: [60] }
+    LogLine:
+      type: object
+      required: [seq, time, level, message]
+      properties:
+        seq: { type: integer }
+        time: { type: string, format: date-time }
+        level: { type: string, enum: [debug, info, warning, error] }
+        source: { type: string }
+        message: { type: string }

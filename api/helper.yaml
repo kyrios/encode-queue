@@ -1,0 +1,936 @@
+openapi: 3.1.0
+info:
+  title: encode-queue helper API
+  version: 1.0.0
+  license: { name: MIT, identifier: MIT }
+  summary: How a worker takes jobs from the queue through its WireGuard tunnel.
+  description: |
+    The worker side of [ADR-0007](https://github.com/iPhoneblog-web/iphoneblog-wordpress/blob/main/docs/adr/0007-encode-helpers.md)
+    (iphoneblog-wordpress). The queue server (`encode-queue`) serves it **only inside its own
+    WireGuard tunnel**; the pipeline and the upload center use the other API,
+    [pipeline-admin.yaml](pipeline-admin.yaml), on the queue's Docker network.
+
+    **Every worker is a helper**, `encoder`'s own included (ADR-0007 §1). A worker is known by
+    its tunnel address, which WireGuard ties to its key; there is no token and no TLS inside the
+    tunnel. The queue brings its WireGuard itself (wireguard-go in userspace, its own network
+    stack), so the address, the port and the endpoint are the queue's configuration, never part
+    of this API: the worker learns the API's base URL from the `api` field of its tunnel
+    configuration (see `TunnelConfig` in pipeline-admin.yaml).
+
+    **Not in this API: ProRes.** A ProRes file dropped into the upload center is encoded on the
+    Mac and uploaded by the page (ADR-0007 §7). It is not a queue job.
+
+    **Resources**
+
+    | resource | what it is |
+    |---|---|
+    | `/me` | the calling worker: its name, limits and pause |
+    | `/me/capabilities` | what it runs: tools, models, fonts, hardware |
+    | `/me/presence` | that it is alive, and in which state |
+    | `/jobs/{id}/source`, `/jobs/{id}/inputs/{name}` | the files a job is made from |
+    | `/leases` | the jobs a worker holds. Creating one is claiming a job |
+    | `/leases/{id}/logs` | the tool's log lines while it works |
+    | `/leases/{id}/result` | what the worker made, and the verdict on it |
+    | `/files` | resumable uploads (tus 1.0) that a result points to |
+
+    **Rules every call follows**
+
+    - **Pull only.** The worker asks; the queue never calls a worker.
+    - **HTTP means what it says.** `201` with `Location` for anything created, `204` for nothing
+      to return, `409` for a state that forbids the call, `410` for a lease that is gone
+      (expired, cancelled, done elsewhere, or preempted for a job of higher priority): the
+      worker stops that job at once and deletes its files.
+    - **Long poll with `Prefer: wait=N`** (RFC 7240), at most 25 s. The answer names what it
+      applied in `Preference-Applied`.
+    - **Partial updates are JSON Merge Patch** (RFC 7396, `application/merge-patch+json`).
+    - **Errors** are `application/problem+json` (RFC 9457) with a stable `code`. A worker acts
+      on `code`, never on the text.
+    - **`503` with code `draining`** and `Retry-After`: the queue hands out no new work for now
+      (it is shutting down).
+    - **Times** are UTC, RFC 3339. **Sizes** are bytes. **Durations** are seconds unless the
+      field ends in `_ms`.
+    - **The timings** (ADR-0007 §3): a lease lasts 120 s and is renewed every 30 s; the long
+      poll waits 25 s; presence every 30 s, offline after three missed; a pause gives its job
+      back after 60 s. The queue sends the values it uses (`renew_every_s`,
+      `presence_every_s`, `pause_give_back_s`); the worker uses those, not its own.
+    - **Attempts.** Every lease is one attempt at its job and has a number. A result that
+      arrives after its lease was taken back is still taken and judged: the first result the
+      pipeline accepts wins, every later one is `superseded`. A late result never overwrites a
+      newer one.
+    - **Exact tool versions.** The queue offers a job only to a worker whose tools match the
+      job's `requires` exactly, as text (see `Tool`).
+    - **Pause.** A paused worker suspends its encode and keeps renewing its lease with
+      `phase: paused`. After `pause_give_back_s` it deletes the lease with `reason=paused`;
+      if it does not, the queue takes the lease back itself 30 s later. While paused it
+      creates no lease. A pause can come from the worker (`PATCH /me`) or from the upload
+      center; the worker reads the current one from every presence and lease answer.
+    - **Low priority.** The worker runs every tool at `nice 19`.
+servers:
+  - url: '{api}'
+    description: The queue inside the worker's tunnel. The base URL is the `api` field of the tunnel configuration.
+    variables:
+      api:
+        default: http://queue.invalid/v1
+        description: The tunnel configuration's `api` (the queue's tunnel address and API port, both queue configuration).
+tags:
+  - name: Me
+    description: The calling worker, what it runs, its limits, its pause, its presence.
+  - name: Sources
+    description: The files a job is made from, for the worker that holds its lease.
+  - name: Leases
+    description: Holding a job, reporting progress and log lines, giving it back, delivering the result.
+  - name: Files
+    description: Resumable uploads (tus 1.0) for results.
+security: []
+
+paths:
+  /me:
+    get:
+      tags: [Me]
+      operationId: getMe
+      summary: The calling worker
+      responses:
+        '200':
+          description: This worker as the queue knows it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '403': { $ref: '#/components/responses/UnknownPeer' }
+    patch:
+      tags: [Me]
+      operationId: updateMe
+      summary: Change this worker's limits or pause
+      description: |
+        The menu bar's pause is `{"paused_until": "..."}` (30 minutes, 2 hours or 24 hours from
+        now); "Resume" is `{"paused_until": null}`. The settings change `limits`. The queue
+        shows both in the upload center.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/MePatch' }
+      responses:
+        '200':
+          description: This worker after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '403': { $ref: '#/components/responses/UnknownPeer' }
+        '422': { $ref: '#/components/responses/Invalid' }
+
+  /me/capabilities:
+    get:
+      tags: [Me]
+      operationId: getCapabilities
+      summary: What this worker last said it runs, and what that allows
+      responses:
+        '200':
+          description: The capabilities and the verdict on them.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CapabilityReport' }
+        '403': { $ref: '#/components/responses/UnknownPeer' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Me]
+      operationId: putCapabilities
+      summary: Say what this worker runs
+      description: |
+        On every start, and whenever a tool, a model or the app changes. The queue answers with
+        the job kinds this worker may take against the reference tools (the tools of the
+        queue's reference worker, `encoder`'s own); a kind whose versions differ is listed
+        under `refused` with the reason. A worker below `min_app_version` gets `426` and may
+        take nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Capabilities' }
+      responses:
+        '200':
+          description: Stored, with the verdict.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CapabilityReport' }
+        '403': { $ref: '#/components/responses/UnknownPeer' }
+        '422': { $ref: '#/components/responses/Invalid' }
+        '426': { $ref: '#/components/responses/AppTooOld' }
+
+  /me/presence:
+    put:
+      tags: [Me]
+      operationId: putPresence
+      summary: Say this worker is alive, and in which state
+      description: |
+        Every `presence_every_s` (from the answer), busy, idle or paused. A worker that misses
+        three is `offline`, and its leases go back to the queue.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Presence' }
+      responses:
+        '200':
+          description: Noted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PresenceAck' }
+        '403': { $ref: '#/components/responses/UnknownPeer' }
+
+  /jobs/{job_id}/source:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [Sources]
+      operationId: getJobSource
+      summary: The file the job is made from
+      description: |
+        Only for the worker that holds an active lease on the job. Resumes with `Range`. The
+        worker checks the file's sha256 (`ETag`, and `source.sha256` in the lease) before it
+        starts.
+      parameters:
+        - name: Range
+          in: header
+          schema: { type: string, examples: ['bytes=1048576-'] }
+      responses:
+        '200':
+          description: The whole file.
+          headers:
+            ETag: { description: 'The file''s sha256, quoted.', schema: { type: string } }
+            Accept-Ranges: { schema: { type: string, const: bytes } }
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        '206':
+          description: The requested part.
+          headers:
+            Content-Range: { schema: { type: string } }
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        '403': { $ref: '#/components/responses/NotYourLease' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /jobs/{job_id}/inputs/{name}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+      - name: name
+        in: path
+        required: true
+        schema: { type: string, pattern: '^[a-z0-9_-]{1,32}$', examples: [captions] }
+    get:
+      tags: [Sources]
+      operationId: getJobInput
+      summary: Another file the job needs, by its name in `job.inputs`
+      description: For example the burnt-in captions (an ASS file) of a #one preview's Mastodon version. Same rules as the source.
+      parameters:
+        - name: Range
+          in: header
+          schema: { type: string }
+      responses:
+        '200':
+          description: The whole file.
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        '206':
+          description: The requested part.
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        '403': { $ref: '#/components/responses/NotYourLease' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /leases:
+    get:
+      tags: [Leases]
+      operationId: listLeases
+      summary: The leases this worker holds
+      description: After a restart, the worker reads these and gives back each one it cannot resume (x265 cannot resume, so in practice every one).
+      responses:
+        '200':
+          description: This worker's active leases.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Lease' } }
+        '403': { $ref: '#/components/responses/UnknownPeer' }
+    post:
+      tags: [Leases]
+      operationId: createLease
+      summary: Claim a job (long poll)
+      description: |
+        Creates a lease on the next job this worker may run, waiting up to `Prefer: wait`
+        seconds for one. `201` with the lease, or `204` when none came; the worker asks again at
+        once. A paused worker gets `409 paused`, one at its `max_parallel_jobs` `409
+        limit_reached`, one that never sent its capabilities `409 no_capabilities`. The queue
+        leases only while its disk has room for the result; until then it answers `204`.
+      parameters:
+        - name: Prefer
+          in: header
+          schema: { type: string, examples: ['wait=25'] }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LeaseRequest' }
+      responses:
+        '201':
+          description: A job, leased to this worker.
+          headers:
+            Location: { schema: { type: string, examples: ['/v1/leases/ls_01JB2Q8V3M6N7P8R9S0T1V2W3X'] } }
+            Preference-Applied: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lease' }
+        '204':
+          description: No job for this worker now.
+          headers:
+            Preference-Applied: { schema: { type: string } }
+        '403': { $ref: '#/components/responses/UnknownPeer' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Draining' }
+
+  /leases/{lease_id}:
+    parameters:
+      - $ref: '#/components/parameters/LeaseId'
+    get:
+      tags: [Leases]
+      operationId: getLease
+      summary: One lease
+      responses:
+        '200':
+          description: The lease.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lease' }
+        '403': { $ref: '#/components/responses/NotYourLease' }
+        '410': { $ref: '#/components/responses/LeaseGone' }
+    patch:
+      tags: [Leases]
+      operationId: updateLease
+      summary: Report progress, which renews the lease
+      description: |
+        Every `renew_every_s` while the worker holds the lease, paused or not: phase, share
+        done, frames per second, speed, time left. The answer carries the new `expires_at` and
+        the worker's current `paused_until`. A lease that was cancelled, done elsewhere,
+        preempted or that expired answers `410`; the worker stops.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              type: object
+              required: [progress]
+              properties:
+                progress: { $ref: '#/components/schemas/Progress' }
+      responses:
+        '200':
+          description: The lease, renewed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lease' }
+        '403': { $ref: '#/components/responses/NotYourLease' }
+        '410': { $ref: '#/components/responses/LeaseGone' }
+    delete:
+      tags: [Leases]
+      operationId: deleteLease
+      summary: Give the job back
+      description: |
+        The job goes back to `queued` at once, for the next worker; it is not counted as a
+        failure. `reason=paused` is the 60-second rule of the pause, `quit` a worker that stops.
+      parameters:
+        - name: reason
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/ReleaseReason' }
+      responses:
+        '204': { description: Given back. }
+        '403': { $ref: '#/components/responses/NotYourLease' }
+        '410': { $ref: '#/components/responses/LeaseGone' }
+
+  /leases/{lease_id}/logs:
+    parameters:
+      - $ref: '#/components/parameters/LeaseId'
+    post:
+      tags: [Leases]
+      operationId: appendLeaseLogs
+      summary: Add log lines
+      description: |
+        The tool's output and the worker's own lines, in batches: at most every 5 s, at most 500
+        lines or 256 KiB a batch. Lines are text for people; the worker never reports state
+        through them. The queue keeps the last 2,000 lines of each lease; the upload center
+        reads them through pipeline-admin.yaml.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/LogLineIn' }
+      responses:
+        '202': { description: Stored. }
+        '403': { $ref: '#/components/responses/NotYourLease' }
+        '410': { $ref: '#/components/responses/LeaseGone' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+
+  /leases/{lease_id}/result:
+    parameters:
+      - $ref: '#/components/parameters/LeaseId'
+    put:
+      tags: [Leases]
+      operationId: putResult
+      summary: Deliver what the worker made, or that it failed
+      description: |
+        Ends the lease. A file result points to a finished upload in `/files` and carries the
+        file's sha256, which the queue checks against what arrived. A failure carries its code
+        and one line for a person. The queue takes a result also for a lease that ran out or was
+        preempted, as long as the job is not done (the late result of ADR-0007 §3); it answers
+        `410 job_done` once another attempt was accepted. The pipeline judges every file result
+        against ADR-0005's floors (`GET` the result for the verdict). A failure puts the job
+        back to `queued` and offers it to this worker no more.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResultIn' }
+      responses:
+        '202':
+          description: Taken; the verdict follows.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Result' }
+        '403': { $ref: '#/components/responses/NotYourLease' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/LeaseGone' }
+        '422': { $ref: '#/components/responses/Invalid' }
+    get:
+      tags: [Leases]
+      operationId: getResult
+      summary: The result and the verdict on it
+      description: Works after the lease ended, so the worker can show "accepted" or "rejected" and why.
+      responses:
+        '200':
+          description: The result.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Result' }
+        '403': { $ref: '#/components/responses/NotYourLease' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /files:
+    post:
+      tags: [Files]
+      operationId: createFile
+      summary: Start a resumable upload (tus creation)
+      description: |
+        For a lease's result. `Upload-Metadata` names the lease (`lease_id`, base64 as tus
+        requires); the upload may not exceed the lease's `result.max_bytes`.
+      parameters:
+        - $ref: '#/components/parameters/TusResumable'
+        - name: Upload-Length
+          in: header
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: Upload-Metadata
+          in: header
+          required: true
+          schema: { type: string, examples: ['lease_id bHNfMDFKQi4uLg=='] }
+      responses:
+        '201':
+          description: Created.
+          headers:
+            Location: { schema: { type: string, examples: ['/v1/files/f_7hq2k9m3x8c4v1b6'] } }
+            Tus-Resumable: { schema: { type: string, const: 1.0.0 } }
+        '403': { $ref: '#/components/responses/NotYourLease' }
+        '410': { $ref: '#/components/responses/LeaseGone' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+  /files/{file_id}:
+    parameters:
+      - name: file_id
+        in: path
+        required: true
+        schema: { type: string, pattern: '^f_[a-z0-9]{16}$' }
+    head:
+      tags: [Files]
+      operationId: getFileOffset
+      summary: How much has arrived
+      parameters:
+        - $ref: '#/components/parameters/TusResumable'
+      responses:
+        '200':
+          description: The offset to resume from.
+          headers:
+            Upload-Offset: { schema: { type: integer } }
+            Upload-Length: { schema: { type: integer } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Files]
+      operationId: appendFile
+      summary: Send the next chunk
+      parameters:
+        - $ref: '#/components/parameters/TusResumable'
+        - name: Upload-Offset
+          in: header
+          required: true
+          schema: { type: integer, minimum: 0 }
+      requestBody:
+        required: true
+        content:
+          application/offset+octet-stream:
+            schema: { type: string, contentMediaType: application/octet-stream }
+      responses:
+        '204':
+          description: Chunk stored.
+          headers:
+            Upload-Offset: { schema: { type: integer } }
+        '403': { $ref: '#/components/responses/NotYourLease' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+    delete:
+      tags: [Files]
+      operationId: deleteFile
+      summary: Drop an unfinished upload (tus termination)
+      parameters:
+        - $ref: '#/components/parameters/TusResumable'
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  parameters:
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/JobId' }
+    LeaseId:
+      name: lease_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/LeaseId' }
+    TusResumable:
+      name: Tus-Resumable
+      in: header
+      required: true
+      schema: { type: string, const: 1.0.0 }
+
+  responses:
+    UnknownPeer:
+      description: The tunnel address belongs to no worker (`unknown_peer`), or the worker was removed.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotYourLease:
+      description: This lease, job or file belongs to another worker, or to no active lease of this one (`not_your_lease`).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: No such job, lease, file or result (`not_found`).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    LeaseGone:
+      description: |
+        The lease ended without this worker (`lease_expired`, `lease_cancelled`, `job_done`,
+        `preempted`). Stop the job and delete its files. `preempted`: a job of higher priority
+        found no free worker, and this lease had the lowest priority; the job goes back to the
+        queue.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: The state forbids this (`paused`, `limit_reached`, `no_capabilities`, `offset_mismatch`, `result_exists`).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Invalid:
+      description: The body breaks the schema or a rule (`invalid`, `checksum_mismatch`, `upload_incomplete`).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TooLarge:
+      description: Larger than allowed (`too_large`).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    AppTooOld:
+      description: The worker is below `min_app_version` (`app_too_old`). It shows "please update".
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Draining:
+      description: The queue hands out no new work for now (`draining`). Ask again after `Retry-After`.
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457.
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code:
+          type: string
+          enum: [unknown_peer, not_your_lease, not_found, lease_expired, lease_cancelled, job_done, preempted,
+                 paused, limit_reached, no_capabilities, offset_mismatch, result_exists, invalid,
+                 checksum_mismatch, upload_incomplete, too_large, app_too_old, draining]
+
+    WorkerId:
+      type: string
+      pattern: '^wk_[a-z0-9]{8}$'
+      examples: ['wk_7k2m9q4d']
+    JobId:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9_-]{0,63}\.[a-z0-9-]{1,32}$'
+      description: The upload's id and what the job makes; chosen by the pipeline.
+      examples: ['one_528.2160-stage2', 'one_528.whisper']
+    LeaseId:
+      type: string
+      pattern: '^ls_[0-9A-Z]{26}$'
+
+    Limits:
+      type: object
+      description: How much of the machine the worker may use for queue jobs. Every tool runs at `nice 19` regardless.
+      properties:
+        cpu_threads: { type: [integer, 'null'], minimum: 1, description: "x265's thread pool (`pools=N`) and whisper.cpp's threads. Null: the tool's own default." }
+        gpu: { type: boolean, description: whisper.cpp may use the GPU (Metal on a Mac). }
+        max_parallel_jobs: { type: integer, minimum: 1, default: 1 }
+    Me:
+      type: object
+      required: [worker_id, name, state]
+      properties:
+        worker_id: { $ref: '#/components/schemas/WorkerId' }
+        name: { type: string, examples: ['Mac Studio Thorsten'] }
+        owner: { type: string, examples: [kyrios] }
+        state: { type: string, enum: [idle, working, paused, offline] }
+        paused_until: { type: [string, 'null'], format: date-time }
+        limits: { $ref: '#/components/schemas/Limits' }
+        tunnel_address: { type: string, examples: ['10.10.20.11'] }
+        app_version: { type: [string, 'null'] }
+        last_seen: { type: [string, 'null'], format: date-time }
+        leases: { type: array, items: { $ref: '#/components/schemas/LeaseId' }, description: Its active lease ids. }
+        counts: { $ref: '#/components/schemas/WorkerCounts' }
+    WorkerCounts:
+      type: object
+      description: Every attempt this worker ended, by how it ended.
+      properties:
+        accepted: { type: integer }
+        rejected: { type: integer }
+        superseded: { type: integer }
+        failed: { type: integer }
+        given_back: { type: integer }
+        expired: { type: integer }
+        preempted: { type: integer }
+        cancelled: { type: integer }
+    MePatch:
+      type: object
+      properties:
+        paused_until:
+          type: [string, 'null']
+          format: date-time
+          description: 30 minutes, 2 hours or 24 hours from now, from the menu; null resumes.
+        limits: { $ref: '#/components/schemas/Limits' }
+
+    Tool:
+      type: object
+      required: [name, version]
+      description: |
+        A tool and its version string, compared as text. Each worker reads them the same way
+        (`encode-worker versions` prints them):
+
+        - `ffmpeg`: the word after `ffmpeg version ` in the first line of `ffmpeg -version`
+          (for example `7.1.2-0+deb13u1`).
+        - `libx265`: from a one-frame encode through that ffmpeg, the text between `x265 (build
+          N) - ` and the next `:` in the stream's SEI (for example `4.1+1-1d117be`).
+        - `libx264`: the same with libx264, `core N rNNNN hash` from its SEI (for example
+          `core 164 r3108 31e19f9`).
+        - `whisper.cpp`: the release tag the binary was built from (for example `v1.9.5`).
+      properties:
+        name: { type: string, enum: [ffmpeg, libx265, libx264, whisper.cpp] }
+        version: { type: string, examples: ['7.1.2-0+deb13u1', '4.1+1-1d117be', 'core 164 r3108 31e19f9', 'v1.9.5'] }
+    Model:
+      type: object
+      required: [name, sha256]
+      properties:
+        name: { type: string, examples: ['ggml-medium.bin'] }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    Capabilities:
+      type: object
+      required: [app_version, os, tools]
+      properties:
+        app_version: { type: string, description: 'The worker''s own version (encode-worker''s release, e.g. `0.1.0`)., examples: [''0.1.0'']' }
+        os: { type: string, examples: ['macOS 26.1', 'Debian 13 (linux/amd64)'] }
+        tools: { type: array, items: { $ref: '#/components/schemas/Tool' } }
+        models: { type: array, items: { $ref: '#/components/schemas/Model' } }
+        fonts: { type: array, items: { type: string }, description: 'Font families libass can use (fontconfig names)., examples: [[''Inter ExtraBold'']]' }
+        hardware:
+          type: object
+          properties:
+            chip: { type: string, examples: ['Apple M2 Max'] }
+            cpus: { type: integer }
+            performance_cores: { type: integer }
+            efficiency_cores: { type: integer }
+            gpu_cores: { type: integer }
+            memory_bytes: { type: integer }
+    CapabilityReport:
+      type: object
+      required: [capabilities, accepted, min_app_version]
+      properties:
+        capabilities: { $ref: '#/components/schemas/Capabilities' }
+        accepted: { type: array, items: { $ref: '#/components/schemas/JobKind' } }
+        refused:
+          type: array
+          items:
+            type: object
+            required: [kind, reason]
+            properties:
+              kind: { $ref: '#/components/schemas/JobKind' }
+              reason: { type: string, examples: ['libx265 differs: worker 4.0, reference 4.1+1-1d117be'] }
+              reference: { type: array, items: { $ref: '#/components/schemas/Tool' } }
+        min_app_version: { type: string }
+    Presence:
+      type: object
+      required: [state]
+      properties:
+        state: { type: string, enum: [idle, working, paused] }
+        disk_free_bytes: { type: integer }
+        on_battery: { type: boolean }
+    PresenceAck:
+      type: object
+      required: [server_time, presence_every_s, paused_until]
+      properties:
+        server_time: { type: string, format: date-time }
+        presence_every_s: { type: integer, examples: [30] }
+        paused_until: { type: [string, 'null'], format: date-time, description: 'The pause the queue holds for this worker, the upload center''s included.' }
+        draining: { type: boolean }
+
+    JobKind:
+      type: string
+      enum: [rung, whisper]
+    Priority:
+      type: string
+      enum: [stage1, stage2, archive]
+      description: ADR-0005's order. Stage 1 of a new upload first.
+    RungParams:
+      type: object
+      title: rung
+      description: |
+        Structured, never a command line: the worker builds the ffmpeg arguments itself, in the
+        order `video-encode` did, so the queue cannot make a worker run anything else and a
+        worker's file is the file `encoder` would have made.
+
+        For `libx265`: `-i SRC -map 0:v:0 [-map 0:a:0] -fps_mode passthrough
+        [-vf scale=W:H:flags=lanczos] -c:v libx265 -preset P -crf C -pix_fmt yuv420p10le
+        -profile:v main10 -tag:v hvc1 -x265-params log-level=error[:vbv-maxrate=R:vbv-bufsize=B][:pools=N]`.
+        For `libx264`: `-vf [crop=…,][scale=…,]format=yuv420p[,ass=filename=…]
+        -c:v libx264 -preset P -crf C [-maxrate Rk -bufsize Bk] -profile:v high -pix_fmt yuv420p`.
+        Then the audio, then `-map_metadata -1 -map_chapters -1 -movflags +faststart OUT`.
+      required: [codec, preset, crf, width, height]
+      properties:
+        rung: { type: string, examples: ['2160', '1080', '720', h264, mastodon], description: 'The rung''s name, for people.' }
+        codec: { type: string, enum: [libx265, libx264] }
+        preset: { type: string, enum: [ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow] }
+        crf: { type: number }
+        width: { type: integer, description: The output's width; the worker scales when it differs from the source's (after the crop). }
+        height: { type: integer }
+        crop:
+          type: [object, 'null']
+          required: [width, height, x, y]
+          properties:
+            width: { type: integer }
+            height: { type: integer }
+            x: { type: integer }
+            y: { type: integer }
+        vbv_maxrate_kbps: { type: [integer, 'null'] }
+        vbv_bufsize_kbit: { type: [integer, 'null'] }
+        audio:
+          type: object
+          required: [mode]
+          properties:
+            mode: { type: string, enum: [copy, aac, none], description: '`none` when the source has no sound.' }
+            bitrate_kbps: { type: integer, description: For `aac`. }
+            mono: { type: boolean, default: false, description: 'Downmix two channels that carry one signal: `-af pan=mono|c0=0.5*c0+0.5*c1`.' }
+        captions:
+          type: [object, 'null']
+          description: Captions burnt in by libass (libx264 only). The ASS file is the job input `input`; the worker must have `font`.
+          required: [input, font]
+          properties:
+            input: { type: string, examples: [captions] }
+            font: { type: string, examples: ['Inter ExtraBold'] }
+    WhisperParams:
+      type: object
+      title: whisper
+      description: |
+        whisper.cpp's `whisper-cli -m MODEL -l LANG -f WAV -t THREADS -bs 1 -bo 1 -ml 1 -sow -oj
+        -of OUT -np` (greedy, one segment per word) with `OMP_WAIT_POLICY=passive`. A source
+        that is not 16 kHz mono WAV is first turned into one with ffmpeg (`-map 0:a:0 -ac 1
+        -ar 16000 -c:a pcm_s16le`). The result is the JSON file whisper-cli writes.
+      required: [model_sha256, language]
+      properties:
+        model_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        model: { type: string, examples: ['ggml-medium.bin'], description: For people; the worker finds the model by its sha256. }
+        language: { type: string, examples: [de] }
+        threads: { type: integer, minimum: 1, default: 4, description: At most the worker's `cpu_threads`. }
+    FileRef:
+      type: object
+      required: [url, bytes, sha256]
+      properties:
+        url: { type: string, description: '`/jobs/{id}/source` or `/jobs/{id}/inputs/{name}`, relative to the API base.' }
+        bytes: { type: integer }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    Source:
+      allOf:
+        - $ref: '#/components/schemas/FileRef'
+        - type: object
+          properties:
+            container: { type: string, examples: [mp4, mov, wav] }
+            duration_s: { type: number }
+            frames: { type: integer }
+            width: { type: integer }
+            height: { type: integer }
+    LeaseJob:
+      type: object
+      required: [job_id, kind, priority, source]
+      description: The job as its worker needs it.
+      properties:
+        job_id: { $ref: '#/components/schemas/JobId' }
+        upload_id: { type: string }
+        title: { type: string, examples: ['#one 528: Die Vorschau'] }
+        kind: { $ref: '#/components/schemas/JobKind' }
+        priority: { $ref: '#/components/schemas/Priority' }
+        source: { $ref: '#/components/schemas/Source' }
+        inputs:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/FileRef' }
+
+    LeaseState:
+      type: string
+      enum: [active, delivered, given_back, expired, preempted, cancelled, failed]
+    ReleaseReason:
+      type: string
+      enum: [paused, quit, disk_full, on_battery, user, too_slow, restart]
+    LeaseRequest:
+      type: object
+      properties:
+        kinds:
+          type: array
+          description: Narrow this claim to some of the accepted kinds.
+          items: { $ref: '#/components/schemas/JobKind' }
+        max_source_bytes: { type: integer }
+    Lease:
+      type: object
+      required: [lease_id, attempt, job, state, expires_at, renew_every_s, pause_give_back_s, params]
+      properties:
+        lease_id: { $ref: '#/components/schemas/LeaseId' }
+        attempt: { type: integer, minimum: 1, description: "This lease's number among the job's attempts." }
+        job: { $ref: '#/components/schemas/LeaseJob' }
+        state: { $ref: '#/components/schemas/LeaseState' }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        renew_every_s: { type: integer, examples: [30] }
+        pause_give_back_s: { type: integer, examples: [60], description: How long a pause may hold this lease before the worker gives it back. }
+        paused_until: { type: [string, 'null'], format: date-time, description: "The worker's current pause." }
+        params:
+          oneOf:
+            - $ref: '#/components/schemas/RungParams'
+            - $ref: '#/components/schemas/WhisperParams'
+          description: '`RungParams` for `kind: rung`, `WhisperParams` for `kind: whisper`.'
+        result:
+          type: object
+          properties:
+            max_bytes: { type: integer }
+            name: { type: string, examples: ['2160.mp4', 'whisper.json'], description: The file name the result should have. }
+        progress: { oneOf: [{ $ref: '#/components/schemas/Progress' }, { type: 'null' }] }
+        links:
+          type: object
+          properties:
+            self: { type: string }
+            source: { type: string }
+            logs: { type: string }
+            result: { type: string }
+    Progress:
+      type: object
+      required: [phase]
+      properties:
+        phase: { type: string, enum: [downloading, encoding, uploading, paused] }
+        fraction: { type: number, minimum: 0, maximum: 1 }
+        frames_done: { type: integer }
+        frames_total: { type: integer }
+        fps: { type: number, description: Frames per second over the last 10 s. }
+        speed: { type: number, description: Times real time. }
+        eta_s: { type: integer }
+        bytes_done: { type: integer }
+        bytes_total: { type: integer }
+        paused_since: { type: [string, 'null'], format: date-time }
+    LogLineIn:
+      type: object
+      required: [time, level, message]
+      properties:
+        time: { type: string, format: date-time }
+        level: { type: string, enum: [debug, info, warning, error] }
+        source: { type: string, enum: [worker, ffmpeg, x265, x264, whisper] }
+        message: { type: string, maxLength: 2000 }
+
+    ResultIn:
+      oneOf:
+        - type: object
+          title: A file
+          required: [outcome, file, sha256, tools, encode_s]
+          properties:
+            outcome: { type: string, const: file }
+            file: { type: string, description: 'The finished upload, `/files/{id}` or its id.' }
+            sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+            frames: { type: integer }
+            encode_s: { type: number }
+            tools: { type: array, items: { $ref: '#/components/schemas/Tool' }, description: The tools that made it. }
+        - type: object
+          title: A failure
+          required: [outcome, code, message]
+          properties:
+            outcome: { type: string, const: failed }
+            code:
+              type: string
+              enum: [source_checksum, decode_failed, encode_failed, tool_missing, model_missing, out_of_memory,
+                     local_check_failed, file_not_found, other]
+            message: { type: string, description: One line for a person. }
+      discriminator: { propertyName: outcome }
+    Check:
+      type: object
+      required: [name, passed]
+      properties:
+        name: { type: string, examples: [decode, frames, length, codec, size, ssim, psnr_y, xpsnr] }
+        passed: { type: boolean }
+        value: { type: [number, string, 'null'] }
+        floor: { type: [number, string, 'null'] }
+    Result:
+      type: object
+      required: [lease_id, attempt, outcome, verdict]
+      properties:
+        lease_id: { $ref: '#/components/schemas/LeaseId' }
+        attempt: { type: integer }
+        outcome: { type: string, enum: [file, failed] }
+        verdict:
+          type: string
+          enum: [checking, accepted, rejected, superseded, failed]
+          description: '`checking` until the pipeline decides; `superseded` when another attempt was accepted first; `failed` for a failure the worker reported.'
+        reason: { type: [string, 'null'], description: 'Why it was rejected, one line.' }
+        checks: { type: array, items: { $ref: '#/components/schemas/Check' } }
+        decided_at: { type: [string, 'null'], format: date-time }
