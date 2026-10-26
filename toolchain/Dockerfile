@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
       libgomp1 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/encode-toolchain /opt/encode-toolchain
+RUN mkdir -p /usr/local/share/encode-toolchain \
+    && ln -s /opt/encode-toolchain/bin/versions.json /opt/encode-toolchain/bin/versions.txt /usr/local/share/encode-toolchain/
 ENV PATH=/opt/encode-toolchain/bin:$PATH
 RUN ffmpeg -hide_banner -version | head -1 && ffmpeg -hide_banner -filters | grep -q ' ass ' \
     && whisper-cli --help >/dev/null 2>&1 && cat /opt/encode-toolchain/bin/versions.txt

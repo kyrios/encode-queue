@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the toolchain of toolchain/versions into PREFIX/bin: ffmpeg and ffprobe (libx265 with
 # 8, 10 and 12 bits, libx264, libvmaf, libmp3lame, and libass on Linux), whisper-cli (Metal on
-# macOS), and versions.txt with each tool's version string as the worker reads it.
+# macOS), and versions.txt and versions.json with each tool's version string as the worker
+# reads it.
 #
 #   toolchain/build.sh PREFIX [WORKDIR]
 #
@@ -149,7 +150,10 @@ libvmaf $VMAF_VERSION
 lame $LAME_VERSION
 whisper.cpp $WHISPER_VERSION
 V
-cat versions.txt
+# The same as JSON in helper.yaml's Tool form, for the pipeline's manifests.
+printf '[\n  {"name": "ffmpeg", "version": "%s"},\n  {"name": "libx265", "version": "%s"},\n  {"name": "libx264", "version": "%s"},\n  {"name": "libvmaf", "version": "%s"},\n  {"name": "lame", "version": "%s"},\n  {"name": "whisper.cpp", "version": "%s"}\n]\n' \
+  "$ffv" "$x265v" "$x264v" "$VMAF_VERSION" "$LAME_VERSION" "$WHISPER_VERSION" > versions.json
+cat versions.txt versions.json
 for v in "$ffv" "$x265v" "$x264v"; do [ -n "$v" ] || { echo "a version string is empty" >&2; exit 1; }; done
 ./ffmpeg -hide_banner -filters | grep -q ' libvmaf ' || { echo "no libvmaf filter" >&2; exit 1; }
 ./ffmpeg -hide_banner -encoders | grep -q ' libmp3lame ' || { echo "no libmp3lame" >&2; exit 1; }
