@@ -188,7 +188,7 @@ func run(cmd string, f flags, env *config.Env) error {
 	if err != nil {
 		return fmt.Errorf("the tunnel configuration: %w", err)
 	}
-	if err := worker.Nice(); err != nil {
+	if err := worker.Renice(); err != nil {
 		log.Warn("nice 19", "err", err)
 	}
 	stdio := f.control == "stdio"

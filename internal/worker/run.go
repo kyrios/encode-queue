@@ -581,7 +581,7 @@ func (r *run) runTool(ctx context.Context, args []string, source string, onBlock
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := cmd.Start(); err != nil {
+	if err := start(cmd); err != nil {
 		return fail("tool_missing", "%s: %v", args[0], err)
 	}
 	r.mu.Lock()
