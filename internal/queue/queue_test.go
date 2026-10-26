@@ -140,8 +140,25 @@ func (e *env) deliver(wid, lid, content string) error {
 	if _, err := e.s.AppendUpload(wid, fid, 0, strings.NewReader(content)); err != nil {
 		return err
 	}
+	return e.finish(wid, lid, fid, content)
+}
+
+// upload uploads content for a lease and returns the upload's id, delivering nothing yet.
+func (e *env) upload(wid, lid, content string) string {
+	e.t.Helper()
+	fid, err := e.s.CreateUpload(wid, lid, int64(len(content)))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if _, err := e.s.AppendUpload(wid, fid, 0, strings.NewReader(content)); err != nil {
+		e.t.Fatal(err)
+	}
+	return fid
+}
+
+func (e *env) finish(wid, lid, fid, content string) error {
 	sum := sha256.Sum256([]byte(content))
-	_, err = e.s.Deliver(wid, lid, ResultIn{Outcome: "file", File: "/v1/files/" + fid, SHA256: hex.EncodeToString(sum[:]), EncodeS: 1, Tools: reference[:3]})
+	_, err := e.s.Deliver(wid, lid, ResultIn{Outcome: "file", File: "/v1/files/" + fid, SHA256: hex.EncodeToString(sum[:]), EncodeS: 1, Tools: reference[:3]})
 	return err
 }
 
@@ -269,6 +286,8 @@ func TestLeaseExpiryLateResultFirstAcceptedWins(t *testing.T) {
 	if la.Attempt != 1 {
 		t.Fatalf("attempt %d", la.Attempt)
 	}
+	// a starts its upload while it holds the lease, then goes quiet.
+	upA := e.upload(a, la.ID, "file from a")
 	// a goes quiet; its lease runs out after 120 s.
 	e.clock.Add(121 * time.Second)
 	e.presence(b)
@@ -284,7 +303,7 @@ func TestLeaseExpiryLateResultFirstAcceptedWins(t *testing.T) {
 		t.Fatalf("b's lease %+v", lb)
 	}
 	// a's result arrives late: it is taken and judged.
-	if err := e.deliver(a, la.ID, "file from a"); err != nil {
+	if err := e.finish(a, la.ID, upA, "file from a"); err != nil {
 		t.Fatalf("late result: %v", err)
 	}
 	if st := e.state("x.rung"); st != StateChecking {
@@ -555,5 +574,134 @@ func TestSubmitChecksTheSource(t *testing.T) {
 	other.Priority = "archive"
 	if _, _, err := e.s.Submit("a.1080", other); code(err) != "job_exists" {
 		t.Fatalf("another job under the same id: %v", err)
+	}
+}
+
+// Review of PR #1, finding 1: a lease that ended answers 410 for its source, and a failure
+// it reports later neither counts against its worker nor shuts the worker out of the job.
+func TestEndedLeaseIsNoFailure(t *testing.T) {
+	e := newEnv(t, "")
+	w := e.worker("encoder", reference)
+	e.rung("old.archive", "archive")
+	l := e.claim(w)
+	e.rung("new.stage1", "stage1")
+	e.s.Tick() // preempts old.archive
+	if _, _, err := e.s.SourceFile(w, "old.archive", ""); code(err) != "preempted" {
+		t.Fatalf("the source of a preempted lease: %v", err)
+	}
+	if _, err := e.s.Deliver(w, l.ID, ResultIn{Outcome: "failed", Code: "other", Message: "the download stopped"}); err != nil {
+		t.Fatal(err)
+	}
+	j, _ := e.s.GetJob("old.archive")
+	if j.Failures != 0 || len(j.ExcludedWorkers) != 0 || j.State != StateQueued {
+		t.Fatalf("after a failure from an ended lease: failures %d, excluded %v, %s", j.Failures, j.ExcludedWorkers, j.State)
+	}
+	if v, _ := e.s.GetWorker(w); v.Counts.Failed != 0 {
+		t.Fatalf("counted %d failures", v.Counts.Failed)
+	}
+	// The only worker still gets the job.
+	if l := e.claim(w); l == nil || l.Job.ID != "new.stage1" {
+		t.Fatalf("%+v", l)
+	}
+}
+
+// Finding 5: an ended lease delivers once.
+func TestOneResultPerLease(t *testing.T) {
+	e := newEnv(t, "")
+	w := e.worker("mac", reference)
+	e.rung("x.rung", "archive")
+	l := e.claim(w)
+	fid, err := e.s.CreateUpload(w, l.ID, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.s.AppendUpload(w, fid, 0, strings.NewReader("abcd"))
+	e.clock.Add(121 * time.Second)
+	e.s.Tick() // the lease runs out with the upload done
+	sum := sha256.Sum256([]byte("abcd"))
+	in := ResultIn{Outcome: "file", File: fid, SHA256: hex.EncodeToString(sum[:])}
+	if _, err := e.s.Deliver(w, l.ID, in); err != nil {
+		t.Fatalf("the late result: %v", err)
+	}
+	if _, err := e.s.Deliver(w, l.ID, ResultIn{Outcome: "failed", Code: "other", Message: "again"}); code(err) != "result_exists" {
+		t.Fatalf("a second delivery: %v", err)
+	}
+}
+
+// Finding 3: one upload per lease, only while it is held, counted against the disk, and gone
+// when its lease ended without a result.
+func TestUploadsAreBounded(t *testing.T) {
+	e := newEnv(t, "")
+	free := int64(10 << 30)
+	e.s.cfg.FreeBytes = func(string) (int64, error) { return free, nil }
+	e.s.cfg.ResultReserve = 0
+	w := e.worker("mac", reference)
+	e.rung("x.rung", "archive")
+	l := e.claim(w)
+	for i := 0; i < 3; i++ {
+		if _, err := e.s.CreateUpload(w, l.ID, 1<<30); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(e.s.st.Uploads); n != 1 {
+		t.Fatalf("%d uploads for one lease", n)
+	}
+	e.s.Release(w, l.ID, "user")
+	if _, err := e.s.CreateUpload(w, l.ID, 10); code(err) != "lease_cancelled" {
+		t.Fatalf("an upload for a lease given back: %v", err)
+	}
+	e.s.Tick()
+	if n := len(e.s.st.Uploads); n != 0 {
+		t.Fatalf("%d uploads left after the lease was given back", n)
+	}
+	// An expired lease's unfinished upload counts against the room until it is dropped.
+	l2 := e.claim(w)
+	e.s.CreateUpload(w, l2.ID, 1<<30)
+	e.clock.Add(121 * time.Second)
+	e.s.Tick()
+	e.s.mu.Lock()
+	room := e.s.room()
+	e.s.mu.Unlock()
+	if room != free-(1<<30) {
+		t.Fatalf("room %d, want %d", room, free-(1<<30))
+	}
+	e.clock.Add(121 * time.Second)
+	e.s.Tick()
+	if n := len(e.s.st.Uploads); n != 0 {
+		t.Fatalf("the stale upload is still there")
+	}
+}
+
+// Finding 6: two spellings of one key are one key.
+func TestKeySpellings(t *testing.T) {
+	e := newEnv(t, "")
+	canon := key(7) // 32 bytes: the 43rd character carries 4 bits and 2 that must be 0
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	i := strings.IndexByte(alphabet, canon[42])
+	other := canon[:42] + string(alphabet[i|1]) + canon[43:]
+	if other == canon {
+		t.Fatal("no second spelling")
+	}
+	if _, err := e.s.AddWorker(WorkerCreate{Name: "a", PublicKey: canon}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.AddWorker(WorkerCreate{Name: "b", PublicKey: other}); code(err) != "key_exists" {
+		t.Fatalf("the same key spelled otherwise: %v", err)
+	}
+}
+
+// Finding 4: a log line's level and source are capped as its message is.
+func TestLogFieldsAreCapped(t *testing.T) {
+	e := newEnv(t, "")
+	w := e.worker("mac", reference)
+	e.rung("x.rung", "archive")
+	l := e.claim(w)
+	big := strings.Repeat("x", 1<<20)
+	if err := e.s.AppendLogs(w, l.ID, []LogLineIn{{Level: big, Source: big, Message: big}}); err != nil {
+		t.Fatal(err)
+	}
+	lines, _ := e.s.Logs(l.ID, 0)
+	if g := lines[0]; g.Level != "info" || len(g.Source) > 32 || len(g.Message) > 2000 {
+		t.Fatalf("level %q, source %d, message %d bytes", g.Level, len(g.Source), len(g.Message))
 	}
 }

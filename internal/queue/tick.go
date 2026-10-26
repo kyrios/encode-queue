@@ -52,6 +52,9 @@ func (s *Store) Tick() {
 	if s.purgeDone(now) {
 		changed = true
 	}
+	if s.dropStaleUploads(now) {
+		changed = true
+	}
 	if changed {
 		s.touch(true)
 	}

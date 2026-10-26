@@ -50,8 +50,9 @@ info:
     **Rules every call follows** are helper.yaml's: problem+json errors with a stable `code`,
     JSON Merge Patch, `Prefer: wait=N` long polls (at most 25 s), UTC times, sizes in bytes.
 
-    **Not here.** `/metrics` (Prometheus, no token) and `/healthz` are on the same listener,
-    outside `/v1`; the README lists the series.
+    **Not here.** `/metrics` (Prometheus, no token) and `/healthz` are outside `/v1`, on the
+    queue's metrics listener (`EQ_METRICS_LISTEN`) when it has one, otherwise on this listener;
+    the README lists the series.
 servers:
   - url: '{base}'
     description: The queue's API listener on its Docker network.
