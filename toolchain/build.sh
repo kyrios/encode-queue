@@ -11,6 +11,7 @@
 # and zlib1g-dev; on macOS Xcode's tools, cmake, meson, ninja
 # and pkg-config. Nothing is installed outside PREFIX and WORKDIR.
 set -euo pipefail
+# macOS runs bash 3.2: no empty "${a[@]}" under set -u, no mapfile, no associative arrays.
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=versions
 . "$here/versions"
@@ -114,7 +115,7 @@ if [ "$os" != Darwin ]; then
   extra+=(--enable-libass --enable-libfontconfig --enable-libfreetype --enable-libfribidi --enable-libharfbuzz)
 fi
 ./configure --prefix="$prefix" --enable-gpl --enable-version3 --disable-autodetect --enable-zlib \
-  --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libmp3lame "${extra[@]}" \
+  --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libmp3lame ${extra[@]+"${extra[@]}"} \
   --disable-doc --disable-ffplay --disable-debug --pkg-config-flags=--static \
   --extra-cflags="-I$deps/include" --extra-ldflags="-L$deps/lib" --extra-libs="$cxxlib -lm -lpthread" >/dev/null \
   || { tail -40 ffbuild/config.log; exit 1; }

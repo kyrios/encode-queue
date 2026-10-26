@@ -71,11 +71,6 @@ func (c *Config) defaults() {
 	}
 }
 
-// Nice puts this process, and every tool it starts, at nice 19.
-func Nice() error {
-	return unix.Setpriority(unix.PRIO_PROCESS, 0, 19)
-}
-
 // JobStatus is one running job, for the control socket and the menu bar.
 type JobStatus struct {
 	LeaseID  string    `json:"lease_id"`

@@ -160,6 +160,7 @@ type Upload struct {
 	Length    int64     `json:"length"`
 	Offset    int64     `json:"offset"`
 	CreatedAt time.Time `json:"created_at"`
+	LastWrite time.Time `json:"last_write"`
 	busy      bool
 }
 

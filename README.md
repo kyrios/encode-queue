@@ -166,7 +166,8 @@ Images are tagged with the release (`v0.1.0`) and pinned by Ansible.
 
 ## Metrics
 
-`GET /metrics` on the API listener, without a token. Per-worker series carry `worker_id` and
+`GET /metrics`, without a token, on `EQ_METRICS_LISTEN` when it is set (on the API listener
+otherwise). Per-worker series carry `worker_id` and
 `worker` (its name); `worker_id` stays when a worker is renamed.
 
 <!-- metrics: generated from internal/queue/metrics.go; a test keeps them equal -->

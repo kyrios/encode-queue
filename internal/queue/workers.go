@@ -87,10 +87,13 @@ func (s *Store) AddWorker(c WorkerCreate) (Enrolment, error) {
 	if c.Name == "" || len(c.Name) > 64 {
 		return Enrolment{}, errf(422, "invalid", "name must have 1 to 64 characters")
 	}
-	if b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(c.PublicKey)); err != nil || len(b) != 32 {
+	// The key is stored in one spelling, so two spellings of the same 32 bytes cannot pair
+	// two workers onto one peer.
+	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(c.PublicKey))
+	if err != nil || len(b) != 32 {
 		return Enrolment{}, errf(422, "invalid", "public_key is not a WireGuard key (32 bytes in base64)")
 	}
-	c.PublicKey = strings.TrimSpace(c.PublicKey)
+	c.PublicKey = base64.StdEncoding.EncodeToString(b)
 	for _, w := range s.st.Workers {
 		if w.PublicKey == c.PublicKey {
 			return Enrolment{}, errf(409, "key_exists", "this key belongs to %s already", w.Name)
