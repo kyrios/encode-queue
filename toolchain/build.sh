@@ -7,7 +7,8 @@
 #   toolchain/build.sh PREFIX [WORKDIR]
 #
 # On Linux (the image's build stage) it needs build-essential, nasm, cmake, meson, ninja, xxd,
-# pkg-config, curl, and libass-dev and zlib1g-dev; on macOS Xcode's tools, cmake, meson, ninja
+# pkg-config, curl, git (x265 reads its version file only when git is found), and libass-dev
+# and zlib1g-dev; on macOS Xcode's tools, cmake, meson, ninja
 # and pkg-config. Nothing is installed outside PREFIX and WORKDIR.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -154,7 +155,9 @@ V
 printf '[\n  {"name": "ffmpeg", "version": "%s"},\n  {"name": "libx265", "version": "%s"},\n  {"name": "libx264", "version": "%s"},\n  {"name": "libvmaf", "version": "%s"},\n  {"name": "lame", "version": "%s"},\n  {"name": "whisper.cpp", "version": "%s"}\n]\n' \
   "$ffv" "$x265v" "$x264v" "$VMAF_VERSION" "$LAME_VERSION" "$WHISPER_VERSION" > versions.json
 cat versions.txt versions.json
-for v in "$ffv" "$x265v" "$x264v"; do [ -n "$v" ] || { echo "a version string is empty" >&2; exit 1; }; done
+for v in "$ffv" "$x265v" "$x264v"; do
+  case $v in ''|unknown*) echo "a version string is empty or unknown" >&2; exit 1 ;; esac
+done
 # Everything the worker and video-pipeline call (its list, 2026-10-26).
 need() { # what names...
   local what=$1 list

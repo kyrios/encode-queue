@@ -1,8 +1,9 @@
 # The toolchain for linux/amd64: ffmpeg, ffprobe and whisper-cli of toolchain/versions in
 # /opt/encode-toolchain/bin, on Debian 13 with the runtime libraries they link (libass and its
-# fonts stack, OpenMP). The worker image and video-pipeline's image build FROM this.
+# fonts stack, OpenMP). The worker image and video-pipeline's image build FROM this. git is
+# there only because x265 reads its version from x265Version.txt only when git is found.
 FROM debian:trixie-slim AS build
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates cmake curl \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates cmake curl git \
       libass-dev meson nasm ninja-build pkg-config xxd zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY versions build.sh /toolchain/
