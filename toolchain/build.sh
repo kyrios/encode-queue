@@ -155,8 +155,24 @@ printf '[\n  {"name": "ffmpeg", "version": "%s"},\n  {"name": "libx265", "versio
   "$ffv" "$x265v" "$x264v" "$VMAF_VERSION" "$LAME_VERSION" "$WHISPER_VERSION" > versions.json
 cat versions.txt versions.json
 for v in "$ffv" "$x265v" "$x264v"; do [ -n "$v" ] || { echo "a version string is empty" >&2; exit 1; }; done
-./ffmpeg -hide_banner -filters | grep -q ' libvmaf ' || { echo "no libvmaf filter" >&2; exit 1; }
-./ffmpeg -hide_banner -encoders | grep -q ' libmp3lame ' || { echo "no libmp3lame" >&2; exit 1; }
+# Everything the worker and video-pipeline call (its list, 2026-10-26).
+need() { # what names...
+  local what=$1 list
+  shift
+  list=$(./ffmpeg -hide_banner "-$what")
+  for n in "$@"; do
+    # A name stands after the flags, alone or in a list (mov,mp4,...).
+    echo "$list" | grep -Eq "^ *[A-Z.]+( [a-z.])? +([^ ]+,)?$n(,[^ ]+)?( |$)" || { echo "ffmpeg lacks $what $n" >&2; exit 1; }
+  done
+}
+filters=(scale select setpts fps format split crop fade afade pan astats ssim psnr xpsnr libvmaf)
+[ "$os" = Darwin ] || filters+=(ass subtitles)
+need filters "${filters[@]}"
+need encoders libx264 libx265 aac pcm_s16le libmp3lame
+need muxers mp4 mov wav mp3 null framemd5 hevc h264
+need demuxers mov wav mp3 lavfi
+need decoders h264 hevc prores aac alac mp3 pcm_s16le
+need filters testsrc testsrc2 sine color
 ./ffmpeg -hide_banner -nostdin -loglevel error -f lavfi -i testsrc2=s=320x180:d=0.2 -frames:v 4 \
   -c:v libx265 -pix_fmt yuv420p10le -x265-params log-level=error -f null - || { echo "no 10-bit x265" >&2; exit 1; }
 ./whisper-cli --help >/dev/null 2>&1 || { echo "whisper-cli does not start" >&2; exit 1; }
