@@ -98,6 +98,32 @@ func (r *run) log(level, source, msg string) {
 	if len(r.tail) > 50 {
 		r.tail = r.tail[len(r.tail)-50:]
 	}
+	if r.w.cfg.Events != nil {
+		go r.w.emit("log", map[string]any{"lease_id": r.l.ID, "line": msg})
+	}
+}
+
+// eventLoop tells the app about the job once a second.
+func (r *run) eventLoop(ctx context.Context) {
+	if r.w.cfg.Events == nil {
+		return
+	}
+	var last time.Time
+	phase := ""
+	for {
+		st := r.status()
+		p := st.Progress
+		if p.Phase != phase || time.Since(last) >= time.Second {
+			phase, last = p.Phase, time.Now()
+			r.w.emit("job", map[string]any{"lease_id": st.LeaseID, "title": st.Title, "kind": st.Kind, "rung": st.Rung,
+				"phase": p.Phase, "fraction": p.Fraction, "fps": p.FPS, "speed": p.Speed, "eta_s": p.ETAS})
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func (r *run) stop(code string) {
@@ -129,7 +155,8 @@ func (r *run) execute(parent context.Context) Finished {
 		return r.end(parent, err)
 	}
 	loops, loopsCtx := sync.WaitGroup{}, ctx
-	loops.Add(3)
+	loops.Add(4)
+	go func() { defer loops.Done(); r.eventLoop(loopsCtx) }()
 	go func() { defer loops.Done(); r.renewLoop(loopsCtx) }()
 	go func() { defer loops.Done(); r.logLoop(loopsCtx) }()
 	go func() { defer loops.Done(); r.pauseLoop(loopsCtx) }()
@@ -490,6 +517,16 @@ func (r *run) ffmpegProgress() func(map[string]string) {
 			r.samples = r.samples[1:]
 		}
 		p := Progress{Phase: "encoding", FramesDone: &frame}
+		if outUS > 0 {
+			ot := float64(outUS) / 1e6
+			p.OutTimeS = &ot
+		}
+		if n, err := strconv.ParseInt(b["total_size"], 10, 64); err == nil {
+			p.TotalSize = &n
+		}
+		if v, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(b["bitrate"]), "kbits/s"), 64); err == nil {
+			p.BitrateKbps = &v
+		}
 		if s0 := r.samples[0]; now.Sub(s0.at) > 500*time.Millisecond {
 			fps := float64(frame-s0.frame) / now.Sub(s0.at).Seconds()
 			fps = float64(int64(fps*100+0.5)) / 100

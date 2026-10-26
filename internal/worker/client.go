@@ -184,6 +184,9 @@ type Progress struct {
 	ETAS        *int64     `json:"eta_s,omitempty"`
 	BytesDone   *int64     `json:"bytes_done,omitempty"`
 	BytesTotal  *int64     `json:"bytes_total,omitempty"`
+	OutTimeS    *float64   `json:"out_time_s,omitempty"`
+	TotalSize   *int64     `json:"total_size_bytes,omitempty"`
+	BitrateKbps *float64   `json:"bitrate_kbps,omitempty"`
 	PausedSince *time.Time `json:"paused_since,omitempty"`
 }
 

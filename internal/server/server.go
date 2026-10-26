@@ -483,8 +483,29 @@ func (s *Server) caller(r *http.Request) caller {
 	return callerNone
 }
 
-// AdminHandler is the pipeline and admin API, /metrics and /healthz.
-func (s *Server) AdminHandler() http.Handler {
+// MetricsHandler is /metrics and /healthz, for a listener of their own.
+func (s *Server) MetricsHandler() http.Handler {
+	mux := http.NewServeMux()
+	s.healthAndMetrics(mux, true)
+	return mux
+}
+
+func (s *Server) healthAndMetrics(mux *http.ServeMux, metrics bool) {
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		io.WriteString(w, "ok\n")
+	})
+	if metrics {
+		mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+			s.Store.WriteMetrics(w, s.Version)
+		})
+	}
+}
+
+// AdminHandler is the pipeline and admin API and /healthz, and /metrics unless they have a
+// listener of their own.
+func (s *Server) AdminHandler(withMetrics bool) http.Handler {
 	mux := http.NewServeMux()
 	st := s.Store
 	// h registers a route; who is the callers it takes (none: either).
@@ -505,14 +526,7 @@ func (s *Server) AdminHandler() http.Handler {
 			}
 		})
 	}
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		io.WriteString(w, "ok\n")
-	})
-	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		st.WriteMetrics(w, s.Version)
-	})
+	s.healthAndMetrics(mux, withMetrics)
 	h("GET /v1/status", callerNone, func(w http.ResponseWriter, r *http.Request) error {
 		writeJSON(w, 200, st.Status(s.Version))
 		return nil

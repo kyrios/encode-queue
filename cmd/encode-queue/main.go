@@ -11,12 +11,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/kyrios/encode-queue/internal/config"
 	"github.com/kyrios/encode-queue/internal/queue"
@@ -30,9 +32,10 @@ var version = "dev"
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: encode-queue [-version] [pubkey]\n\n"+
+		fmt.Fprintf(os.Stderr, "usage: encode-queue [-version] [pubkey|healthcheck]\n\n"+
 			"Runs the queue, configured from the environment (see the README).\n"+
-			"pubkey prints the queue's WireGuard public key, making the key if there is none.\n")
+			"pubkey prints the queue's WireGuard public key, making the key if there is none.\n"+
+			"healthcheck asks the running queue's /healthz on EQ_API_LISTEN and exits 0 if it answers.\n")
 	}
 	flag.Parse()
 	if *showVersion {
@@ -67,6 +70,9 @@ func run(cmd string) error {
 		fmt.Println(k.Public())
 		return nil
 	}
+	if cmd == "healthcheck" {
+		return healthcheck(env.Required("EQ_API_LISTEN"), env)
+	}
 	if cmd != "" {
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -90,6 +96,7 @@ func run(cmd string) error {
 		Log:             log,
 	}
 	apiListen := env.Required("EQ_API_LISTEN")
+	metricsListen := env.String("EQ_METRICS_LISTEN", "")
 	wgPort := env.Int("EQ_WG_LISTEN_PORT", 0)
 	if wgPort == 0 {
 		env.Required("EQ_WG_LISTEN_PORT")
@@ -162,6 +169,12 @@ func run(cmd string) error {
 	if err != nil {
 		return fmt.Errorf("EQ_API_LISTEN %s: %w", apiListen, err)
 	}
+	var metricsL net.Listener
+	if metricsListen != "" {
+		if metricsL, err = net.Listen("tcp", metricsListen); err != nil {
+			return fmt.Errorf("EQ_METRICS_LISTEN %s: %w", metricsListen, err)
+		}
+	}
 
 	srv := &server.Server{Store: store, Version: version, PipelineToken: pipelineToken, AdminToken: adminToken, Log: log}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -172,12 +185,17 @@ func run(cmd string) error {
 	go func() { defer wg.Done(); store.Run(stop) }()
 	go func() { defer wg.Done(); store.RunSaver(stop) }()
 
-	log.Info("encode-queue up", "version", version, "api", apiL.Addr().String(), "wireguard_udp", wgPort,
+	log.Info("encode-queue up", "version", version, "api", apiL.Addr().String(), "metrics", metricsListen, "wireguard_udp", wgPort,
 		"tunnel", addr.String(), "helper_api", cfg.API, "public_key", cfg.ServerPublicKey,
 		"reference_worker", cfg.ReferenceWorker, "peers", len(store.Peers()))
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
+	servers := 2
 	go func() { errc <- server.Serve(ctx, helperL, srv.HelperHandler(), log) }()
-	go func() { errc <- server.Serve(ctx, apiL, srv.AdminHandler(), log) }()
+	go func() { errc <- server.Serve(ctx, apiL, srv.AdminHandler(metricsL == nil), log) }()
+	if metricsL != nil {
+		servers++
+		go func() { errc <- server.Serve(ctx, metricsL, srv.MetricsHandler(), log) }()
+	}
 	n := 0
 	var firstErr error
 	select {
@@ -188,7 +206,7 @@ func run(cmd string) error {
 	log.Info("shutting down")
 	store.Drain()
 	cancel()
-	for ; n < 2; n++ {
+	for ; n < servers; n++ {
 		if err := <-errc; err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -199,4 +217,29 @@ func run(cmd string) error {
 		return firstErr
 	}
 	return store.Save()
+}
+
+// healthcheck asks the queue's /healthz on its API listener, for the image's HEALTHCHECK
+// (distroless has no curl).
+func healthcheck(listen string, env *config.Env) error {
+	if err := env.Err(); err != nil {
+		return err
+	}
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("EQ_API_LISTEN %q: %w", listen, err)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	c := &http.Client{Timeout: 5 * time.Second}
+	resp, err := c.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("/healthz answered %d", resp.StatusCode)
+	}
+	return nil
 }

@@ -38,5 +38,6 @@ ENV EQ_WHISPER_VERSION=${WHISPER_VERSION} \
     EQ_WORKER_STATE_DIR=/var/lib/encode-worker \
     EQ_WHISPER_MODELS_DIR=/models
 USER worker
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s CMD ["/usr/local/bin/encode-worker", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/encode-worker"]
 CMD ["run"]

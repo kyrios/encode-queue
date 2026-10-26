@@ -56,14 +56,15 @@ Every address, port, subnet and path comes from the environment; the image has n
 | `EQ_STATE_DIR` | the state (`state.json`), the WireGuard key; required |
 | `EQ_SOURCE_DIR` | where job sources are; a job's `source.path` is relative to it; required |
 | `EQ_RESULT_DIR` | where results land; default `$EQ_STATE_DIR/results` |
-| `EQ_API_LISTEN` | the pipeline and admin API, `/metrics`, `/healthz`, e.g. `:8090`; required |
-| `EQ_PIPELINE_TOKEN_FILE`, `EQ_ADMIN_TOKEN_FILE` | files holding the two bearer tokens (16 characters at least, different); required |
+| `EQ_API_LISTEN` | the pipeline and admin API and `/healthz`, e.g. `:8090`; also `/metrics` unless `EQ_METRICS_LISTEN` is set; required. Never reachable through the tunnel |
+| `EQ_METRICS_LISTEN` | `/metrics` and `/healthz` on a listener of their own, e.g. `:8091`, so a scraper never reaches the API |
+| `EQ_PIPELINE_TOKEN_FILE`, `EQ_ADMIN_TOKEN_FILE` | files holding the two bearer tokens (16 characters at least, different), sent as `Authorization: Bearer <token>`; required |
 | `EQ_WG_LISTEN_PORT` | the UDP port WireGuard listens on; required |
 | `EQ_WG_ADDRESS` | the queue's address in the tunnel; required |
 | `EQ_WG_SUBNET` | the tunnel's subnet, from which workers get their addresses; required |
 | `EQ_WG_API_PORT` | the helper API's port inside the tunnel; required |
 | `EQ_WG_ENDPOINT` | `host:port` the workers send their UDP to (what `iron` forwards); required |
-| `EQ_WG_PRIVATE_KEY_FILE` | default `$EQ_STATE_DIR/wireguard.key`, made on first start |
+| `EQ_WG_PRIVATE_KEY_FILE` | the queue's WireGuard private key (base64, as `wg genkey` prints it); default `$EQ_STATE_DIR/wireguard.key`, made on first start when missing |
 | `EQ_WG_KEEPALIVE_S` | the keepalive workers get; default 25 |
 | `EQ_REFERENCE_WORKER` | the name of the worker whose tools jobs require by default |
 | `EQ_MIN_APP_VERSION` | workers below it get `426` |
@@ -73,7 +74,11 @@ Every address, port, subnet and path comes from the environment; the image has n
 | `EQ_LOG_LEVEL` | `debug`, `info` (default), `warn`, `error` |
 
 `encode-queue pubkey` prints the queue's public key (making the key if there is none).
-SIGTERM drains: no new leases (`503 draining`), the long polls end, the state is written.
+`encode-queue healthcheck` asks `/healthz` on `EQ_API_LISTEN` and exits 0 when it answers (the
+image's `HEALTHCHECK`; distroless has no curl). The image runs as uid 65532 (distroless
+`nonroot`). Adding and removing a worker changes only `state.json` in `EQ_STATE_DIR`: the peers
+live in the queue's own WireGuard, nothing on the host changes. SIGTERM drains: no new leases
+(`503 draining`), the long polls end, the state is written.
 
 ```bash
 docker run --rm -p 8090:8090 -p 51821:51821/udp -v /srv/eq:/data \
@@ -102,15 +107,42 @@ docker run --rm -p 8090:8090 -p 51821:51821/udp -v /srv/eq:/data \
 | `EQ_TUNNEL_ENDPOINT` | another `host:port` for the queue's UDP (a worker beside the queue) |
 | `EQ_WORK_DIR` | where sources and results are while a job runs; default `$EQ_WORKER_STATE_DIR/work` |
 | `EQ_FFMPEG`, `EQ_WHISPER_CLI` | the tools; default `ffmpeg`, `whisper-cli` from `PATH` |
-| `EQ_WHISPER_VERSION` | the whisper.cpp release the binary is (`v1.9.5` in the image) |
+| `EQ_WHISPER_VERSION` | the whisper.cpp release, when there is no `versions.txt` beside `whisper-cli` (the toolchain has one) |
 | `EQ_WHISPER_MODELS_DIR` | the `*.bin` models, found by sha256 (`/models` in the image) |
 | `EQ_FONTS` | font families to announce besides fontconfig's, comma-separated |
 | `EQ_CPU_THREADS` | x265's pool (`pools=N`) and whisper.cpp's threads; default the tools' own |
 | `EQ_GPU` | whisper.cpp may use the GPU; default false |
 | `EQ_MAX_PARALLEL_JOBS` | default 1 |
 | `EQ_CONTROL_SOCKET` | a Unix socket for [worker-control.yaml](api/worker-control.yaml) |
+| `EQ_WORKER_KEY_FILE` | the private key; default `$EQ_WORKER_STATE_DIR/wireguard.key`, made only when missing, so a key Ansible puts there keeps the worker's identity |
 | `EQ_LOG_LEVEL` | as the queue's |
 
+Every variable is also a flag (`encode-worker -h`); the flag wins. `encode-worker healthcheck`
+exits 0 when the queue answered within two minutes (the image's `HEALTHCHECK`). The image runs
+as uid 10001 (`worker`) with its scratch space in `/var/lib/encode-worker/work`.
+
+### Embedding (Slipstream)
+
+```
+nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name … --app-version x.y.z \
+  --threads N --gpu true|false --jobs N --ffmpeg … --ffprobe … --whisper-cli … \
+  --whisper-models … --control stdio
+```
+
+- **Standard input**: the first line is the WireGuard private key in base64 (the app keeps it
+  in the keychain). Then one JSON object per line: `{"cmd":"pause","until":"<RFC 3339>"}`,
+  `{"cmd":"resume"}`, `{"cmd":"limits","threads":N,"gpu":bool,"jobs":N}`, `{"cmd":"quit"}`
+  (give every lease back with `reason=quit`, exit 0). The end of input quits too.
+- **Standard output**: one JSON object per line, `event` naming it: `connection` (`up`,
+  `last_answer_at`, `refused: [{kind, reason}]`), `job` (`lease_id`, `title`, `kind`, `rung`,
+  `phase`, `fraction`, `fps`, `speed`, `eta_s`; at every phase change and once a second),
+  `idle`, `result` (`lease_id`, `title`, `verdict`: `accepted`, `rejected` or `given_back`,
+  `check`), `paused` (`until` or null), `update` (`latest`, when the queue wants a newer app),
+  `tools` (`tools: [{name, version}]`), `log` (`lease_id`, `line`).
+- **Standard error** is the log for people.
+
+Without `--control stdio`, `--control <path>` serves [worker-control.yaml](api/worker-control.yaml)
+on a Unix socket instead.
 `encode-worker versions` prints what the worker runs, exactly as the queue will compare it. The
 worker builds ffmpeg's arguments itself from the job's structured settings, in the order
 infra's `video-encode` did (a test compares them with `video-encode`'s own), so a worker's file

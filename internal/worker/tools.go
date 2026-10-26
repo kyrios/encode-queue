@@ -108,14 +108,44 @@ func DetectTools(ctx context.Context, cfg Config) ([]Tool, []string) {
 	} else {
 		problems = append(problems, fmt.Sprintf("ffmpeg (%s): %v", cfg.FFmpeg, err))
 	}
-	if cfg.WhisperVersion != "" {
-		if _, err := exec.LookPath(cfg.WhisperCLI); err == nil {
-			tools = append(tools, Tool{"whisper.cpp", cfg.WhisperVersion})
+	wv := cfg.WhisperVersion
+	if cli, err := exec.LookPath(cfg.WhisperCLI); err != nil {
+		problems = append(problems, fmt.Sprintf("whisper.cpp: %s not found", cfg.WhisperCLI))
+	} else {
+		if wv == "" {
+			wv = toolchainVersion(cli, "whisper.cpp")
+		}
+		if wv != "" {
+			tools = append(tools, Tool{"whisper.cpp", wv})
 		} else {
-			problems = append(problems, fmt.Sprintf("whisper.cpp: %s not found", cfg.WhisperCLI))
+			problems = append(problems, "whisper.cpp: no version (EQ_WHISPER_VERSION, or versions.txt beside whisper-cli)")
 		}
 	}
 	return tools, problems
+}
+
+// toolchainVersion reads a tool's version from the toolchain's versions.txt beside a binary
+// ("whisper.cpp v1.9.5"), since whisper-cli cannot print its own.
+func toolchainVersion(binary, name string) string {
+	if p, err := filepath.EvalSymlinks(binary); err == nil {
+		binary = p
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(binary), "versions.txt"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if f := strings.Fields(line); len(f) >= 2 && f[0] == name {
+			return f[1]
+		}
+	}
+	return ""
+}
+
+// hasAss is whether ffmpeg was built with libass, which burnt-in captions need.
+func hasAss(ctx context.Context, ffmpeg string) bool {
+	out, err := runOut(ctx, ffmpeg, "-hide_banner", "-filters")
+	return err == nil && regexp.MustCompile(`(?m)^\s*\S+\s+ass\s`).Match(out)
 }
 
 type modelCacheEntry struct {
@@ -250,8 +280,14 @@ func DetectCapabilities(ctx context.Context, cfg Config) (Capabilities, []string
 	if err != nil {
 		problems = append(problems, "models: "+err.Error())
 	}
+	var fonts []string
+	if hasAss(ctx, cfg.FFmpeg) {
+		fonts = DetectFonts(ctx, cfg.Fonts)
+	} else {
+		problems = append(problems, "ffmpeg has no libass: no jobs with burnt-in captions")
+	}
 	return Capabilities{AppVersion: cfg.Version, OS: osName(), Tools: tools, Models: models,
-		Fonts: DetectFonts(ctx, cfg.Fonts), Hardware: hardware()}, problems
+		Fonts: fonts, Hardware: hardware()}, problems
 }
 
 func fileSHA256(path string) (string, error) {

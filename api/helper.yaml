@@ -880,6 +880,9 @@ components:
         eta_s: { type: integer }
         bytes_done: { type: integer }
         bytes_total: { type: integer }
+        out_time_s: { type: number, description: 'How far into the source the encode is, ffmpeg''s `out_time`.' }
+        total_size_bytes: { type: integer, description: 'What the output holds so far, ffmpeg''s `total_size`.' }
+        bitrate_kbps: { type: number, description: 'The output''s rate so far, ffmpeg''s `bitrate`.' }
         paused_since: { type: [string, 'null'], format: date-time }
     LogLineIn:
       type: object

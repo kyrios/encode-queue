@@ -56,6 +56,8 @@ type harness struct {
 	srcDir  string
 	models  string
 	log     *slog.Logger
+	evMu    sync.Mutex
+	events  []map[string]any
 	verdict func(job queue.JobView, attempt queue.AttemptView, file []byte) (string, string)
 }
 
@@ -102,7 +104,7 @@ func newHarness(t *testing.T) *harness {
 	stop := make(chan struct{})
 	go server.Serve(ctx, l, srv.HelperHandler(), log)
 	go store.Run(stop)
-	admin := httptest.NewServer(srv.AdminHandler())
+	admin := httptest.NewServer(srv.AdminHandler(true))
 	t.Cleanup(func() { admin.Close(); cancel(); close(stop) })
 
 	models := filepath.Join(dir, "models")
@@ -177,7 +179,11 @@ func (h *harness) pair(name string) *testWorker {
 	w, err := worker.New(worker.Config{Version: "0.1.0", StateDir: h.t.TempDir(), FFmpeg: self, WhisperCLI: self,
 		WhisperVersion: "v1.9.5", ModelsDir: h.models, MaxParallel: 1, ChunkBytes: 1 << 10,
 		LongPoll: time.Second, LogEvery: 200 * time.Millisecond, RetryAfter: 200 * time.Millisecond,
-		Log: h.log.With("worker", name)}, api)
+		Log: h.log.With("worker", name), Events: func(ev map[string]any) {
+			h.evMu.Lock()
+			h.events = append(h.events, ev)
+			h.evMu.Unlock()
+		}}, api)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -382,6 +388,24 @@ func TestEndToEnd(t *testing.T) {
 	st := tw.w.Status()
 	if st.FinishedToday != 2 || len(st.Recent) != 2 {
 		t.Errorf("the worker's own status %+v", st)
+	}
+	// What Slipstream reads on the worker's standard output.
+	h.evMu.Lock()
+	seen := map[string]bool{}
+	for _, ev := range h.events {
+		seen[fmt.Sprint(ev["event"])] = true
+		if ev["event"] == "connection" && ev["up"] == true {
+			seen["up"] = true
+		}
+		if ev["event"] == "job" && ev["phase"] == "encoding" {
+			seen["encoding"] = true
+		}
+	}
+	h.evMu.Unlock()
+	for _, want := range []string{"tools", "up", "idle", "job", "encoding", "log"} {
+		if !seen[want] {
+			t.Errorf("no %s event", want)
+		}
 	}
 	// The pipeline forgets the job: its files go.
 	if code := h.call("DELETE", "/v1/jobs/"+a.ID, pipelineToken, nil, nil); code != 204 {

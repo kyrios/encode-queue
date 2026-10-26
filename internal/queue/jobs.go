@@ -289,6 +289,9 @@ func (s *Store) Submit(id string, spec JobSubmit) (view JobView, created bool, e
 		s.dropJob(old)
 	}
 	j := &Job{ID: id, Spec: spec, SpecHash: h, Priority: spec.Priority, QueuedAt: now, Rank: s.lastRank(spec.Priority) + 1}
+	if spec.Order != nil {
+		j.Rank = *spec.Order
+	}
 	j.parse()
 	s.st.Jobs[id] = j
 	s.bump(j)

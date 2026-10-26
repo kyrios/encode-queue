@@ -669,6 +669,12 @@ components:
             max_bytes: { type: integer, minimum: 1, description: The most the result may be; the queue leases only while its disk has room for it. }
         requires: { $ref: '#/components/schemas/Requires' }
         max_failures: { type: integer, minimum: 1, description: 'Rejections and failures before the job is `failed`; the queue''s `EQ_MAX_FAILURES` (3) if left out.' }
+        order:
+          type: number
+          description: |
+            Its place within its priority: lower first, for example `h264.mp4` before the HEVC
+            rungs. Without it the job goes after every job of its priority. The Encoder page's
+            moves renumber the places.
 
     Progress:
       $ref: 'helper.yaml#/components/schemas/Progress'

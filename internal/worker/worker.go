@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +36,9 @@ type Config struct {
 	LogEvery      time.Duration
 	RetryAfter    time.Duration
 	ProgressEvery time.Duration // how often the runner samples ffmpeg's progress for the report
+
+	// Events receives the worker's events (Slipstream's JSON lines on stdout); nil for none.
+	Events func(map[string]any)
 }
 
 func (c *Config) defaults() {
@@ -124,6 +128,12 @@ type Worker struct {
 	lastContact *time.Time
 	lastErr     string
 	refused     []string
+	refusedKind []map[string]string
+	up          bool
+	healthAt    time.Time
+	limitsPatch bool
+	jobLimit    int
+	limitCh     chan struct{} // closed and replaced when the job limit changes
 	runs        map[string]*run
 	recent      []Finished
 	today       int
@@ -139,22 +149,89 @@ func New(cfg Config, api *Client) (*Worker, error) {
 	if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
 		return nil, err
 	}
-	return &Worker{cfg: cfg, api: api, runs: map[string]*run{}, pauseCh: make(chan struct{}), quit: make(chan struct{})}, nil
+	return &Worker{cfg: cfg, api: api, runs: map[string]*run{}, pauseCh: make(chan struct{}), quit: make(chan struct{}),
+		jobLimit: cfg.MaxParallel, limitCh: make(chan struct{})}, nil
 }
+
+// emit sends an event to cfg.Events.
+func (w *Worker) emit(event string, fields map[string]any) {
+	if w.cfg.Events == nil {
+		return
+	}
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["event"] = event
+	w.cfg.Events(fields)
+}
+
+// healthFile is touched on every answer from the queue; `encode-worker healthcheck` reads it.
+func (w *Worker) healthFile() string { return filepath.Join(w.cfg.StateDir, "health") }
 
 func (w *Worker) contact(err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err == nil {
-		w.lastContact = ptrTime(time.Now())
+		now := time.Now()
+		w.lastContact = &now
 		w.lastErr = ""
-		return
+		if now.Sub(w.healthAt) > 10*time.Second {
+			w.healthAt = now
+			os.WriteFile(w.healthFile(), []byte(now.UTC().Format(time.RFC3339)+"\n"), 0o600)
+		}
+	} else {
+		var ae *APIError
+		if !errors.As(err, &ae) {
+			w.lastErr = err.Error()
+		}
 	}
-	var ae *APIError
-	if !errors.As(err, &ae) {
-		w.lastErr = err.Error()
+	up := w.lastContact != nil && time.Since(*w.lastContact) < 90*time.Second
+	if up != w.up {
+		w.up = up
+		w.emitConnectionLocked()
 	}
 }
+
+func (w *Worker) emitConnectionLocked() {
+	refused := []map[string]string{}
+	refused = append(refused, w.refusedKind...)
+	f := map[string]any{"up": w.up, "refused": refused, "last_answer_at": nil}
+	if w.lastContact != nil {
+		f["last_answer_at"] = w.lastContact.UTC().Format(time.RFC3339)
+	}
+	go w.emit("connection", f)
+}
+
+// SetLimits changes the threads, the GPU and the jobs at once (Slipstream's settings); the
+// queue hears it with the next presence.
+func (w *Worker) SetLimits(threads int, gpu bool, jobs int) {
+	if jobs < 1 {
+		jobs = 1
+	}
+	if jobs > maxSlots {
+		jobs = maxSlots
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.cfg.CPUThreads, w.cfg.GPU, w.cfg.MaxParallel = threads, gpu, jobs
+	w.jobLimit = jobs
+	w.limitsPatch = true
+	close(w.limitCh)
+	w.limitCh = make(chan struct{})
+	close(w.pauseCh) // wakes the presence loop
+	w.pauseCh = make(chan struct{})
+}
+
+func (w *Worker) limits() map[string]any {
+	l := map[string]any{"gpu": w.cfg.GPU, "max_parallel_jobs": w.cfg.MaxParallel}
+	if w.cfg.CPUThreads > 0 {
+		l["cpu_threads"] = w.cfg.CPUThreads
+	}
+	return l
+}
+
+// maxSlots is the most jobs at once a worker runs.
+const maxSlots = 16
 
 func ptrTime(t time.Time) *time.Time { return &t }
 
@@ -186,6 +263,11 @@ func (w *Worker) setPause(until *time.Time, fromQueue bool) {
 	close(w.pauseCh)
 	w.pauseCh = make(chan struct{})
 	w.cfg.Log.Info("pause", "until", until)
+	var u any
+	if until != nil {
+		u = until.UTC().Format(time.RFC3339)
+	}
+	go w.emit("paused", map[string]any{"until": u})
 }
 
 // Pause pauses until the given time (from the control socket or the menu bar).
@@ -227,6 +309,7 @@ func (w *Worker) finished(f Finished) {
 	for i := range w.recent {
 		if w.recent[i].LeaseID == f.LeaseID {
 			w.recent[i] = f
+			w.emitResult(f)
 			return
 		}
 	}
@@ -241,6 +324,25 @@ func (w *Worker) finished(f Finished) {
 	if len(w.recent) > 3 {
 		w.recent = w.recent[:3]
 	}
+	w.emitResult(f)
+}
+
+// emitResult tells the app how a job ended: accepted, rejected (a failure too), or given back
+// (a pause, a quit, preemption, a job done or cancelled elsewhere). A result still checking
+// waits for its verdict.
+func (w *Worker) emitResult(f Finished) {
+	verdict := ""
+	switch f.Outcome {
+	case "accepted":
+		verdict = "accepted"
+	case "rejected", "failed":
+		verdict = "rejected"
+	case "given_back", "stopped", "superseded":
+		verdict = "given_back"
+	default:
+		return
+	}
+	go w.emit("result", map[string]any{"lease_id": f.LeaseID, "title": f.Title, "verdict": verdict, "check": f.Reason})
 }
 
 // waitUnpaused blocks while the worker is paused, until ctx ends.
@@ -283,6 +385,8 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.cfg.Log.Warn("a tool", "problem", p)
 	}
 	w.caps = caps
+	w.emit("tools", map[string]any{"tools": caps.Tools})
+	w.emit("idle", nil)
 	w.models = map[string]string{}
 	for _, m := range caps.Models {
 		w.models[m.SHA256] = m.path
@@ -308,9 +412,9 @@ func (w *Worker) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() { defer wg.Done(); w.presenceLoop(ctx) }()
-	for i := 0; i < w.cfg.MaxParallel; i++ {
+	for i := 0; i < maxSlots; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); w.claimLoop(ctx) }()
+		go func(slot int) { defer wg.Done(); w.claimLoop(ctx, slot) }(i)
 	}
 	wg.Wait()
 	return nil
@@ -319,24 +423,34 @@ func (w *Worker) Run(ctx context.Context) error {
 // hello says who this worker is: its limits, its capabilities, and gives back leases a
 // former run of it left (x265 cannot resume).
 func (w *Worker) hello(ctx context.Context) error {
-	limits := map[string]any{"gpu": w.cfg.GPU, "max_parallel_jobs": w.cfg.MaxParallel}
-	if w.cfg.CPUThreads > 0 {
-		limits["cpu_threads"] = w.cfg.CPUThreads
-	}
+	w.mu.Lock()
+	limits := w.limits()
+	w.mu.Unlock()
 	me, err := w.api.PatchMe(ctx, map[string]any{"limits": limits})
 	if err != nil {
 		return err
 	}
 	rep, err := w.api.PutCapabilities(ctx, w.caps)
 	if err != nil {
+		var ae *APIError
+		if errors.As(err, &ae) && ae.Code == "app_too_old" {
+			latest := ae.Detail
+			if i := strings.LastIndex(latest, " "); i >= 0 {
+				latest = latest[i+1:]
+			}
+			w.emit("update", map[string]any{"latest": latest})
+		}
 		return err
 	}
 	w.mu.Lock()
 	w.name = me.Name
 	w.refused = nil
+	w.refusedKind = nil
 	for _, r := range rep.Refused {
 		w.refused = append(w.refused, r.Kind+": "+r.Reason)
+		w.refusedKind = append(w.refusedKind, map[string]string{"kind": r.Kind, "reason": r.Reason})
 	}
+	w.emitConnectionLocked()
 	w.mu.Unlock()
 	w.setPause(me.PausedUntil, true)
 	w.contact(nil)
@@ -356,6 +470,18 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 	every := 30 * time.Second
 	for {
 		w.mu.Lock()
+		if w.limitsPatch {
+			w.limitsPatch = false
+			l := w.limits()
+			w.mu.Unlock()
+			if _, err := w.api.PatchMe(ctx, map[string]any{"limits": l}); err != nil {
+				w.contact(err)
+				w.mu.Lock()
+				w.limitsPatch = true
+				w.mu.Unlock()
+			}
+			w.mu.Lock()
+		}
 		patch, until := w.pausePatch, w.pausedUntil
 		state := "idle"
 		if len(w.runs) > 0 {
@@ -405,8 +531,20 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 	}
 }
 
-func (w *Worker) claimLoop(ctx context.Context) {
+// claimLoop is one job slot; slots at or above the job limit wait.
+func (w *Worker) claimLoop(ctx context.Context, slot int) {
 	for ctx.Err() == nil {
+		w.mu.Lock()
+		limit, ch := w.jobLimit, w.limitCh
+		w.mu.Unlock()
+		if slot >= limit {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ch:
+			}
+			continue
+		}
 		if err := w.waitUnpaused(ctx); err != nil {
 			return
 		}
@@ -452,8 +590,12 @@ func (w *Worker) runLease(ctx context.Context, l *Lease) {
 	defer func() {
 		w.mu.Lock()
 		delete(w.runs, l.ID)
+		idle := len(w.runs) == 0
 		w.mu.Unlock()
 		os.RemoveAll(r.dir)
+		if idle {
+			w.emit("idle", nil)
+		}
 	}()
 	w.cfg.Log.Info("job", "lease", l.ID, "job", l.Job.ID, "attempt", l.Attempt, "kind", l.Job.Kind)
 	f := r.execute(ctx)

@@ -12,3 +12,4 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/encode-queue /usr/local/bin/encode-queue
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/encode-queue"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s CMD ["/usr/local/bin/encode-queue", "healthcheck"]
