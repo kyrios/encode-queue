@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"unicode/utf8"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // LeaseRequest narrows a claim.

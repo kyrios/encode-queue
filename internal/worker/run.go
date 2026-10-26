@@ -43,6 +43,7 @@ type run struct {
 	started time.Time
 
 	mu          sync.Mutex
+	flushMu     sync.Mutex
 	prog        Progress
 	logBuf      []LogLine
 	tail        []string
@@ -174,6 +175,10 @@ func (r *run) end(parent context.Context, err error) Finished {
 	r.mu.Unlock()
 	api := r.w.api
 	switch {
+	case err == nil:
+		// Delivered. A renewal racing the delivery may have heard 410 for the lease it just
+		// ended; that changes nothing.
+		return Finished{Outcome: "checking"}
 	case code == "paused":
 		r.flushLogs(bg)
 		api.Release(bg, r.l.ID, "paused")
@@ -184,8 +189,6 @@ func (r *run) end(parent context.Context, err error) Finished {
 		r.flushLogs(bg)
 		api.Release(bg, r.l.ID, "quit")
 		return Finished{Outcome: "given_back", Reason: "quit"}
-	case err == nil:
-		return Finished{Outcome: "checking"}
 	}
 	if c, ok := gone(err); ok {
 		return Finished{Outcome: "stopped", Reason: c}
@@ -242,6 +245,10 @@ func (r *run) renewLoop(ctx context.Context) {
 }
 
 func (r *run) flushLogs(ctx context.Context) {
+	// One flush at a time: the log loop and the end of the job both flush, and each cuts what
+	// it sent off the front of the buffer.
+	r.flushMu.Lock()
+	defer r.flushMu.Unlock()
 	for {
 		r.mu.Lock()
 		n := len(r.logBuf)
