@@ -166,7 +166,9 @@ need() { # what names...
   list=$(./ffmpeg -hide_banner "-$what")
   for n in "$@"; do
     # A name stands after the flags, alone or in a list (mov,mp4,...).
-    echo "$list" | grep -Eq "^ *[A-Z.]+( [a-z.])? +([^ ]+,)?$n(,[^ ]+)?( |$)" || { echo "ffmpeg lacks $what $n" >&2; exit 1; }
+    # A here-string, not a pipe: grep -q stops reading early, and under pipefail the writer's
+    # broken pipe would count as a miss.
+    grep -Eq "^ *[A-Z.]+( [a-z.])? +([^ ]+,)?$n(,[^ ]+)?( |$)" <<<"$list" || { echo "ffmpeg lacks $what $n" >&2; exit 1; }
   done
 }
 filters=(scale select setpts fps format split crop fade afade pan astats ssim psnr xpsnr libvmaf)
