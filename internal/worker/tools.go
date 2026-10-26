@@ -136,7 +136,7 @@ func toolchainVersion(binary, name string) string {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if f := strings.Fields(line); len(f) >= 2 && f[0] == name {
-			return f[1]
+			return strings.Join(f[1:], " ")
 		}
 	}
 	return ""

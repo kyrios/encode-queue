@@ -63,6 +63,8 @@ jobs:
         with:
           go-version-file: go.mod
       - name: build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir dist
           v="${GITHUB_REF_NAME}"
@@ -74,6 +76,8 @@ jobs:
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$v" \
             -o dist/encode-queue-linux-amd64 ./cmd/encode-queue
           cp api/helper.yaml api/pipeline-admin.yaml api/worker-control.yaml dist/
+          . toolchain/versions
+          gh release download "toolchain-$TOOLCHAIN" -p encode-toolchain-darwin-arm64.tar.gz -D dist
           (cd dist && sha256sum * > SHA256SUMS)
           cat dist/SHA256SUMS
       - name: release
