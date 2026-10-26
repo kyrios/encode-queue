@@ -140,9 +140,10 @@ paths:
       summary: Submit a job (pipeline)
       description: |
         Idempotent: the pipeline chooses the id, so it can put a job again after a crash.
-        The same job again answers `200`; a different one under an id that is not finished
-        answers `409 job_exists`. A finished job (`done`, `failed`, `cancelled`) is replaced by
-        the new one, which starts with attempt 1 again.
+        The same job again answers `200` with the job as it is, also when it is `done` (a move
+        on the Encoder page does not make it another job). A different job under an id that is
+        not finished answers `409 job_exists`. A different job under a finished id, or the same
+        job under a `failed` or `cancelled` id, replaces it and starts with attempt 1 again.
 
         The source must be a file under `EQ_SOURCE_DIR` with the given size; the queue checks
         the size, not the sha256 (the worker checks that). `requires` defaults to the reference

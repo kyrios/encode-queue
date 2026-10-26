@@ -1,0 +1,106 @@
+openapi: 3.1.0
+info:
+  title: encode-worker control API
+  version: 1.0.0
+  license: { name: MIT, identifier: MIT }
+  summary: How the app that embeds the worker (Slipstream) reads its state and pauses, resumes or stops it.
+  description: |
+    HTTP over a Unix socket that only the worker's user can open (mode 0600), at the path in
+    `EQ_CONTROL_SOCKET`. Without that variable there is no socket. The worker's tunnel and the
+    queue are not involved: a pause is passed on to the queue by the worker itself.
+servers:
+  - url: http://encode-worker.sock
+    description: Any host name; the connection goes to the Unix socket.
+security: []
+paths:
+  /status:
+    get:
+      operationId: getStatus
+      summary: The worker's state, its jobs, its last results
+      responses:
+        '200':
+          description: The state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+  /pause:
+    post:
+      operationId: pause
+      summary: Pause for some minutes, or until a time
+      description: The tool stops at once (SIGSTOP); a pause that still holds after the queue's `pause_give_back_s` (60 s) gives the job back.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                minutes: { type: integer, minimum: 1, examples: [30, 120, 1440] }
+                until: { type: string, format: date-time }
+      responses:
+        '200':
+          description: The state after the pause.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '422': { description: Neither minutes nor a time in the future. }
+  /resume:
+    post:
+      operationId: resume
+      summary: End the pause
+      responses:
+        '200':
+          description: The state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+  /quit:
+    post:
+      operationId: quit
+      summary: Give every job back and stop
+      description: The answer comes first; the worker gives its leases back (`reason=quit`) and exits.
+      responses:
+        '202': { description: Quitting. }
+components:
+  schemas:
+    Progress:
+      $ref: 'helper.yaml#/components/schemas/Progress'
+    Status:
+      type: object
+      required: [state, connected, jobs, recent, finished_today]
+      properties:
+        state: { type: string, enum: [idle, working, paused, offline], description: For the menu bar's icon. }
+        name: { type: string, description: The name the queue knows this worker by. }
+        paused_until: { type: [string, 'null'], format: date-time }
+        connected: { type: boolean, description: The queue answered within the last 90 s. }
+        last_contact: { type: [string, 'null'], format: date-time }
+        last_error: { type: string, description: The last error reaching the queue. }
+        refused: { type: array, items: { type: string }, description: 'Job kinds the queue refuses and why, e.g. "rung: libx265 differs: worker 4.0, reference 4.1+1-1d117be".' }
+        tools: { type: array, items: { $ref: 'helper.yaml#/components/schemas/Tool' } }
+        jobs:
+          type: array
+          items:
+            type: object
+            properties:
+              lease_id: { type: string }
+              job_id: { type: string }
+              title: { type: string }
+              kind: { type: string, enum: [rung, whisper] }
+              rung: { type: string }
+              attempt: { type: integer }
+              started_at: { type: string, format: date-time }
+              progress: { $ref: '#/components/schemas/Progress' }
+              log: { type: array, items: { type: string }, description: 'The last 50 log lines, for "Show log".' }
+        recent:
+          type: array
+          description: The last three jobs, newest first.
+          items:
+            type: object
+            properties:
+              lease_id: { type: string }
+              job_id: { type: string }
+              title: { type: string }
+              outcome: { type: string, enum: [checking, accepted, rejected, superseded, failed, given_back, stopped] }
+              reason: { type: string }
+              at: { type: string, format: date-time }
+        finished_today: { type: integer }

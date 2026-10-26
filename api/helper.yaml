@@ -780,7 +780,8 @@ components:
       title: whisper
       description: |
         whisper.cpp's `whisper-cli -m MODEL -l LANG -f WAV -t THREADS -bs 1 -bo 1 -ml 1 -sow -oj
-        -of OUT -np` (greedy, one segment per word) with `OMP_WAIT_POLICY=passive`. A source
+        -of OUT -pp`, and `-ng` unless the worker's `gpu` limit is on (greedy, one segment per
+        word, progress on stderr) with `OMP_WAIT_POLICY=passive`. A source
         that is not 16 kHz mono WAV is first turned into one with ffmpeg (`-map 0:a:0 -ac 1
         -ar 16000 -c:a pcm_s16le`). The result is the JSON file whisper-cli writes.
       required: [model_sha256, language]
