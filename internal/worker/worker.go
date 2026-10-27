@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,8 +33,10 @@ type Config struct {
 	GPU            bool
 	MaxParallel    int
 	Calibrate      bool // the calibration clip at pairing and on a tools change (calibrate.go)
-	ChunkBytes     int64
-	Log            *slog.Logger
+	// FetchClient fetches the whisper models the queue wants (fetch.go); nil: the default client.
+	FetchClient *http.Client
+	ChunkBytes  int64
+	Log         *slog.Logger
 
 	// Timings the queue does not send; tests shorten them.
 	LongPoll      time.Duration
@@ -139,7 +143,9 @@ type Worker struct {
 	pauseCh     chan struct{} // closed and replaced when the pause changes
 	quit        chan struct{}
 	quitOnce    sync.Once
-	busy        *busySampler // used by the presence loop only
+	unavailable map[string]bool // wanted models a read-only models folder cannot take (fetch.go)
+	busy        *busySampler    // used by the presence loop only
+	machine     *machineSampler // likewise
 }
 
 // New is a worker that talks to the queue through api.
@@ -149,7 +155,7 @@ func New(cfg Config, api *Client) (*Worker, error) {
 		return nil, err
 	}
 	return &Worker{cfg: cfg, api: api, runs: map[string]*run{}, pauseCh: make(chan struct{}), quit: make(chan struct{}),
-		jobLimit: cfg.MaxParallel, limitCh: make(chan struct{}), busy: newBusySampler()}, nil
+		jobLimit: cfg.MaxParallel, limitCh: make(chan struct{}), busy: newBusySampler(), machine: newMachineSampler()}, nil
 }
 
 // emit sends an event to cfg.Events.
@@ -417,9 +423,19 @@ func (w *Worker) Run(ctx context.Context) error {
 		if c, err := w.calibrate(ctx); err != nil {
 			w.cfg.Log.Warn("calibration failed", "err", err)
 		} else {
+			if err := w.calibrateWhisper(ctx, c); err != nil {
+				w.cfg.Log.Warn("whisper calibration failed", "err", err)
+			}
+			w.saveCalibration(c)
 			w.caps.Calibration = c
-			if _, err := w.api.PutCapabilities(ctx, w.caps); err != nil {
+			rep, err := w.api.PutCapabilities(ctx, w.caps)
+			if err != nil {
 				w.cfg.Log.Warn("calibration not sent", "err", err)
+			} else if len(rep.WantedModels) > 0 {
+				// The models the queue wants, in the background: a 1.6 GB download must not
+				// hold back the jobs this worker can run now.
+				wg.Add(1)
+				go func() { defer wg.Done(); w.modelLoop(ctx, c, rep.WantedModels) }()
 			}
 		}
 	}
@@ -526,7 +542,8 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 		if unix.Statfs(w.cfg.WorkDir, &st) == nil {
 			free = int64(st.Bavail) * int64(st.Bsize)
 		}
-		ack, err := w.api.PutPresence(ctx, state, free, memoryUsed(), w.busy.sample(w.toolGroups(), time.Now()))
+		own := w.busy.sample(w.toolGroups(), time.Now())
+		ack, err := w.api.PutPresence(ctx, state, free, memoryUsed(), own, otherLoad(w.machine.sample(), own))
 		w.contact(err)
 		if err == nil {
 			w.setPause(ack.PausedUntil, true)
@@ -543,6 +560,39 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 		case <-time.After(every):
 		case <-ch: // a pause or resume reaches the queue at once
 		}
+	}
+}
+
+// modelLoop fetches the models the queue wants, times each new one on the speech clip, and tells
+// the queue, which may then want another (a model that measured too slow is dropped from the
+// wanted list). At most three rounds.
+func (w *Worker) modelLoop(ctx context.Context, c *Calibration, wanted []WantedModel) {
+	for round := 0; round < 3 && len(wanted) > 0 && ctx.Err() == nil; round++ {
+		if !w.fetchModels(ctx, wanted) {
+			return
+		}
+		held := w.heldModels()
+		w.mu.Lock()
+		w.caps.Models = w.caps.Models[:0]
+		for sha, path := range held {
+			w.caps.Models = append(w.caps.Models, Model{Name: filepath.Base(path), SHA256: sha})
+		}
+		sort.Slice(w.caps.Models, func(i, j int) bool { return w.caps.Models[i].Name < w.caps.Models[j].Name })
+		w.mu.Unlock()
+		if err := w.calibrateWhisper(ctx, c); err != nil {
+			w.cfg.Log.Warn("whisper calibration failed", "err", err)
+		}
+		w.saveCalibration(c)
+		w.mu.Lock()
+		w.caps.Calibration = c
+		caps := w.caps
+		w.mu.Unlock()
+		rep, err := w.api.PutCapabilities(ctx, caps)
+		if err != nil {
+			w.cfg.Log.Warn("capabilities not sent", "err", err)
+			return
+		}
+		wanted = rep.WantedModels
 	}
 }
 

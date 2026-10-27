@@ -127,11 +127,20 @@ func (s *Store) requires(j *Job) (req Requires, onlyReference bool) {
 		}
 		req.Tools = tools
 	}
-	if j.whisper != nil && !contains(req.Models, j.whisper.ModelSHA256) {
-		req.Models = append(append([]string(nil), req.Models...), j.whisper.ModelSHA256)
-	}
-	if j.rung != nil && j.rung.Captions != nil && !contains(req.Fonts, j.rung.Captions.Font) {
-		req.Fonts = append(append([]string(nil), req.Fonts...), j.rung.Captions.Font)
+
+	if j.rung != nil && j.rung.Captions != nil {
+		if !contains(req.Fonts, j.rung.Captions.Font) {
+			req.Fonts = append(append([]string(nil), req.Fonts...), j.rung.Captions.Font)
+		}
+		// Burnt-in captions need the reference's libass exactly, so every worker that takes one
+		// renders the same subtitles (v0.2.7; toolchain 3 builds it on both platforms).
+		if j.Spec.Requires == nil {
+			if ref := s.referenceWorker(); ref != nil && ref.Caps != nil {
+				if v, ok := ref.Caps.tool("libass"); ok {
+					req.Tools = append(append([]Tool(nil), req.Tools...), Tool{Name: "libass", Version: v})
+				}
+			}
+		}
 	}
 	return req, onlyReference
 }
@@ -178,7 +187,47 @@ func (s *Store) mismatchTools(w *Worker, j *Job) string {
 			return "font " + f + " missing"
 		}
 	}
+	if j.whisper != nil {
+		if _, m := modelOn(w, j); m == "" {
+			return "model " + j.whisper.acceptable()[0][:12] + " missing"
+		}
+	}
 	return ""
+}
+
+// modelOn is the best of the job's acceptable models the worker holds: its place in the list
+// (0 is the best) and its sha256, or -1 and "".
+func modelOn(w *Worker, j *Job) (int, string) {
+	if w.Caps == nil || j.whisper == nil {
+		return -1, ""
+	}
+	for i, m := range j.whisper.acceptable() {
+		for _, have := range w.Caps.Models {
+			if have.SHA256 == m {
+				return i, m
+			}
+		}
+	}
+	return -1, ""
+}
+
+// betterModelElsewhere says whether another connected, unpaused worker that may run the job
+// holds a better one of its models than w: then w leaves the job to it. A worse model runs
+// only when no worker with a better one is there.
+func (s *Store) betterModelElsewhere(w *Worker, j *Job, now time.Time) bool {
+	mine, _ := modelOn(w, j)
+	if mine <= 0 {
+		return false
+	}
+	for _, v := range s.st.Workers {
+		if v == w || !s.connected(v, now) || s.paused(v, now) || s.mismatch(v, j) != "" {
+			continue
+		}
+		if i, _ := modelOn(v, j); i >= 0 && i < mine {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------- submit
@@ -232,8 +281,19 @@ func (s *Store) validate(id string, spec *JobSubmit) error {
 		}
 	}
 	if p := j.whisper; p != nil {
-		if !sha256Re.MatchString(p.ModelSHA256) || p.Language == "" {
-			return errf(422, "invalid", "whisper needs model_sha256 and language")
+		if p.Language == "" || (p.ModelSHA256 == "" && len(p.Models) == 0) {
+			return errf(422, "invalid", "whisper needs model_sha256 or models, and language")
+		}
+		if p.ModelSHA256 != "" && !sha256Re.MatchString(p.ModelSHA256) {
+			return errf(422, "invalid", "model_sha256 is not a sha256")
+		}
+		if len(p.Models) > 8 {
+			return errf(422, "invalid", "at most 8 models")
+		}
+		for _, m := range p.Models {
+			if !sha256Re.MatchString(m) {
+				return errf(422, "invalid", "models: %q is not a sha256", m)
+			}
 		}
 	}
 	if err := s.checkFile("source", spec.Source.FileIn); err != nil {

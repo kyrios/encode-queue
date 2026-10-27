@@ -161,8 +161,10 @@ func TestForecastAndCandidates(t *testing.T) {
 	frames := func(id string, n int64) { e.s.st.Jobs[id].Spec.Source.Frames = n }
 	// The encoder runs a: 600 frames left at 10 fps, 60 s.
 	e.rung("a.stage1", "stage1")
-	frames("a.stage1", 1000)
+	// Its frames come after the claim: with them, the scoring (ect.go) would leave it to the
+	// twice-as-fast Mac, and this test is about the forecast, not the choice.
 	la := e.claim(ref)
+	frames("a.stage1", 1000)
 	e.s.Renew(ref, la.ID, Progress{Phase: "encoding", FramesDone: i64(400), FPS: f64(10)})
 	// b and c wait: 2000 frames each, 200 s on the encoder, 100 s on the mac.
 	e.rung("b.stage2", "stage2")

@@ -3,7 +3,9 @@ package worker
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -69,5 +71,37 @@ func TestKilledToolIsKilled(t *testing.T) {
 	err = exec.Command("sh", "-c", "exit 3").Run()
 	if !errors.As(toolFailure("ffmpeg", err, ""), &f) || f.code != "encode_failed" || f.extra["exit_code"] != 3 {
 		t.Fatalf("an exit: %+v", f)
+	}
+}
+
+// Toolchain 3: libass's version from versions.txt, the toolchain's fc-list, and FONTCONFIG_FILE
+// on its fonts.conf so every tool sees only Inter.
+func TestToolchainFonts(t *testing.T) {
+	dir, _ := filepath.EvalSymlinks(t.TempDir()) // macOS: /var is /private/var
+	bin := filepath.Join(dir, "bin")
+	os.MkdirAll(bin, 0o755)
+	os.MkdirAll(filepath.Join(dir, "fonts"), 0o755)
+	os.WriteFile(filepath.Join(bin, "ffmpeg"), []byte("#!/bin/sh\n"), 0o755)
+	os.WriteFile(filepath.Join(bin, "fc-list"), []byte("#!/bin/sh\n"), 0o755)
+	os.WriteFile(filepath.Join(bin, "versions.txt"), []byte("toolchain 3\nffmpeg 7.1.2\nlibass 0.17.5\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "fonts", "fonts.conf"), []byte("<fontconfig/>"), 0o644)
+	t.Setenv("FONTCONFIG_FILE", "")
+	if v := toolchainVersion(filepath.Join(bin, "ffmpeg"), "libass"); v != "0.17.5" {
+		t.Fatalf("libass %q", v)
+	}
+	if fc := toolchainFonts(filepath.Join(bin, "ffmpeg")); fc != filepath.Join(bin, "fc-list") {
+		t.Fatalf("fc-list %q", fc)
+	}
+	if got := os.Getenv("FONTCONFIG_FILE"); got != filepath.Join(dir, "fonts", "fonts.conf") {
+		t.Fatalf("FONTCONFIG_FILE %q", got)
+	}
+	// One set already (the image's) stays.
+	t.Setenv("FONTCONFIG_FILE", "/etc/fonts/encode.conf")
+	toolchainFonts(filepath.Join(bin, "ffmpeg"))
+	if got := os.Getenv("FONTCONFIG_FILE"); got != "/etc/fonts/encode.conf" {
+		t.Fatalf("overwrote FONTCONFIG_FILE: %q", got)
+	}
+	if fc := toolchainFonts("/nonexistent/ffmpeg"); fc != "fc-list" {
+		t.Fatalf("without the toolchain: %q", fc)
 	}
 }

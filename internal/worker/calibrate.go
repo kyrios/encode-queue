@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -30,6 +31,22 @@ type Calibration struct {
 	Tools      []Tool            `json:"tools"`
 	At         time.Time         `json:"at"`
 	Classes    []CalibratedClass `json:"classes"`
+	// Whisper: each model it holds on the speech clip (v0.2.7).
+	Whisper []CalibratedModel `json:"whisper,omitempty"`
+}
+
+// CalibratedModel is one whisper model's speed on the calibration speech: seconds of audio per
+// second, 1 is real time. Probe: only the first seconds ran, because the model was far too
+// slow there to be worth the whole clip.
+type CalibratedModel struct {
+	SHA256  string  `json:"sha256"`
+	Name    string  `json:"name"`
+	Whisper string  `json:"whisper"` // whisper.cpp's version it was measured with
+	GPU     bool    `json:"gpu"`
+	Threads int     `json:"threads"`
+	AudioS  float64 `json:"audio_s"`
+	Speed   float64 `json:"speed"`
+	Probe   bool    `json:"probe,omitempty"`
 }
 
 // CalibratedClass is one rung class's result.
@@ -47,6 +64,19 @@ type calibrationClass struct {
 	p      RungParams
 	frames int
 }
+
+// speechClip: 21.6 s of German speech (macOS's Anna reading a short podcast opening), 16 kHz
+// mono PCM, ffmpeg -bitexact; the same bytes in every worker binary.
+//
+//go:embed calibration-speech.wav
+var speechClip []byte
+
+const (
+	speechSeconds = 21.618
+	// A model slower than probeSlow times real time on the probe's first seconds skips the rest.
+	probeSeconds = 5
+	probeSlow    = 0.25
+)
 
 const (
 	clipSeconds = 10
@@ -163,12 +193,16 @@ func (w *Worker) calibrate(ctx context.Context) (*Calibration, error) {
 		c.Classes = append(c.Classes, CalibratedClass{Class: className(cc.p), Frames: cc.frames, FPS: float64(cc.frames) / s})
 		w.cfg.Log.Info("calibrated", "class", className(cc.p), "fps", fmt.Sprintf("%.1f", float64(cc.frames)/s))
 	}
+	w.saveCalibration(c)
+	w.emit("calibrated", map[string]any{"classes": len(c.Classes)})
+	return c, nil
+}
+
+func (w *Worker) saveCalibration(c *Calibration) {
 	data, _ := json.Marshal(c)
 	if err := os.WriteFile(w.calibrationFile(), data, 0o600); err != nil {
 		w.cfg.Log.Warn("calibration not kept", "err", err)
 	}
-	w.emit("calibrated", map[string]any{"classes": len(c.Classes)})
-	return c, nil
 }
 
 // calibrationArgs is the rung's own command line (rungArgs) on the clip, for its first frames.
@@ -192,4 +226,90 @@ func sha256File(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// calibrateWhisper times every model the worker holds on the speech clip that the calibration
+// does not have yet for this whisper.cpp and GPU setting, and keeps the others. A large model
+// first runs on the clip's first seconds: a slow CPU does not spend minutes on it.
+func (w *Worker) calibrateWhisper(ctx context.Context, c *Calibration) error {
+	version := ""
+	for _, t := range w.caps.Tools {
+		if t.Name == "whisper.cpp" {
+			version = t.Version
+		}
+	}
+	held := w.heldModels()
+	if version == "" || len(held) == 0 {
+		return nil
+	}
+	threads := 4 // a whisper job's default (run.go)
+	if t := w.cfg.CPUThreads; t > 0 && threads > t {
+		threads = t
+	}
+	keep := c.Whisper[:0]
+	have := map[string]bool{}
+	for _, m := range c.Whisper {
+		if _, ok := held[m.SHA256]; ok && m.Whisper == version && m.GPU == w.cfg.GPU && m.Threads == threads {
+			keep = append(keep, m)
+			have[m.SHA256] = true
+		}
+	}
+	c.Whisper = keep
+	var todo []string
+	for sha := range held {
+		if !have[sha] {
+			todo = append(todo, sha)
+		}
+	}
+	if len(todo) == 0 {
+		return nil
+	}
+	sort.Strings(todo)
+	dir := filepath.Join(w.cfg.WorkDir, "calibration-whisper")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	wav := filepath.Join(dir, "speech.wav")
+	if err := os.WriteFile(wav, speechClip, 0o600); err != nil {
+		return err
+	}
+	probe := filepath.Join(dir, "probe.wav")
+	r := &run{w: w, dir: dir}
+	if err := r.runTool(ctx, []string{w.cfg.FFmpeg, "-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-i", wav,
+		"-t", fmt.Sprint(probeSeconds), "-c:a", "pcm_s16le", "-bitexact", probe}, "", nil); err != nil {
+		return fmt.Errorf("the speech probe: %w", err)
+	}
+	for _, sha := range todo {
+		path := held[sha]
+		name := filepath.Base(path)
+		timed := func(in string, audio float64) (float64, error) {
+			args, err := whisperArgs(w.cfg.WhisperCLI, path, WhisperParams{Language: "de"}, in, filepath.Join(dir, "out"), threads, w.cfg.GPU)
+			if err != nil {
+				return 0, err
+			}
+			start := time.Now()
+			if err := r.runTool(ctx, args, "whisper", nil); err != nil {
+				return 0, err
+			}
+			return audio / time.Since(start).Seconds(), nil
+		}
+		m := CalibratedModel{SHA256: sha, Name: name, Whisper: version, GPU: w.cfg.GPU, Threads: threads}
+		w.emitModel(sha, name, "calibrating", nil)
+		speed, err := timed(probe, probeSeconds)
+		if err != nil {
+			w.cfg.Log.Warn("whisper calibration", "model", name, "err", err)
+			continue
+		}
+		m.AudioS, m.Speed, m.Probe = probeSeconds, speed, true
+		if speed >= probeSlow {
+			if full, err := timed(wav, speechSeconds); err == nil {
+				m.AudioS, m.Speed, m.Probe = speechSeconds, full, false
+			}
+		}
+		w.cfg.Log.Info("calibrated", "model", name, "speed", fmt.Sprintf("%.2fx", m.Speed), "probe", m.Probe)
+		c.Whisper = append(c.Whisper, m)
+		w.emitModel(sha, name, "ready", map[string]any{"speed": m.Speed})
+	}
+	return nil
 }

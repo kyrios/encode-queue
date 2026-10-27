@@ -51,3 +51,35 @@ func TestSumPercent(t *testing.T) {
 		t.Fatalf("sum %v", s)
 	}
 }
+
+func TestStatCPU(t *testing.T) {
+	// /proc/stat of a 6-thread VM: user nice system idle iowait irq softirq steal guest guest_nice.
+	busy, total, ok := statCPU("cpu  1000 50 300 8000 200 10 40 0 500 0\ncpu0 1 2 3 4 5 6 7 8 9 10\n")
+	if !ok || busy != 1400 || total != 9600 {
+		t.Fatalf("busy %d total %d", busy, total)
+	}
+	m := &machineSampler{threads: func() int { return 6 }}
+	n := 0
+	m.readStat = func() (uint64, uint64, bool) {
+		n++
+		if n == 1 {
+			return 1400, 9600, true
+		}
+		return 1400 + 300, 9600 + 600, true // half the machine busy since
+	}
+	old := goos
+	goos = "linux"
+	defer func() { goos = old }()
+	if v := m.sample(); v != -1 {
+		t.Fatalf("first sample %v", v)
+	}
+	if v := m.sample(); v != 3 {
+		t.Fatalf("busy threads %v, want 3", v)
+	}
+	if o := otherLoad(3, 2); o != 1 {
+		t.Fatalf("other load %v", o)
+	}
+	if otherLoad(1, 2) != 0 || otherLoad(-1, 2) != -1 || otherLoad(3, -1) != -1 {
+		t.Fatal("otherLoad's edges")
+	}
+}

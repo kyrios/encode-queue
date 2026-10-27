@@ -190,7 +190,7 @@ func (h *harness) pair(name string) *testWorker {
 	}
 	self, _ := os.Executable()
 	w, err := worker.New(worker.Config{Version: "0.1.0", StateDir: h.t.TempDir(), FFmpeg: self, WhisperCLI: self,
-		WhisperVersion: "v1.9.5", ModelsDir: h.models, MaxParallel: 1, ChunkBytes: 1 << 10, Calibrate: h.calibrate,
+		WhisperVersion: "v1.9.5", ModelsDir: h.models, MaxParallel: 1, ChunkBytes: 1 << 10, Calibrate: h.calibrate, FetchClient: offline,
 		LongPoll: time.Second, LogEvery: 200 * time.Millisecond, RetryAfter: 200 * time.Millisecond,
 		Log: h.log.With("worker", name), Events: func(ev map[string]any) {
 			h.evMu.Lock()
@@ -488,11 +488,21 @@ func TestTokensAreKeptApart(t *testing.T) {
 	}
 }
 
+// offline is the model downloads' client in tests: no test fetches a real model.
+var offline = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("no internet in tests: %s", r.URL)
+})}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 // "Calibration clip" (v0.2.5): both workers encode the clip once per rung class at pairing, and
 // the second has a calibrated tempo against the reference before it ran a single job.
 func TestCalibrationAtPairing(t *testing.T) {
 	h := newHarness(t, func(c *queue.Config) { c.ReferenceWorker = "encoder" })
 	h.calibrate = true
+	h.model() // ggml-small.bin: the whisper part of the calibration times it
 	t.Setenv("FAKE_FRAMES", "3")
 	enc := h.pair("encoder")
 	mac := h.pair("mac")
@@ -518,6 +528,30 @@ func TestCalibrationAtPairing(t *testing.T) {
 	if n != 8 {
 		t.Fatalf("calibrated classes against the reference: %d of %+v", n, v.SpeedClasses)
 	}
+	// The whisper part (v0.2.7): the model it holds, timed on the speech clip. The test's model
+	// is not the catalogue's small (another sha256), so the queue wants the real one, which the
+	// worker tries to fetch and reports as failed (no internet in tests).
+	var rep queue.CapabilityReport
+	h.waitFor("whisper timed", 30*time.Second, func() bool {
+		rep, _ = h.store.GetCapabilities(mac.id)
+		return rep.Capabilities.Calibration != nil && len(rep.Capabilities.Calibration.Whisper) == 1
+	})
+	if m := rep.Capabilities.Calibration.Whisper[0]; m.Name != "ggml-small.bin" || m.Speed <= 0 || m.Whisper != "v1.9.5" {
+		t.Fatalf("whisper calibration %+v", m)
+	}
+	if len(rep.WantedModels) != 1 || rep.WantedModels[0].SHA256 != queue.SHASmall {
+		t.Fatalf("wanted %+v", rep.WantedModels)
+	}
+	h.waitFor("a failed fetch reported", 30*time.Second, func() bool {
+		h.evMu.Lock()
+		defer h.evMu.Unlock()
+		for _, e := range h.events {
+			if e["event"] == "model" && e["state"] == "failed" && strings.Contains(fmt.Sprint(e["reason"]), "no internet in tests") {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // "Sofort" in the extra slot (v0.2.5): a worker limited to one job at a time encodes a long archive

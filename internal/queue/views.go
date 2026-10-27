@@ -48,6 +48,12 @@ type AttemptView struct {
 	EndCode   *string        `json:"end_code"`
 	Progress  *Progress      `json:"progress"`
 	Result    *AttemptResult `json:"result"`
+	// ModelSHA256: the whisper model this attempt ran (v0.2.7).
+	ModelSHA256 *string `json:"model_sha256"`
+	// ECTS and RunnerUp: the scoring at the claim (v0.2.7, ect.go): this worker's expected
+	// completion time in seconds, and the best other worker's.
+	ECTS     *float64 `json:"ect_s"`
+	RunnerUp *ECT     `json:"runner_up"`
 }
 
 // JobView is a job as pipeline-admin.yaml shows it.
@@ -110,7 +116,11 @@ func (s *Store) workerRef(id, fallback string) WorkerRef {
 
 func (s *Store) attemptView(j *Job, l *Lease) AttemptView {
 	a := AttemptView{Attempt: l.Attempt, LeaseID: l.ID, Worker: s.workerRef(l.WorkerID, l.Worker), State: l.State,
-		StartedAt: l.CreatedAt, EndedAt: l.EndedAt, EndCode: strp(l.EndCode)}
+		StartedAt: l.CreatedAt, EndedAt: l.EndedAt, EndCode: strp(l.EndCode), ModelSHA256: strp(l.Model), RunnerUp: l.RunnerUp}
+	if l.ECT != nil {
+		v := l.ECT.S
+		a.ECTS = &v
+	}
 	if l.State == LeaseActive {
 		e := l.ExpiresAt
 		a.ExpiresAt = &e
@@ -154,7 +164,10 @@ func (s *Store) jobViewWith(j *Job, fc map[string]time.Time) JobView {
 	if w := j.whisper; w != nil {
 		q := w.Model
 		if q == "" {
-			q = w.ModelSHA256[:12]
+			q = modelLabel(w.acceptable()[0])
+		}
+		if len(w.Models) > 1 {
+			q += fmt.Sprintf(" (+%d)", len(w.Models)-1)
 		}
 		v.Quality = strp(q)
 	}
@@ -250,6 +263,29 @@ type LeaseView struct {
 	Links          map[string]string `json:"links"`
 }
 
+// modelLabel is a model's catalogue name, or its sha256's first 12 characters.
+func modelLabel(sha string) string {
+	if m, ok := catalogue[sha]; ok {
+		return m.Name
+	}
+	if len(sha) >= 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+// modelName is what the worker calls a model it holds ("ggml-medium.bin"), or "".
+func (s *Store) modelName(workerID, sha string) string {
+	if w := s.st.Workers[workerID]; w != nil && w.Caps != nil {
+		for _, m := range w.Caps.Models {
+			if m.SHA256 == sha {
+				return m.Name
+			}
+		}
+	}
+	return ""
+}
+
 func (s *Store) leaseView(l *Lease) LeaseView {
 	j := s.st.Jobs[l.JobID]
 	v := LeaseView{ID: l.ID, Attempt: l.Attempt, State: l.State, CreatedAt: l.CreatedAt, ExpiresAt: l.ExpiresAt,
@@ -270,6 +306,11 @@ func (s *Store) leaseView(l *Lease) LeaseView {
 			v.Job.Inputs[name] = FileRef{URL: "/jobs/" + j.ID + "/inputs/" + name, Bytes: in.Bytes, SHA256: in.SHA256}
 		}
 		v.Params = j.Spec.Params
+		if p := j.whisper; p != nil && l.Model != "" {
+			// The chosen model, alone, so a worker of v0.2.6 or before runs exactly it.
+			q := WhisperParams{ModelSHA256: l.Model, Language: p.Language, Threads: p.Threads, Model: s.modelName(l.WorkerID, l.Model)}
+			v.Params, _ = json.Marshal(q)
+		}
 		v.Result = j.Spec.Result
 	}
 	v.Links = map[string]string{
@@ -391,8 +432,11 @@ type WorkerView struct {
 	// clip until there are some (v0.2.5); null without a relative speed.
 	RelativeSpeedSource *string        `json:"relative_speed_source"`
 	SpeedEstimate       *SpeedEstimate `json:"speed_estimate"`
-	SpeedClasses        []SpeedClass   `json:"speed_classes"`
-	FreeAt              *time.Time     `json:"free_at"`
+	// Corrections: actual over estimated compute time by job kind, learned from its results
+	// (v0.2.7); 1 is as estimated.
+	Corrections  map[string]float64 `json:"corrections"`
+	SpeedClasses []SpeedClass       `json:"speed_classes"`
+	FreeAt       *time.Time         `json:"free_at"`
 }
 
 // WorkerSystem is the worker's machine, from its capabilities' hardware.
@@ -402,12 +446,14 @@ type WorkerSystem struct {
 	CPUThreads   *int    `json:"cpu_threads"`
 	ThreadsInUse *int    `json:"threads_in_use"`
 	ThreadsBusy  *int    `json:"threads_busy"`
-	MemoryBytes  *int64  `json:"memory_bytes"`
-	MemoryUsed   *int64  `json:"memory_used_bytes"`
-	OSName       *string `json:"os_name"`
-	OSVersion    *string `json:"os_version"`
-	Arch         *string `json:"arch"`
-	Kernel       *string `json:"kernel"`
+	// OtherLoad: threads other programs keep busy, from the last presence (v0.2.7).
+	OtherLoad   *float64 `json:"other_load"`
+	MemoryBytes *int64   `json:"memory_bytes"`
+	MemoryUsed  *int64   `json:"memory_used_bytes"`
+	OSName      *string  `json:"os_name"`
+	OSVersion   *string  `json:"os_version"`
+	Arch        *string  `json:"arch"`
+	Kernel      *string  `json:"kernel"`
 }
 
 // hardware is what a worker's capabilities may say about its machine (helper.yaml).
@@ -446,6 +492,7 @@ func (s *Store) system(w *Worker) WorkerSystem {
 		v.MemoryBytes = &m
 	}
 	v.MemoryUsed = w.MemoryUsed
+	v.OtherLoad = w.OtherLoad
 	if b := w.ThreadsBusy; b != nil {
 		n := *b
 		if v.CPUThreads != nil && n > *v.CPUThreads {
@@ -607,6 +654,10 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 		}
 	}
 	v.FreeAt = s.freeAt(w, now, "")
+	v.Corrections = map[string]float64{}
+	for k, c := range w.Corrections {
+		v.Corrections[k] = c
+	}
 	acc, ref := s.kinds(w)
 	v.AcceptedKinds = acc
 	v.Refused = append(v.Refused, ref...)

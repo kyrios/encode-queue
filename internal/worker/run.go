@@ -413,7 +413,7 @@ func (r *run) work(ctx context.Context) error {
 		if err := json.Unmarshal(l.Params, &p); err != nil {
 			return fail("other", "params: %v", err)
 		}
-		model := r.w.models[p.ModelSHA256]
+		model := r.w.modelPath(p.ModelSHA256)
 		if model == "" {
 			return fail("model_missing", "no model with sha256 %s", p.ModelSHA256)
 		}

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.4.0
+  version: 1.5.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -47,9 +47,12 @@ info:
        logs with them; the Encoder page can remove them sooner (`POST /jobs/cleanup`). Either
        way the pipeline sees them as forgotten in `/changes`, and the counts drop at once.
 
-    **Priorities and order.** Every job has a priority, ADR-0005's: `stage1`, then `stage2`,
-    then `archive`, and a place within it. The queue hands out the first job in that order a
-    worker may run. The Encoder page moves a job (`POST /jobs/{id}/move`), and a job moved next
+    **Priorities and order.** Every job has a priority, `now` (v0.2.5) and then ADR-0005's:
+    `stage1`, then `stage2`, then `archive`, and a place within it. A worker that asks gets the
+    first job in that order it may run and would finish about as soon as any other worker could
+    (v0.2.7: its expected completion time at most 1.25 times the best, or the job waited longer
+    than 30 s, 2 min, 15 min or 1 h by priority; the README's "Which worker gets a job"). The
+    Encoder page moves a job (`POST /jobs/{id}/move`), and a job moved next
     to a job of another priority takes that priority. When a `stage1` or `stage2` job is queued
     and no free worker may run it, the queue preempts the active lease with the lowest priority
     whose worker may run it.
@@ -824,6 +827,7 @@ components:
           properties:
             name: { type: string, pattern: '^[A-Za-z0-9._-]{1,64}$', examples: ['2160.mp4', 'whisper.json'] }
             max_bytes: { type: integer, minimum: 1, description: The most the result may be; the queue leases only while its disk has room for it. }
+            expected_bytes: { type: integer, minimum: 0, description: 'What it is likely to weigh (v0.2.7), for the time to deliver it in the scoring; 0 if left out.' }
         requires: { $ref: '#/components/schemas/Requires' }
         max_failures: { type: integer, minimum: 1, description: 'Rejections and failures before the job is `failed`; the queue''s `EQ_MAX_FAILURES` (3) if left out.' }
         order:
@@ -856,6 +860,18 @@ components:
         ended_at: { type: [string, 'null'], format: date-time }
         end_code: { type: [string, 'null'], description: 'Why it ended without a result: the release reason, or `lease_expired`, `offline`, `preempted`, `assigned` (the Encoder page sent the job to another worker), `paused`, `worker_removed`, `job_cancelled`, `job_done`.' }
         progress: { oneOf: [{ $ref: '#/components/schemas/Progress' }, { type: 'null' }] }
+        model_sha256: { type: [string, 'null'], description: 'The whisper model this attempt ran (v0.2.7), the best of the job''s `models` its worker held.' }
+        ect_s: { type: [number, 'null'], description: 'Its worker''s expected completion time at the claim, in seconds (v0.2.7; README, "Which worker gets a job").' }
+        runner_up:
+          type: [object, 'null']
+          description: The best other worker's expected completion time at the claim; null when none could be estimated.
+          properties:
+            worker: { type: string }
+            ect_s: { type: number }
+            busy_s: { type: number, description: Until it has a free slot. }
+            in_s: { type: number, description: The source over its measured download rate. }
+            run_s: { type: number, description: 'The compute: the work over its measured or calibrated speed, scaled to its free threads and its learned correction.' }
+            out_s: { type: number, description: The expected result over its upload rate. }
         result:
           type: [object, 'null']
           description: What it delivered.
@@ -1139,6 +1155,11 @@ components:
           type: [string, 'null']
           enum: [measured, calibrated, null]
           description: Where `relative_speed` comes from; null without one.
+        corrections:
+          type: object
+          additionalProperties: { type: number }
+          description: 'Actual over estimated compute time by job kind, learned from its results (v0.2.7): an EWMA between 0.25 and 4; a kind it has no result of is left out (1).'
+          examples: [{ rung: 1.12 }]
         speed_estimate:
           type: [object, 'null']
           description: |
@@ -1173,6 +1194,7 @@ components:
         cpu_cores: { type: [integer, 'null'], description: Physical cores. }
         cpu_threads: { type: [integer, 'null'], description: Logical CPUs the worker can use. }
         threads_in_use: { type: [integer, 'null'], description: 'The encoder''s thread limit: `limits.cpu_threads`, or `cpu_threads` when there is no limit.' }
+        other_load: { type: [number, 'null'], description: 'Threads other programs keep busy, from its last presence (v0.2.7).' }
         threads_busy: { type: [integer, 'null'], description: 'How many threads the worker''s own tools kept busy since its last presence, at most `cpu_threads` (v0.2.5); null when its last presence did not say.' }
         memory_bytes: { type: [integer, 'null'], description: RAM in all. }
         memory_used_bytes: { type: [integer, 'null'], description: 'RAM in use, from the worker''s last presence (in a container: the host''s).' }

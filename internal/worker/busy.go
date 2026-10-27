@@ -130,3 +130,90 @@ func sumPercent(out string) float64 {
 	}
 	return sum
 }
+
+// **What other programs keep busy** (v0.2.7, other_load): the whole machine's busy threads less
+// the worker's own tools'. The queue counts a machine busy with other work (Final Cut on a Mac,
+// a neighbour on a VM's host) as slower for the next job. Linux from /proc/stat's jiffies since
+// the last sample, macOS from ps's %cpu over every process.
+type machineSampler struct {
+	busy, total uint64
+	ok          bool
+	readStat    func() (busy, total uint64, ok bool)
+	readAll     func() (float64, bool)
+	threads     func() int
+}
+
+func newMachineSampler() *machineSampler {
+	return &machineSampler{readStat: procStat, readAll: psAll, threads: runtime.NumCPU}
+}
+
+// sample is the machine's busy threads, or -1 when unknown (the first sample on Linux).
+func (m *machineSampler) sample() float64 {
+	if goos == "darwin" {
+		p, ok := m.readAll()
+		if !ok {
+			return -1
+		}
+		return p / 100
+	}
+	busy, total, ok := m.readStat()
+	if !ok {
+		return -1
+	}
+	defer func() { m.busy, m.total, m.ok = busy, total, true }()
+	if !m.ok || total <= m.total || busy < m.busy {
+		return -1
+	}
+	return float64(busy-m.busy) / float64(total-m.total) * float64(m.threads())
+}
+
+// procStat reads the "cpu" line of /proc/stat: busy and total jiffies (idle and iowait idle).
+func procStat() (busy, total uint64, ok bool) {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0, 0, false
+	}
+	return statCPU(string(data))
+}
+
+func statCPU(data string) (busy, total uint64, ok bool) {
+	for _, line := range strings.Split(data, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 || f[0] != "cpu" {
+			continue
+		}
+		for i, v := range f[1:] {
+			if i >= 8 { // guest and guest_nice are already in user and nice
+				break
+			}
+			n, err := strconv.ParseUint(v, 10, 64)
+			if err != nil {
+				return 0, 0, false
+			}
+			total += n
+			if i != 3 && i != 4 { // idle, iowait
+				busy += n
+			}
+		}
+		return busy, total, true
+	}
+	return 0, 0, false
+}
+
+// psAll sums ps's %cpu over every process (macOS).
+func psAll() (float64, bool) {
+	out, err := exec.Command("ps", "-A", "-o", "pcpu=").Output()
+	if err != nil {
+		return 0, false
+	}
+	return sumPercent(string(out)), true
+}
+
+// otherLoad is what other programs keep busy: the machine's busy threads less own, never below
+// 0; -1 when either is unknown (own is unknown on a run's first sample).
+func otherLoad(machine float64, own int) float64 {
+	if machine < 0 || own < 0 {
+		return -1
+	}
+	return math.Max(0, machine-float64(own))
+}

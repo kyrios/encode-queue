@@ -19,6 +19,21 @@ type Calibration struct {
 	Tools      []Tool            `json:"tools"`
 	At         time.Time         `json:"at"`
 	Classes    []CalibratedClass `json:"classes"`
+	// Whisper: each model the worker holds, timed on the calibration speech (v0.2.7).
+	Whisper []CalibratedModel `json:"whisper,omitempty"`
+}
+
+// CalibratedModel is a whisper model's speed on the calibration speech: seconds of audio per
+// second, 1 is real time; Probe when only the first seconds ran (far too slow for the rest).
+type CalibratedModel struct {
+	SHA256  string  `json:"sha256"`
+	Name    string  `json:"name"`
+	Whisper string  `json:"whisper"`
+	GPU     bool    `json:"gpu"`
+	Threads int     `json:"threads"`
+	AudioS  float64 `json:"audio_s"`
+	Speed   float64 `json:"speed"`
+	Probe   bool    `json:"probe,omitempty"`
 }
 
 // CalibratedClass is one class's result.
@@ -47,6 +62,14 @@ func checkCalibration(c *Capabilities) {
 			return
 		}
 	}
+	whisper, _ := c.tool("whisper.cpp")
+	var models []CalibratedModel
+	for _, m := range cal.Whisper {
+		if sha256Re.MatchString(m.SHA256) && m.Whisper == whisper && m.Speed > 0 && !math.IsInf(m.Speed, 0) && !math.IsNaN(m.Speed) && len(models) < 16 {
+			models = append(models, m)
+		}
+	}
+	cal.Whisper = models
 	var keep []CalibratedClass
 	for _, cc := range cal.Classes {
 		if cc.FPS > 0 && !math.IsInf(cc.FPS, 0) && !math.IsNaN(cc.FPS) && cc.Class != "" && len(cc.Class) <= 80 {
@@ -108,4 +131,57 @@ func parseClass(c string) (codec string, width, height int, preset string) {
 	fmt.Sscanf(c, "%s %s %s", &codec, &size, &preset)
 	fmt.Sscanf(size, "%dx%d", &width, &height)
 	return
+}
+
+// whisperSpeed is the worker's speed with a model, seconds of audio per second: measured on the
+// calibration speech, or guessed from small's measured speed and the catalogue's cost; false
+// when neither is there.
+func whisperSpeed(w *Worker, sha string) (float64, bool) {
+	if w.Caps == nil || w.Caps.Calibration == nil {
+		return 0, false
+	}
+	var small float64
+	for _, m := range w.Caps.Calibration.Whisper {
+		if m.SHA256 == sha {
+			return m.Speed, true
+		}
+		if m.SHA256 == SHASmall {
+			small = m.Speed
+		}
+	}
+	c, ok := catalogue[sha]
+	if !ok || small <= 0 || c.Cost <= 0 {
+		return 0, false
+	}
+	return small / c.Cost, true
+}
+
+// wantedModels are the models the queue wants a worker to hold (v0.2.7; Thorsten, 2026-10-27:
+// "Choose the whisper model based on measured performance at first launch"): small for the
+// caption timing, and the best model it runs at least WhisperMinSpeed times real time, by its
+// calibration, that fits its RAM with the headroom. Before small is timed, only small.
+func (s *Store) wantedModels(w *Worker) []CatalogueModel {
+	if w.Caps == nil {
+		return nil
+	}
+	out := []CatalogueModel{catalogue[SHASmall]}
+	min := s.cfg.WhisperMinSpeed
+	if min <= 0 {
+		min = 1
+	}
+	total := s.system(w).MemoryBytes
+	for _, sha := range Quality {
+		if sha == SHASmall {
+			break
+		}
+		c := catalogue[sha]
+		if total != nil && c.PeakBytes+headroom > *total {
+			continue
+		}
+		if v, ok := whisperSpeed(w, sha); ok && v >= min {
+			out = append(out, c)
+			break
+		}
+	}
+	return out
 }

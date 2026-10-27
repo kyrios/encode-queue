@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -123,8 +124,10 @@ type Me struct {
 
 // CapabilityReport is the queue's verdict on what this worker runs.
 type CapabilityReport struct {
-	Accepted []string `json:"accepted"`
-	Refused  []struct {
+	// WantedModels: the whisper models the queue wants this worker to hold (v0.2.7).
+	WantedModels []WantedModel `json:"wanted_models"`
+	Accepted     []string      `json:"accepted"`
+	Refused      []struct {
 		Kind   string `json:"kind"`
 		Reason string `json:"reason"`
 	} `json:"refused"`
@@ -223,9 +226,12 @@ func (c *Client) PutCapabilities(ctx context.Context, caps Capabilities) (Capabi
 }
 
 // PutPresence is the heartbeat; threadsBusy below 0 is unknown and not sent.
-func (c *Client) PutPresence(ctx context.Context, state string, diskFree, memUsed int64, threadsBusy int) (PresenceAck, error) {
+func (c *Client) PutPresence(ctx context.Context, state string, diskFree, memUsed int64, threadsBusy int, other float64) (PresenceAck, error) {
 	var a PresenceAck
 	body := map[string]any{"state": state}
+	if other >= 0 {
+		body["other_load"] = math.Round(other*10) / 10
+	}
 	if threadsBusy >= 0 {
 		body["threads_busy"] = threadsBusy
 	}
