@@ -265,6 +265,7 @@ func (s *Store) Claim(ctx context.Context, workerID string, req LeaseRequest, wa
 		}
 		s.seen(w)
 		now := s.cfg.Now()
+		w.AskedAt = ptrTime(now)
 		if err := s.canClaim(w, now, req.Extra); err != nil {
 			s.mu.Unlock()
 			return nil, err
@@ -275,6 +276,11 @@ func (s *Store) Claim(ctx context.Context, workerID string, req LeaseRequest, wa
 				Attempt: len(j.Attempts) + 1, State: LeaseActive, CreatedAt: now, ExpiresAt: now.Add(s.cfg.Lease), Extra: req.Extra}
 			_, l.Model = modelOn(w, j)
 			l.ECT, l.RunnerUp = e, runnerUp
+			if j.Pin != nil && j.Pin.WorkerID == w.ID {
+				l.Scoring = ScoringAssigned
+			} else {
+				l.Scoring = s.scoringNote(w, j, e, runnerUp, now)
+			}
 			l.HoldUntil = s.holdUntil(now, e)
 			if e != nil {
 				l.EstRunS = e.RunS

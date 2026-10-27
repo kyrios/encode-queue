@@ -94,7 +94,19 @@ func (e *env) worker(name string, tools []Tool) string {
 	return id
 }
 
+// presence says a worker is there and, as a live worker's loop does, asks for work (v0.2.10:
+// only an asking worker counts in the scoring). silent is a worker that is there and asks for
+// nothing: its worker died inside Slipstream, or it calibrates.
 func (e *env) presence(ids ...string) {
+	for _, id := range ids {
+		e.silent(id)
+		e.s.mu.Lock()
+		e.s.st.Workers[id].AskedAt = ptrTime(e.clock.Now())
+		e.s.mu.Unlock()
+	}
+}
+
+func (e *env) silent(ids ...string) {
 	for _, id := range ids {
 		if _, err := e.s.PutPresence(id, Presence{State: "idle"}); err != nil {
 			e.t.Fatal(err)

@@ -161,6 +161,8 @@ type Lease struct {
 	ECT      *ECT    `json:"ect,omitempty"`
 	RunnerUp *ECT    `json:"runner_up,omitempty"`
 	EstRunS  float64 `json:"est_run_s,omitempty"`
+	// Scoring: why the claim had the comparison it had (v0.2.10, scoringNote).
+	Scoring string `json:"scoring,omitempty"`
 }
 
 // Result is what an attempt delivered.
@@ -188,13 +190,15 @@ type Result struct {
 
 // Worker is a paired worker.
 type Worker struct {
-	ID          string        `json:"id"`
-	Name        string        `json:"name"`
-	Owner       string        `json:"owner,omitempty"`
-	PublicKey   string        `json:"public_key"`
-	Address     string        `json:"address"`
-	AddedAt     time.Time     `json:"added_at"`
-	LastSeen    *time.Time    `json:"last_seen,omitempty"`
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Owner     string     `json:"owner,omitempty"`
+	PublicKey string     `json:"public_key"`
+	Address   string     `json:"address"`
+	AddedAt   time.Time  `json:"added_at"`
+	LastSeen  *time.Time `json:"last_seen,omitempty"`
+	// AskedAt: when it last asked for work (v0.2.10), what makes it a competitor in the scoring.
+	AskedAt     *time.Time    `json:"asked_at,omitempty"`
 	PausedUntil *time.Time    `json:"paused_until,omitempty"`
 	PausedAt    *time.Time    `json:"paused_at,omitempty"`
 	Limits      Limits        `json:"limits"`

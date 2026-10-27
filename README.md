@@ -60,6 +60,16 @@ All three are OpenAPI 3.1.
   waited longer than 30 s (`now`), 2 min (`stage1`), 15 min (`stage2`) or 1 h (`archive`); else
   the queue looks at the next job for it. A job sent by hand, or one nobody's speed is known
   for, goes to whoever asks. Each attempt keeps its ECT and the runner-up's.
+  **Only a worker that takes work counts as the better one** (v0.2.10; Thorsten's live session,
+  2026-10-27: the Mac Studio's worker had died inside Slipstream, the Mac stayed connected, and
+  encoder, free, left an archive job to it for the hour of archive's wait). A worker is
+  `claiming` when it asked for work within two presence intervals or works on a lease; one that
+  died, calibrates or waits for models asks for nothing. A worker shows it, and so does each move
+  menu candidate. Each attempt says why it had the comparison it had, as `scoring`: `scored`,
+  `waited` (a better worker existed; the job's wait ran out), `assigned`, `only_worker` (no other
+  worker could take it), `not_claiming` (others could, but asked for nothing), `speed_unknown`
+  (others asked, but no worker's speed on the job's class is known: encoder, the reference,
+  needs a result or a calibration of the class first, and the others' speed is relative to it).
 - **Whisper models** (v0.2.7): a job may list `models` best first. A worker holding one may take
   it unless a connected worker holds a better one; the lease names the one chosen. The queue
   tells each worker which models to hold (`wanted_models`): small for caption timing and the

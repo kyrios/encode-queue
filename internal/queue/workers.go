@@ -283,6 +283,28 @@ func (s *Store) connected(w *Worker, now time.Time) bool {
 	return now.Sub(last) <= 3*s.cfg.PresenceEvery
 }
 
+// claiming says whether a worker takes work now (v0.2.10; Thorsten's live session, 2026-10-27:
+// the Mac Studio's worker had died inside Slipstream, the queue still counted it as connected,
+// and encoder, free, left an archive job for it for the hour of archive's max_wait). It asked
+// for work within two presence intervals, or works on a lease. A worker that calibrates, waits
+// for models or died asks for nothing.
+func (s *Store) claiming(w *Worker, now time.Time) bool {
+	if !s.connected(w, now) || s.paused(w, now) {
+		return false
+	}
+	if len(s.activeLeases(w.ID)) > 0 {
+		return true
+	}
+	if w.AskedAt == nil {
+		return false
+	}
+	last := *w.AskedAt
+	if s.started.After(last) {
+		last = s.started // the queue's own downtime does not count
+	}
+	return now.Sub(last) <= 2*s.cfg.PresenceEvery
+}
+
 func (s *Store) paused(w *Worker, now time.Time) bool {
 	return w.PausedUntil != nil && w.PausedUntil.After(now)
 }
