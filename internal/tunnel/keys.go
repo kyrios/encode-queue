@@ -57,6 +57,16 @@ func ParseKey(s string) (Key, error) {
 	return k, nil
 }
 
+func parseHexKey(s string) (Key, error) {
+	var k Key
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != 32 {
+		return k, errors.New("not a WireGuard key: want 32 bytes in hex")
+	}
+	copy(k[:], b)
+	return k, nil
+}
+
 // LoadOrCreateKey reads the private key in path, or makes one there (mode 0600) when the file
 // does not exist yet.
 func LoadOrCreateKey(path string) (Key, error) {

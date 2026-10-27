@@ -39,6 +39,16 @@ All three are OpenAPI 3.1.
 - **Preemption**: a stage 1 or stage 2 job that no free worker may run ends the active lease
   with the lowest priority (then the youngest) whose worker may run it; that worker's next
   renewal answers `410 preempted`.
+- **Moving a job to a worker** (`POST /v1/jobs/{id}/assign`): a queued or leased job goes to
+  one worker that is connected, not paused and runs the reference's tools. Its attempt on
+  another worker is preempted; the job is pinned to the target until the target leases it, or
+  until the target goes offline, is paused or removed.
+- **What the Encoder page sees of a worker**: its WireGuard endpoint and last handshake, CPU,
+  cores, threads in use, memory, OS, the transfer rates the queue measures (source downloads
+  and result uploads, a moving average), and `relative_speed`: its fps against the reference
+  worker's (the median of its last 5 results per codec, size and preset, against the reference's).
+  Each job has `eta_s` and `finish_at`; `GET /v1/jobs/{id}/candidates` estimates the job on
+  every worker for the move menu, and `DELETE /v1/jobs/{id}/assign` ends a pin.
 - **Late results** are taken and judged while the job is not done; the first accepted wins,
   later ones are `superseded`. A rejected or failed result excludes its worker from that job;
   after `max_failures` (3) the job is `failed`.
@@ -69,6 +79,7 @@ Every address, port, subnet and path comes from the environment; the image has n
 | `EQ_REFERENCE_WORKER` | the name of the worker whose tools jobs require by default |
 | `EQ_MIN_APP_VERSION` | workers below it get `426` |
 | `EQ_MAX_FAILURES` | default 3 |
+| `EQ_EXCLUDE_BACKOFF_S` | default 600: how long a job that every able worker is excluded from waits before the reference worker gets it again |
 | `EQ_RESULT_RESERVE_BYTES` | default 2 GiB |
 | `EQ_LEASE_S`, `EQ_RENEW_EVERY_S`, `EQ_LONG_POLL_S`, `EQ_PRESENCE_EVERY_S`, `EQ_PAUSE_GIVE_BACK_S`, `EQ_DONE_KEEP_S` | the timings, defaults 120, 30, 25, 30, 60 and 7 days |
 | `EQ_LOG_LEVEL` | `debug`, `info` (default), `warn`, `error` |
@@ -187,6 +198,15 @@ otherwise). Per-worker series carry `worker_id` and
 | `encode_queue_worker_speed` | gauge | Times real time the worker reported last, summed over its active leases; 0 when idle. |
 | `encode_queue_worker_last_seen_timestamp_seconds` | gauge | When the worker last called, in Unix seconds. |
 | `encode_queue_worker_tool_info` | gauge | The tool versions the worker runs, as labels; always 1. |
+| `encode_queue_worker_info` | gauge | The worker's version, OS, CPU model and architecture, as labels; always 1. |
+| `encode_queue_worker_cpu_threads` | gauge | Logical CPUs the worker can use. |
+| `encode_queue_worker_cpu_threads_in_use` | gauge | The encoder's thread limit: the worker's cpu_threads limit, or all its CPUs. |
+| `encode_queue_worker_memory_bytes` | gauge | The worker's memory. |
+| `encode_queue_worker_memory_used_bytes` | gauge | The worker's memory in use, from its last presence. |
+| `encode_queue_worker_transfer_bytes_per_second` | gauge | Moving average of the worker's transfer rate through the tunnel, by direction (download: sources, upload: results). |
+| `encode_queue_worker_relative_speed` | gauge | The worker's encoding speed against the reference worker on the same rung classes, a moving average; 1 is as fast. |
+| `encode_queue_worker_last_handshake_timestamp_seconds` | gauge | The worker's last WireGuard handshake, in Unix seconds. |
+| `encode_queue_jobs_pinned` | gauge | Queued jobs the Encoder page sent to one worker, waiting for it. |
 <!-- /metrics -->
 
 The counters come from the queue's state, so they survive a restart; a removed worker's series

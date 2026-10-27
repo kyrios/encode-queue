@@ -920,8 +920,16 @@ components:
             code:
               type: string
               enum: [source_checksum, decode_failed, encode_failed, tool_missing, model_missing, out_of_memory,
-                     local_check_failed, file_not_found, other]
+                     local_check_failed, file_not_found, killed, other]
+              description: |
+                `killed`: the tool ended by a signal (the kernel's OOM killer sends SIGKILL). It and
+                `out_of_memory` blame the machine, not the tools: the queue counts the failure but
+                gives the job to the same worker again; only the second such failure of the job on
+                one worker excludes it.
             message: { type: string, description: One line for a person. }
+            signal: { type: string, description: 'For `killed`: the signal''s name.', examples: [SIGKILL] }
+            exit_code: { type: integer, description: 'For `encode_failed`: the tool''s exit status.' }
+            memory_available_bytes: { type: integer, description: 'For `killed`: the memory a new process could get right after, as the worker reads it.' }
       discriminator: { propertyName: outcome }
     Check:
       type: object

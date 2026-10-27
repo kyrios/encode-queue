@@ -34,6 +34,15 @@ var MetricHelp = []struct{ Name, Type, Help string }{
 	{"encode_queue_worker_speed", "gauge", "Times real time the worker reported last, summed over its active leases; 0 when idle."},
 	{"encode_queue_worker_last_seen_timestamp_seconds", "gauge", "When the worker last called, in Unix seconds."},
 	{"encode_queue_worker_tool_info", "gauge", "The tool versions the worker runs, as labels; always 1."},
+	{"encode_queue_worker_info", "gauge", "The worker's version, OS, CPU model and architecture, as labels; always 1."},
+	{"encode_queue_worker_cpu_threads", "gauge", "Logical CPUs the worker can use."},
+	{"encode_queue_worker_cpu_threads_in_use", "gauge", "The encoder's thread limit: the worker's cpu_threads limit, or all its CPUs."},
+	{"encode_queue_worker_memory_bytes", "gauge", "The worker's memory."},
+	{"encode_queue_worker_memory_used_bytes", "gauge", "The worker's memory in use, from its last presence."},
+	{"encode_queue_worker_transfer_bytes_per_second", "gauge", "Moving average of the worker's transfer rate through the tunnel, by direction (download: sources, upload: results)."},
+	{"encode_queue_worker_relative_speed", "gauge", "The worker's encoding speed against the reference worker on the same rung classes, a moving average; 1 is as fast."},
+	{"encode_queue_worker_last_handshake_timestamp_seconds", "gauge", "The worker's last WireGuard handshake, in Unix seconds."},
+	{"encode_queue_jobs_pinned", "gauge", "Queued jobs the Encoder page sent to one worker, waiting for it."},
 }
 
 func esc(v string) string {
@@ -69,6 +78,14 @@ func (s *Store) WriteMetrics(w io.Writer, version string) {
 		ws = append(ws, w)
 	}
 	sort.Slice(ws, func(i, j int) bool { return ws[i].Name < ws[j].Name })
+	peers := s.peerStatus()
+	pinned := 0
+	for _, j := range s.st.Jobs {
+		if j.Pin != nil {
+			pinned++
+		}
+	}
+	add("encode_queue_jobs_pinned", "", float64(pinned))
 	for _, wk := range ws {
 		states[s.workerState(wk, now)]++
 		l := fmt.Sprintf(`worker_id="%s",worker="%s"`, wk.ID, esc(wk.Name))
@@ -117,6 +134,43 @@ func (s *Store) WriteMetrics(w io.Writer, version string) {
 		add("encode_queue_worker_speed", l, speed)
 		if wk.LastSeen != nil {
 			add("encode_queue_worker_last_seen_timestamp_seconds", l, float64(wk.LastSeen.Unix()))
+		}
+		sys := s.system(wk)
+		if wk.Caps != nil {
+			val := func(p *string) string {
+				if p == nil {
+					return ""
+				}
+				return esc(*p)
+			}
+			add("encode_queue_worker_info", l+fmt.Sprintf(`,app_version="%s",os="%s",cpu_model="%s",arch="%s"`,
+				esc(wk.Caps.AppVersion), esc(wk.Caps.OS), val(sys.CPUModel), val(sys.Arch)), 1)
+		}
+		if sys.CPUThreads != nil {
+			add("encode_queue_worker_cpu_threads", l, float64(*sys.CPUThreads))
+		}
+		if sys.ThreadsInUse != nil {
+			add("encode_queue_worker_cpu_threads_in_use", l, float64(*sys.ThreadsInUse))
+		}
+		if sys.MemoryBytes != nil {
+			add("encode_queue_worker_memory_bytes", l, float64(*sys.MemoryBytes))
+		}
+		if sys.MemoryUsed != nil {
+			add("encode_queue_worker_memory_used_bytes", l, float64(*sys.MemoryUsed))
+		}
+		for _, t := range []struct {
+			dir string
+			st  TransferStats
+		}{{DirDownload, wk.Download}, {DirUpload, wk.Upload}} {
+			if t.st.Samples > 0 {
+				add("encode_queue_worker_transfer_bytes_per_second", l+fmt.Sprintf(`,direction="%s"`, t.dir), t.st.AvgBps)
+			}
+		}
+		if r := s.relativeSpeed(wk); r != nil {
+			add("encode_queue_worker_relative_speed", l, *r)
+		}
+		if p, ok := peers[wk.PublicKey]; ok && !p.LastHandshake.IsZero() {
+			add("encode_queue_worker_last_handshake_timestamp_seconds", l, float64(p.LastHandshake.Unix()))
 		}
 		if wk.Caps != nil {
 			for _, t := range wk.Caps.Tools {

@@ -28,6 +28,9 @@ type AttemptResult struct {
 	FileURL     *string    `json:"file_url"`
 	FailureCode *string    `json:"failure_code"`
 	Message     *string    `json:"message"`
+	Signal      *string    `json:"signal"`
+	ExitCode    *int       `json:"exit_code"`
+	MemoryAvail *int64     `json:"memory_available_bytes"`
 	Checks      []Check    `json:"checks,omitempty"`
 	DeliveredAt time.Time  `json:"delivered_at"`
 	DecidedAt   *time.Time `json:"decided_at"`
@@ -76,7 +79,18 @@ type JobView struct {
 	StartedAt       *time.Time        `json:"started_at"`
 	FinishedAt      *time.Time        `json:"finished_at"`
 	ElapsedS        *float64          `json:"elapsed_s"`
+	ETAS            *int64            `json:"eta_s"`
+	FinishAt        *time.Time        `json:"finish_at"`
+	Waiting         *Waiting          `json:"waiting"`
+	PinnedTo        *PinView          `json:"pinned_to"`
 	Revision        int64             `json:"revision"`
+}
+
+// PinView is the worker a job was sent to.
+type PinView struct {
+	WorkerID string    `json:"worker_id"`
+	Name     string    `json:"name"`
+	PinnedAt time.Time `json:"pinned_at"`
 }
 
 func strp(s string) *string {
@@ -104,6 +118,7 @@ func (s *Store) attemptView(j *Job, l *Lease) AttemptView {
 	if r := l.Result; r != nil {
 		ar := &AttemptResult{Outcome: r.Outcome, Verdict: r.Verdict, SHA256: r.SHA256, Bytes: r.Bytes, Frames: r.Frames,
 			EncodeS: r.EncodeS, Tools: r.Tools, FailureCode: strp(r.FailureCode), Message: strp(r.Message),
+			Signal: strp(r.Signal), ExitCode: r.ExitCode, MemoryAvail: r.MemoryAvail,
 			Checks: r.Checks, DeliveredAt: r.DeliveredAt, DecidedAt: r.DecidedAt}
 		if r.Path != "" {
 			p := r.Path
@@ -116,6 +131,10 @@ func (s *Store) attemptView(j *Job, l *Lease) AttemptView {
 }
 
 func (s *Store) jobView(j *Job) JobView {
+	return s.jobViewWith(j, s.forecast(s.cfg.Now()))
+}
+
+func (s *Store) jobViewWith(j *Job, fc map[string]time.Time) JobView {
 	st := s.jobState(j)
 	v := JobView{ID: j.ID, UploadID: strp(j.Spec.UploadID), Title: strp(j.Spec.Title), Kind: j.Spec.Kind, Stage: j.Spec.Stage,
 		Priority: j.Priority, State: st, Params: j.Spec.Params, Source: j.Spec.Source, Inputs: j.Spec.Inputs,
@@ -137,6 +156,16 @@ func (s *Store) jobView(j *Job) JobView {
 			q = w.ModelSHA256[:12]
 		}
 		v.Quality = strp(q)
+	}
+	v.Waiting = s.waiting(j, s.cfg.Now())
+	if j.Final != "" {
+		v.FinishAt = j.FinishedAt
+	} else if t, ok := fc[j.ID]; ok {
+		t = t.UTC().Truncate(time.Second)
+		v.FinishAt = &t
+	}
+	if p := j.Pin; p != nil {
+		v.PinnedTo = &PinView{WorkerID: p.WorkerID, Name: s.workerRef(p.WorkerID, "").Name, PinnedAt: p.At}
 	}
 	for _, id := range j.Excluded {
 		v.ExcludedWorkers = append(v.ExcludedWorkers, s.workerRef(id, ""))
@@ -164,6 +193,7 @@ func (s *Store) jobView(j *Job) JobView {
 		end := s.cfg.Now()
 		if shown.State == LeaseActive {
 			v.Progress = shown.Progress
+			v.ETAS = eta(j, shown.Progress)
 		} else if shown.EndedAt != nil {
 			end = *shown.EndedAt
 		}
@@ -345,9 +375,127 @@ type WorkerView struct {
 	LastSeen      *time.Time      `json:"last_seen"`
 	AddedAt       time.Time       `json:"added_at"`
 	Counts        Counts          `json:"counts"`
+	Endpoint      *string         `json:"endpoint"`
+	LastHandshake *time.Time      `json:"last_handshake"`
+	TunnelState   *string         `json:"tunnel_state"`
+	System        WorkerSystem    `json:"system"`
+	Transfer      Transfer        `json:"transfer"`
+	RelativeSpeed *float64        `json:"relative_speed"`
+	SpeedClasses  []SpeedClass    `json:"speed_classes"`
+	FreeAt        *time.Time      `json:"free_at"`
+}
+
+// WorkerSystem is the worker's machine, from its capabilities' hardware.
+type WorkerSystem struct {
+	CPUModel     *string `json:"cpu_model"`
+	CPUCores     *int    `json:"cpu_cores"`
+	CPUThreads   *int    `json:"cpu_threads"`
+	ThreadsInUse *int    `json:"threads_in_use"`
+	MemoryBytes  *int64  `json:"memory_bytes"`
+	MemoryUsed   *int64  `json:"memory_used_bytes"`
+	OSName       *string `json:"os_name"`
+	OSVersion    *string `json:"os_version"`
+	Arch         *string `json:"arch"`
+	Kernel       *string `json:"kernel"`
+}
+
+// hardware is what a worker's capabilities may say about its machine (helper.yaml).
+type hardware struct {
+	Chip        string `json:"chip"`
+	CPUs        int    `json:"cpus"`
+	CPUCores    int    `json:"cpu_cores"`
+	CPUThreads  int    `json:"cpu_threads"`
+	MemoryBytes int64  `json:"memory_bytes"`
+	OSName      string `json:"os_name"`
+	OSVersion   string `json:"os_version"`
+	Arch        string `json:"arch"`
+	Kernel      string `json:"kernel"`
+}
+
+func intp(n int) *int {
+	if n <= 0 {
+		return nil
+	}
+	return &n
+}
+
+func (s *Store) system(w *Worker) WorkerSystem {
+	var hw hardware
+	if w.Caps != nil && len(w.Caps.Hardware) > 0 {
+		json.Unmarshal(w.Caps.Hardware, &hw) // a field of another type stays empty
+	}
+	threads := hw.CPUThreads
+	if threads == 0 {
+		threads = hw.CPUs
+	}
+	v := WorkerSystem{CPUModel: strp(hw.Chip), CPUCores: intp(hw.CPUCores), CPUThreads: intp(threads),
+		OSName: strp(hw.OSName), OSVersion: strp(hw.OSVersion), Arch: strp(hw.Arch), Kernel: strp(hw.Kernel)}
+	if hw.MemoryBytes > 0 {
+		m := hw.MemoryBytes
+		v.MemoryBytes = &m
+	}
+	v.MemoryUsed = w.MemoryUsed
+	v.ThreadsInUse = v.CPUThreads
+	if t := w.Limits.CPUThreads; t != nil {
+		n := *t
+		if v.CPUThreads != nil && n > *v.CPUThreads {
+			n = *v.CPUThreads
+		}
+		v.ThreadsInUse = &n
+	}
+	return v
+}
+
+// Transfer is how fast a worker moves files through the tunnel.
+type Transfer struct {
+	Download TransferRate `json:"download"`
+	Upload   TransferRate `json:"upload"`
+}
+
+// TransferRate is one direction.
+type TransferRate struct {
+	CurrentBps float64    `json:"current_bps"`
+	LastBps    *float64   `json:"last_bps"`
+	AvgBps     *float64   `json:"avg_bps"`
+	LastAt     *time.Time `json:"last_at"`
+	Samples    int64      `json:"samples"`
+}
+
+func (s *Store) rate(t TransferStats, now time.Time) TransferRate {
+	r := TransferRate{CurrentBps: t.current(now, 2*s.cfg.RenewEvery+5*time.Second), LastAt: t.LastAt, Samples: t.Samples}
+	if t.Samples > 0 {
+		last, avg := t.LastBps, t.AvgBps
+		r.LastBps, r.AvgBps = &last, &avg
+	}
+	return r
+}
+
+// SpeedClass is a worker's average fps on one rung class, beside the reference's.
+type SpeedClass struct {
+	Class         string    `json:"class"`
+	Codec         string    `json:"codec"`
+	Width         int       `json:"width"`
+	Height        int       `json:"height"`
+	Preset        string    `json:"preset"`
+	FPS           float64   `json:"fps"`
+	Samples       int       `json:"samples"`
+	ReferenceFPS  *float64  `json:"reference_fps"`
+	RelativeSpeed *float64  `json:"relative_speed"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+func (s *Store) peerStatus() map[string]PeerStatus {
+	if s.PeerStatus == nil {
+		return nil
+	}
+	return s.PeerStatus()
 }
 
 func (s *Store) workerView(w *Worker) WorkerView {
+	return s.workerViewWith(w, s.peerStatus())
+}
+
+func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerView {
 	now := s.cfg.Now()
 	v := WorkerView{ID: w.ID, Name: w.Name, Owner: strp(w.Owner), State: s.workerState(w, now), PublicKey: w.PublicKey,
 		Address: w.Address, Limits: w.Limits, LastSeen: w.LastSeen, AddedAt: w.AddedAt, Counts: w.Counts,
@@ -364,6 +512,39 @@ func (s *Store) workerView(w *Worker) WorkerView {
 			v.Hardware = c.Hardware
 		}
 	}
+	if p, ok := peers[w.PublicKey]; ok {
+		v.Endpoint = strp(p.Endpoint)
+		if !p.LastHandshake.IsZero() {
+			t := p.LastHandshake.UTC()
+			v.LastHandshake = &t
+			ts := "up"
+			if now.Sub(t) > tunnelUp {
+				ts = "down"
+			}
+			v.TunnelState = &ts
+		}
+	}
+	v.System = s.system(w)
+	v.Transfer = Transfer{Download: s.rate(w.Download, now), Upload: s.rate(w.Upload, now)}
+	v.RelativeSpeed = s.relativeSpeed(w)
+	if refW := s.referenceWorker(); refW == w && len(w.Speeds) > 0 {
+		one := 1.0
+		v.RelativeSpeed = &one
+	}
+	v.SpeedClasses = []SpeedClass{}
+	refW := s.referenceWorker()
+	for _, h := range w.Speeds {
+		sc := SpeedClass{Class: h.Class, Codec: h.Codec, Width: h.Width, Height: h.Height, Preset: h.Preset,
+			FPS: h.median(), Samples: len(h.FPS), UpdatedAt: h.UpdatedAt, RelativeSpeed: s.classRelative(w, h.Class)}
+		if refW != nil {
+			if rh := refW.speed(h.Class); rh != nil {
+				f := rh.median()
+				sc.ReferenceFPS = &f
+			}
+		}
+		v.SpeedClasses = append(v.SpeedClasses, sc)
+	}
+	v.FreeAt = s.freeAt(w, now, "")
 	acc, ref := s.kinds(w)
 	v.AcceptedKinds = acc
 	v.Refused = append(v.Refused, ref...)
@@ -470,6 +651,7 @@ func (s *Store) ListJobs(f JobFilter) JobList {
 		}
 		return lessJob(rows[a].j, rows[b].j)
 	})
+	fc := s.forecast(s.cfg.Now())
 	positions := map[string]int{}
 	for i, j := range s.queued() {
 		positions[j.ID] = i + 1
@@ -479,7 +661,7 @@ func (s *Store) ListJobs(f JobFilter) JobList {
 	}
 	out := JobList{ServerTime: s.cfg.Now().UTC(), Revision: s.st.Revision, Counts: s.counts(), Items: []JobView{}}
 	for i := f.Cursor; i < len(rows) && len(out.Items) < f.Limit; i++ {
-		v := s.jobView(rows[i].j)
+		v := s.jobViewWith(rows[i].j, fc)
 		if p, ok := positions[v.ID]; ok {
 			p := p
 			v.Position = &p
@@ -561,9 +743,13 @@ func (s *Store) changesLocked(since int64, limit int) Changes {
 		items = items[:limit]
 		c.Revision = items[len(items)-1].rev
 	}
+	var fc map[string]time.Time
 	for _, it := range items {
 		if j, ok := it.v.(*Job); ok {
-			c.Items = append(c.Items, s.jobView(j))
+			if fc == nil {
+				fc = s.forecast(s.cfg.Now())
+			}
+			c.Items = append(c.Items, s.jobViewWith(j, fc))
 		} else {
 			c.Items = append(c.Items, it.v)
 		}

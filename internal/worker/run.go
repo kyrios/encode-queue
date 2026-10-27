@@ -16,12 +16,15 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // failure is a job that failed here, with helper.yaml's code.
 type failure struct {
-	code string
-	msg  string
+	code  string
+	msg   string
+	extra map[string]any // signal, exit_code, memory_available_bytes
 }
 
 func (f *failure) Error() string { return f.code + ": " + f.msg }
@@ -199,7 +202,11 @@ func (r *run) end(parent context.Context, err error) Finished {
 	}
 	r.log("error", "worker", f.Error())
 	r.flushLogs(bg)
-	if _, perr := api.PutResult(bg, r.l.ID, map[string]any{"outcome": "failed", "code": f.code, "message": oneLine(f.msg)}); perr != nil {
+	body := map[string]any{"outcome": "failed", "code": f.code, "message": oneLine(f.msg)}
+	for k, v := range f.extra {
+		body[k] = v
+	}
+	if _, perr := api.PutResult(bg, r.l.ID, body); perr != nil {
 		if c, ok := gone(perr); ok {
 			return Finished{Outcome: "stopped", Reason: c}
 		}
@@ -678,7 +685,27 @@ func (r *run) runTool(ctx context.Context, args []string, source string, onBlock
 		lmu.Lock()
 		msg := strings.Join(last, " | ")
 		lmu.Unlock()
-		return fail("encode_failed", "%s: %v: %s", filepath.Base(args[0]), err, msg)
+		return toolFailure(filepath.Base(args[0]), err, msg)
 	}
 	return nil
+}
+
+// toolFailure is how a tool ended: killed by a signal (the OOM killer's SIGKILL, mostly) is
+// "killed", which the queue retries; an exit code is "encode_failed".
+func toolFailure(tool string, err error, msg string) error {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			extra := map[string]any{"signal": unix.SignalName(ws.Signal())}
+			text := fmt.Sprintf("%s: killed by %s", tool, unix.SignalName(ws.Signal()))
+			if avail := memoryAvailable(); avail > 0 {
+				extra["memory_available_bytes"] = avail
+				text += fmt.Sprintf(", %d MiB memory available afterwards", avail>>20)
+			}
+			return &failure{code: "killed", msg: text + ": " + msg, extra: extra}
+		}
+		return &failure{code: "encode_failed", msg: fmt.Sprintf("%s: %v: %s", tool, err, msg),
+			extra: map[string]any{"exit_code": ee.ExitCode()}}
+	}
+	return fail("encode_failed", "%s: %v: %s", tool, err, msg)
 }

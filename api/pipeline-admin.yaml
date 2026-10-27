@@ -32,7 +32,11 @@ info:
     4. **`accepted`**: the job is `done`; any other attempt still running is stopped
        (`410 job_done`), any other result waiting is `superseded`. **`rejected`**: the job goes
        back to `queued` and is never again offered to the worker that made it; after
-       `max_failures` rejections and failures together it is `failed`.
+       `max_failures` rejections and failures together it is `failed`. A failure with code
+       `killed` or `out_of_memory` (the machine, not the tools) counts too, but excludes the
+       worker only the second time on that job. When every worker able to run a job is
+       excluded, the job says so in `waiting`, and after `EQ_EXCLUDE_BACKOFF_S` (600 s) since
+       its last failure the reference worker (without one: every worker) gets it again.
     5. A lease that runs out, a worker that goes offline, a pause held past 60 s, a removed
        worker, a job of higher priority that needs the worker (`preempted`): the attempt ends
        and the job is `queued` again, the next attempt with the next number. A result that
@@ -815,8 +819,11 @@ components:
             tools: { type: array, items: { $ref: '#/components/schemas/Tool' } }
             path: { type: [string, 'null'], description: 'The file, relative to `EQ_RESULT_DIR`, while it exists.', examples: ['one_528.2160-stage2/1/2160.mp4'] }
             file_url: { type: [string, 'null'], description: '`/jobs/{id}/attempts/{n}/file`, while the file exists.' }
-            failure_code: { type: [string, 'null'] }
+            failure_code: { type: [string, 'null'], description: 'helper.yaml''s failure codes, `killed` among them.' }
             message: { type: [string, 'null'], description: 'A failure''s line, or the reason of a rejection.' }
+            signal: { type: [string, 'null'], description: 'The signal that ended the tool, for `killed`.', examples: [SIGKILL] }
+            exit_code: { type: [integer, 'null'], description: 'The tool''s exit status, for `encode_failed`.' }
+            memory_available_bytes: { type: [integer, 'null'], description: 'The worker''s available memory right after a `killed`.' }
             checks: { type: array, items: { $ref: '#/components/schemas/Check' } }
             delivered_at: { type: string, format: date-time }
             decided_at: { type: [string, 'null'], format: date-time }
@@ -874,6 +881,9 @@ components:
             would finish each first, each worker starting when its current attempts finish
             (see **Estimates**). Null when unknown, for example for whisper jobs and before
             any worker has a speed on the job's class.
+        waiting:
+          oneOf: [{ $ref: '#/components/schemas/Waiting' }, { type: 'null' }]
+          description: 'For a `queued` job that no worker could take now, why; null when one could and the job waits only for its turn or a free slot, and for every job not queued.'
         pinned_to:
           oneOf: [{ $ref: '#/components/schemas/Pin' }, { type: 'null' }]
           description: 'The worker the Encoder page sent the job to (`POST /jobs/{id}/assign`), until that worker leases it; null otherwise.'
@@ -922,6 +932,19 @@ components:
       required: [worker_id]
       properties:
         worker_id: { $ref: '#/components/schemas/WorkerId' }
+    Waiting:
+      type: object
+      required: [code, detail, retry_at]
+      properties:
+        code:
+          type: string
+          enum: [no_eligible_worker, all_excluded, no_worker_available]
+          description: |
+            `no_eligible_worker`: no paired worker runs the tools, model and fonts it needs.
+            `all_excluded`: every worker that does failed it or had its result rejected.
+            `no_worker_available`: those that may run it are all offline or paused.
+        detail: { type: string, description: One line for a person. }
+        retry_at: { type: [string, 'null'], format: date-time, description: 'For `all_excluded`: when the reference worker gets the job again; null when none will (the reference is not among the excluded).' }
     Pin:
       type: object
       required: [worker_id, name, pinned_at]

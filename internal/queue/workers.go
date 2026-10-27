@@ -225,8 +225,9 @@ func (s *Store) ListWorkers() []WorkerView {
 	}
 	sort.Slice(ws, func(i, j int) bool { return ws[i].Name < ws[j].Name })
 	out := make([]WorkerView, 0, len(ws))
+	peers := s.peerStatus()
 	for _, w := range ws {
-		out = append(out, s.workerView(w))
+		out = append(out, s.workerViewWith(w, peers))
 	}
 	return out
 }
@@ -408,9 +409,10 @@ func (s *Store) GetCapabilities(id string) (CapabilityReport, error) {
 
 // Presence is a worker's heartbeat.
 type Presence struct {
-	State    string `json:"state"`
-	DiskFree *int64 `json:"disk_free_bytes,omitempty"`
-	Battery  *bool  `json:"on_battery,omitempty"`
+	State      string `json:"state"`
+	DiskFree   *int64 `json:"disk_free_bytes,omitempty"`
+	Battery    *bool  `json:"on_battery,omitempty"`
+	MemoryUsed *int64 `json:"memory_used_bytes,omitempty"`
 }
 
 // PresenceAck answers a heartbeat.
@@ -435,6 +437,9 @@ func (s *Store) PutPresence(id string, p Presence) (PresenceAck, error) {
 	s.seen(w)
 	w.Presence = p.State
 	w.DiskFree = p.DiskFree
+	if p.MemoryUsed != nil {
+		w.MemoryUsed = p.MemoryUsed
+	}
 	s.touch(false)
 	now := s.cfg.Now()
 	ack := PresenceAck{ServerTime: now.UTC(), PresenceEveryS: int(s.cfg.PresenceEvery / time.Second), Draining: s.draining}

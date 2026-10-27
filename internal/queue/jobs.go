@@ -138,11 +138,16 @@ func (s *Store) requires(j *Job) (req Requires, onlyReference bool) {
 
 // mismatch says why a worker may not run a job, or "" when it may.
 func (s *Store) mismatch(w *Worker, j *Job) string {
+	if w.Caps != nil && contains(j.Excluded, w.ID) {
+		return "its result for this job failed or was rejected"
+	}
+	return s.mismatchTools(w, j)
+}
+
+// mismatchTools is mismatch without the exclusions: whether the worker could run the job.
+func (s *Store) mismatchTools(w *Worker, j *Job) string {
 	if w.Caps == nil {
 		return "no capabilities"
-	}
-	if contains(j.Excluded, w.ID) {
-		return "its result for this job failed or was rejected"
 	}
 	req, onlyRef := s.requires(j)
 	if onlyRef && w.Name != s.cfg.ReferenceWorker {
@@ -436,6 +441,168 @@ func (s *Store) MoveJob(id string, m Move) (JobView, error) {
 	return s.jobView(j), nil
 }
 
+// Assign is a move to one worker from the Encoder page.
+type Assign struct {
+	WorkerID string `json:"worker_id"`
+}
+
+// AssignJob sends a queued or leased job to one worker: an attempt on another worker is
+// preempted, and the job is pinned to the target until the target leases it.
+func (s *Store) AssignJob(id string, a Assign) (JobView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j := s.st.Jobs[id]
+	if j == nil {
+		return JobView{}, errf(404, "not_found", "no job %s", id)
+	}
+	if a.WorkerID == "" {
+		return JobView{}, errf(422, "invalid", "worker_id is required")
+	}
+	w := s.st.Workers[a.WorkerID]
+	if w == nil {
+		return JobView{}, errf(404, "not_found", "no worker %s", a.WorkerID)
+	}
+	st := s.jobState(j)
+	if st != StateQueued && st != StateLeased {
+		return JobView{}, errf(409, "not_movable", "%s is %s; only queued or leased jobs move to a worker", id, st)
+	}
+	active := s.activeLease(j)
+	if active != nil && active.WorkerID == w.ID {
+		return s.jobView(j), nil
+	}
+	if err := s.refusal(w, j, s.cfg.Now()); err != nil {
+		if err.Code == "worker_mismatch" {
+			err.Detail = fmt.Sprintf("%s may not run %s: %s", w.Name, id, err.Detail)
+		}
+		return JobView{}, err
+	}
+	if active != nil {
+		s.cfg.Log.Info("assign", "lease", active.ID, "job", j.ID, "from", active.Worker, "to", w.Name)
+		s.endLease(active, LeasePreempted, "assigned")
+	}
+	j.Pin = &Pin{WorkerID: w.ID, At: s.cfg.Now().UTC()}
+	s.bump(j)
+	s.touch(true)
+	return s.jobView(j), nil
+}
+
+// UnassignJob ends a job's pin.
+func (s *Store) UnassignJob(id string) (JobView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j := s.st.Jobs[id]
+	if j == nil {
+		return JobView{}, errf(404, "not_found", "no job %s", id)
+	}
+	if j.Pin != nil {
+		j.Pin = nil
+		s.bump(j)
+		s.touch(true)
+	}
+	return s.jobView(j), nil
+}
+
+// Candidate is a worker as a target for a job (the move menu).
+type Candidate struct {
+	Worker        WorkerRef  `json:"worker"`
+	State         string     `json:"state"`
+	Available     bool       `json:"available"`
+	ReasonCode    *string    `json:"reason_code"`
+	Reason        *string    `json:"reason"`
+	Current       bool       `json:"current"`
+	Pinned        bool       `json:"pinned"`
+	FreeAt        *time.Time `json:"free_at"`
+	RelativeSpeed *float64   `json:"relative_speed"`
+	EncodeS       *float64   `json:"encode_s"`
+	FinishAt      *time.Time `json:"finish_at"`
+}
+
+// Candidates is the answer of GET /jobs/{id}/candidates.
+type Candidates struct {
+	ServerTime time.Time   `json:"server_time"`
+	Items      []Candidate `json:"items"`
+}
+
+// refusal is why a worker may not take a job now, as AssignJob refuses it.
+func (s *Store) refusal(w *Worker, j *Job, now time.Time) *Error {
+	if !s.connected(w, now) {
+		return errf(409, "worker_offline", "%s is offline", w.Name)
+	}
+	if s.paused(w, now) {
+		return errf(409, "worker_paused", "%s is paused until %s", w.Name, w.PausedUntil.Format(time.RFC3339))
+	}
+	accepted, refused := s.kinds(w)
+	if !contains(accepted, j.Spec.Kind) {
+		reason := "it takes no " + j.Spec.Kind + " jobs"
+		for _, r := range refused {
+			if r.Kind == j.Spec.Kind {
+				reason = r.Reason
+			}
+		}
+		return errf(409, "worker_mismatch", "%s", reason)
+	}
+	if why := s.mismatch(w, j); why != "" {
+		return errf(409, "worker_mismatch", "%s", why)
+	}
+	return nil
+}
+
+// JobCandidates is every worker as a target for a job.
+func (s *Store) JobCandidates(id string) (Candidates, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j := s.st.Jobs[id]
+	if j == nil {
+		return Candidates{}, errf(404, "not_found", "no job %s", id)
+	}
+	now := s.cfg.Now()
+	out := Candidates{ServerTime: now.UTC(), Items: []Candidate{}}
+	var ws []*Worker
+	for _, w := range s.st.Workers {
+		ws = append(ws, w)
+	}
+	sort.Slice(ws, func(a, b int) bool { return ws[a].Name < ws[b].Name })
+	active := s.activeLease(j)
+	ut := func(t time.Time) *time.Time {
+		t = t.UTC().Truncate(time.Second)
+		return &t
+	}
+	for _, w := range ws {
+		c := Candidate{Worker: WorkerRef{ID: w.ID, Name: w.Name}, State: s.workerState(w, now),
+			Pinned: j.Pin != nil && j.Pin.WorkerID == w.ID}
+		if j.rung != nil {
+			c.RelativeSpeed = s.classRelative(w, rungClass(j.rung))
+		}
+		if c.RelativeSpeed == nil {
+			c.RelativeSpeed = s.relativeSpeed(w)
+		}
+		if active != nil && active.WorkerID == w.ID {
+			c.Current, c.Available = true, true
+			if e := eta(j, active.Progress); e != nil {
+				c.FinishAt = ut(now.Add(time.Duration(*e) * time.Second))
+			}
+			c.FreeAt = ut(now)
+			out.Items = append(out.Items, c)
+			continue
+		}
+		if err := s.refusal(w, j, now); err != nil {
+			c.ReasonCode, c.Reason = &err.Code, &err.Detail
+			out.Items = append(out.Items, c)
+			continue
+		}
+		c.Available = j.Final == ""
+		if f := s.freeAt(w, now, j.ID); f != nil {
+			c.FreeAt = ut(*f)
+			if d := s.encodeSeconds(w, j); d > 0 {
+				c.EncodeS = &d
+				c.FinishAt = ut(f.Add(time.Duration(d * float64(time.Second))))
+			}
+		}
+		out.Items = append(out.Items, c)
+	}
+	return out, nil
+}
+
 // endLease ends an active lease without a result and counts it against its worker.
 func (s *Store) endLease(l *Lease, state, code string) {
 	now := s.cfg.Now()
@@ -503,6 +670,7 @@ func (s *Store) CancelJob(id string) (JobView, error) {
 	}
 	j.Final = StateCancelled
 	j.FinishedAt = ptrTime(s.cfg.Now())
+	j.Pin = nil
 	s.bump(j)
 	s.touch(true)
 	return s.jobView(j), nil
@@ -523,6 +691,7 @@ func (s *Store) RetryJob(id string) (JobView, error) {
 	j.FinishedAt = nil
 	j.Failures = 0
 	j.Excluded = nil
+	j.Killed = nil
 	j.QueuedAt = s.cfg.Now()
 	s.bump(j)
 	s.touch(true)
@@ -592,7 +761,7 @@ func (s *Store) PutVerdict(id string, attempt int, v Verdict) (JobView, error) {
 		if w != nil {
 			w.Counts.Rejected++
 		}
-		s.countFailure(j, l.WorkerID)
+		s.countFailure(j, l.WorkerID, true)
 	}
 	s.bump(j)
 	s.touch(true)
@@ -601,9 +770,10 @@ func (s *Store) PutVerdict(id string, attempt int, v Verdict) (JobView, error) {
 
 // countFailure counts a rejection or failure: the worker gets the job no more, and the job
 // fails once it reached its limit and nothing else is under way.
-func (s *Store) countFailure(j *Job, workerID string) {
+func (s *Store) countFailure(j *Job, workerID string, exclude bool) {
 	j.Failures++
-	if !contains(j.Excluded, workerID) {
+	j.FailedAt = ptrTime(s.cfg.Now())
+	if exclude && !contains(j.Excluded, workerID) {
 		j.Excluded = append(j.Excluded, workerID)
 	}
 	max := j.Spec.MaxFailures

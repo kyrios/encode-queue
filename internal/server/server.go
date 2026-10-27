@@ -139,6 +139,18 @@ func workerPatch(m map[string]json.RawMessage, allowName, allowLimits bool) (que
 	return p, nil
 }
 
+// countingWriter counts the body bytes written, for the transfer rates.
+type countingWriter struct {
+	http.ResponseWriter
+	n int64
+}
+
+func (c *countingWriter) Write(b []byte) (int, error) {
+	n, err := c.ResponseWriter.Write(b)
+	c.n += int64(n)
+	return n, err
+}
+
 // serveFile sends a file with Range support and its sha256 as the ETag.
 func serveFile(w http.ResponseWriter, r *http.Request, path, sha string) error {
 	f, err := os.Open(path)
@@ -234,7 +246,11 @@ func (s *Server) HelperHandler() http.Handler {
 		if err != nil {
 			return err
 		}
-		return serveFile(w, r, path, sha)
+		cw := &countingWriter{ResponseWriter: w}
+		start := time.Now()
+		err = serveFile(cw, r, path, sha)
+		st.NoteTransfer(wid, queue.DirDownload, cw.n, time.Since(start))
+		return err
 	}
 	h("GET /v1/jobs/{job_id}/source", source)
 	h("GET /v1/jobs/{job_id}/inputs/{name}", source)
@@ -595,6 +611,34 @@ func (s *Server) AdminHandler(withMetrics bool) http.Handler {
 			return err
 		}
 		v, err := st.MoveJob(r.PathValue("job_id"), m)
+		if err != nil {
+			return err
+		}
+		writeJSON(w, 200, v)
+		return nil
+	})
+	h("POST /v1/jobs/{job_id}/assign", callerNone, func(w http.ResponseWriter, r *http.Request) error {
+		var a queue.Assign
+		if err := decode(r, 64<<10, &a); err != nil {
+			return err
+		}
+		v, err := st.AssignJob(r.PathValue("job_id"), a)
+		if err != nil {
+			return err
+		}
+		writeJSON(w, 200, v)
+		return nil
+	})
+	h("DELETE /v1/jobs/{job_id}/assign", callerNone, func(w http.ResponseWriter, r *http.Request) error {
+		v, err := st.UnassignJob(r.PathValue("job_id"))
+		if err != nil {
+			return err
+		}
+		writeJSON(w, 200, v)
+		return nil
+	})
+	h("GET /v1/jobs/{job_id}/candidates", callerNone, func(w http.ResponseWriter, r *http.Request) error {
+		v, err := st.JobCandidates(r.PathValue("job_id"))
 		if err != nil {
 			return err
 		}

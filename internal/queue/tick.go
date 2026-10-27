@@ -46,6 +46,12 @@ func (s *Store) Tick() {
 			changed = true
 		}
 	}
+	if s.liftExclusions(now) {
+		changed = true
+	}
+	if s.dropPins(now) {
+		changed = true
+	}
 	if s.preempt(now) {
 		changed = true
 	}
@@ -93,6 +99,9 @@ func (s *Store) preempt(now time.Time) bool {
 		workers = append(workers, w)
 	}
 	for _, j := range s.queued() {
+		if j.Pin != nil {
+			continue // it waits for its worker
+		}
 		p := prioIndex(j.Priority)
 		if p >= prioIndex("archive") {
 			break // queued() is in order: nothing further is new
@@ -139,6 +148,24 @@ func (s *Store) preempt(now time.Time) bool {
 		s.endLease(victim, LeasePreempted, "preempted")
 		changed = true
 		// The worker is free now; the next job in line finds it so and preempts no other.
+	}
+	return changed
+}
+
+// dropPins ends the pins whose worker is gone, offline or paused: the job is an ordinary
+// queued job again.
+func (s *Store) dropPins(now time.Time) bool {
+	changed := false
+	for _, j := range s.st.Jobs {
+		if j.Pin == nil {
+			continue
+		}
+		w := s.st.Workers[j.Pin.WorkerID]
+		if j.Final != "" || w == nil || !s.connected(w, now) || s.paused(w, now) {
+			j.Pin = nil
+			s.bump(j)
+			changed = true
+		}
 	}
 	return changed
 }
