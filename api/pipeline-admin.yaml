@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.1.0
+  version: 1.1.1
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -310,7 +310,7 @@ paths:
       summary: Every worker as a target for this job (the move menu)
       description: |
         One item per worker, by name. `available` is whether `POST /jobs/{id}/assign` would
-        take it; when not, `reason_code` and `reason` say why (the page greys the item and shows
+        take it; when not, `reason_code` and `reason` always say why (the page greys the item and shows
         the reason). `current` marks the worker that runs the job now: its `finish_at` is the
         running attempt's. For every other worker the job starts over there ("Neu starten
         auf …" for a running job): `free_at` is when it has a free slot (now, or when its
@@ -975,7 +975,14 @@ components:
         paused_until: { type: [string, 'null'], format: date-time }
         public_key: { type: string }
         tunnel_address: { type: string, examples: ['10.10.20.11'] }
-        app_version: { type: [string, 'null'] }
+        app_version: { type: [string, 'null'], description: "The worker's own version (encode-worker)." }
+        host_app:
+          type: [object, 'null']
+          description: 'The app the worker runs inside, from its capabilities (helper.yaml''s `host_app`): "Slipstream" and its version. Null for a worker on its own, such as `encoder`''s container.'
+          required: [name, version]
+          properties:
+            name: { type: string, examples: [Slipstream] }
+            version: { type: string, examples: ['1.0.3'] }
         os: { type: [string, 'null'] }
         tools: { type: array, items: { $ref: '#/components/schemas/Tool' }, description: What it said it runs. }
         models: { type: array, items: { type: object, properties: { name: { type: string }, sha256: { type: string } } } }
@@ -1101,7 +1108,10 @@ components:
         worker: { $ref: '#/components/schemas/WorkerRef' }
         state: { type: string, enum: [idle, working, paused, offline] }
         available: { type: boolean }
-        reason_code: { type: [string, 'null'], enum: [worker_offline, worker_paused, worker_mismatch, null] }
+        reason_code:
+          type: [string, 'null']
+          enum: [not_movable, worker_offline, worker_paused, worker_mismatch, null]
+          description: 'Set whenever `available` is false, and only then. `not_movable`: the job is not `queued` or `leased` (it is `checking` or finished), so no worker is a target; `worker_offline` also covers a worker paired but not yet connected.'
         reason: { type: [string, 'null'], examples: ['libx265 differs: worker 4.0, reference 4.3+1-e9b8812'] }
         current: { type: boolean, description: It runs the job now. }
         pinned: { type: boolean, description: The job is pinned to it. }

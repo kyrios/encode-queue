@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue helper API
-  version: 1.1.0
+  version: 1.1.1
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
@@ -678,6 +678,17 @@ components:
       properties:
         app_version: { type: string, description: 'The worker''s own version (encode-worker''s release, e.g. `0.1.0`)., examples: [''0.1.0'']' }
         os: { type: string, examples: ['macOS 26.1', 'Debian 13 (linux/amd64)'] }
+        host_app:
+          type: object
+          required: [name, version]
+          description: |
+            The app the worker runs inside, if any (Slipstream on a Mac). Shown on the Encoder
+            page; never compared with `min_app_version`, which applies to `app_version` only.
+            The worker sends it when it is started with `EQ_HOST_APP_NAME` and
+            `EQ_HOST_APP_VERSION` (or `--host-app-name`, `--host-app-version`).
+          properties:
+            name: { type: string, maxLength: 64, examples: [Slipstream] }
+            version: { type: string, maxLength: 64, examples: ['1.0.3'] }
         tools: { type: array, items: { $ref: '#/components/schemas/Tool' } }
         models: { type: array, items: { $ref: '#/components/schemas/Model' } }
         fonts: { type: array, items: { type: string }, description: 'Font families libass can use (fontconfig names)., examples: [[''Inter ExtraBold'']]' }
