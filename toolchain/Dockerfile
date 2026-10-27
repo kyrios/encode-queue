@@ -6,9 +6,12 @@
 # because x265 reads its version from x265Version.txt only when git is found.
 FROM debian:trixie-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates cmake curl git \
-      gperf meson nasm ninja-build pkg-config unzip xxd zlib1g-dev \
+      gperf nasm ninja-build pkg-config python3-venv unzip xxd zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY versions build.sh /toolchain/
+# meson as toolchain/versions pins it (Debian's is too old for fontconfig), only for the build.
+RUN . /toolchain/versions && python3 -m venv /opt/meson && /opt/meson/bin/pip install --no-cache-dir "meson==$MESON_VERSION" \
+    && ln -s /opt/meson/bin/meson /usr/local/bin/meson
 COPY check /toolchain/check/
 RUN /toolchain/build.sh /opt/encode-toolchain /tmp/toolchain && rm -rf /tmp/toolchain
 

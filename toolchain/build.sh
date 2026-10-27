@@ -9,6 +9,7 @@
 #
 #   toolchain/build.sh PREFIX [WORKDIR]
 #
+# meson at toolchain/versions' MESON_VERSION (from PyPI) on both platforms.
 # On Linux (the image's build stage) it needs build-essential, nasm, cmake, meson, ninja, xxd,
 # pkg-config, curl, git (x265 reads its version file only when git is found), and libass-dev
 # and zlib1g-dev; on macOS Xcode's tools, cmake, meson, ninja
@@ -69,6 +70,7 @@ mesonlib() { # dir options...
     && ninja -C build >>"$work/$d.log" 2>&1 && ninja -C build install >>"$work/$d.log" 2>&1) \
     || { tail -60 "$work/$d.log"; tail -40 "$work/$d/build/meson-logs/meson-log.txt" 2>/dev/null; exit 1; }
 }
+case $(meson --version) in "$MESON_VERSION") ;; *) echo "meson $(meson --version), not $MESON_VERSION" >&2; exit 1 ;; esac
 echo "== expat $EXPAT_VERSION"
 unpack expat.tar.xz expat
 (cd "$work/expat" && cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$deps" \

@@ -77,7 +77,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: build tools for the build (on the runner only)
-        run: brew install meson ninja pkgconf gperf
+        run: |
+          brew install ninja pkgconf gperf
+          . toolchain/versions
+          python3 -m venv "$RUNNER_TEMP/meson" && "$RUNNER_TEMP/meson/bin/pip" install -q "meson==$MESON_VERSION"
+          echo "$RUNNER_TEMP/meson/bin" >> "$GITHUB_PATH"
       - name: build
         run: |
           toolchain/build.sh "$PWD/dist/encode-toolchain" "$RUNNER_TEMP/toolchain"

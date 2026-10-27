@@ -38,6 +38,10 @@ WHISPER_VERSION=v1.9.5
 WHISPER_URL=https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.5.tar.gz
 WHISPER_SHA256=ff1a9053feb509ff9d7729703355541ae9690073a6b1c40eb692c962e0dc1720
 
+# The build tool for the meson-built parts, from PyPI on both platforms: fontconfig 2.18 needs
+# meson 1.11 or later, and Debian 13 has 1.7.
+MESON_VERSION=1.12.1
+
 # The caption stack (libass with fontconfig), the same on Linux and macOS.
 LIBASS_VERSION=0.17.5
 LIBASS_URL=https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz
