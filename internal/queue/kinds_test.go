@@ -103,9 +103,15 @@ func TestTheFiguresGoToThePipeline(t *testing.T) {
 	if _, err := e.s.Deliver(w, l.ID, in); err != nil {
 		t.Fatal(err)
 	}
-	a := must(e.s.GetJob("d.2160-stage1")).Attempts[0]
-	if a.Result == nil || string(a.Result.Check) != figures || a.Result.Verdict != VerdictChecking {
-		t.Fatalf("the attempt's figures: %+v", a.Result)
+	// video-pipeline #7 reads these from GET /jobs/{id}: the job checking, its attempt's result
+	// with the figures (result.check), the file's sha256 (result.sha256) and its file_url.
+	jv := must(e.s.GetJob("d.2160-stage1"))
+	a := jv.Attempts[0]
+	if a.Result == nil || string(a.Result.Check) != figures || a.Result.Verdict != VerdictChecking || jv.State != StateChecking {
+		t.Fatalf("the attempt's figures: %s %+v", jv.State, a.Result)
+	}
+	if a.Result.SHA256 != sha(content) || a.Result.FileURL == nil || *a.Result.FileURL != "/v1/jobs/d.2160-stage1/attempts/1/file" {
+		t.Fatalf("the result's sha256 and file: %q %v", a.Result.SHA256, a.Result.FileURL)
 	}
 	// A check job: figures and no file; the pipeline accepts it like a file.
 	e.submit("c.check", KindCheck, checkParams, map[string]FileIn{"candidate": e.source("c/2160.mp4", "a file")})
@@ -121,6 +127,10 @@ func TestTheFiguresGoToThePipeline(t *testing.T) {
 	}
 	if _, err := e.s.Deliver(w, l.ID, ResultIn{Outcome: "figures", Check: json.RawMessage(figures), EncodeS: 41.2, Tools: reference[:1]}); err != nil {
 		t.Fatal(err)
+	}
+	// It waits as checking for the verdict, like a file, and has no file.
+	if v := must(e.s.GetJob("c.check")); v.State != StateChecking || v.Attempts[0].Result.FileURL != nil || v.Attempts[0].Result.SHA256 != "" {
+		t.Fatalf("a check job before its verdict: %s %+v", v.State, v.Attempts[0].Result)
 	}
 	if v, err := e.s.PutVerdict("c.check", 1, Verdict{Verdict: VerdictAccepted}); err != nil || v.State != "done" {
 		t.Fatalf("the verdict: %+v %v", v.State, err)
