@@ -42,3 +42,48 @@ func TestCaptionJobsNeedTheReferencesLibass(t *testing.T) {
 		t.Fatalf("a plain rung on a worker without libass: %q", why)
 	}
 }
+
+// encoder on toolchain 3 (libass 0.17.5 added; ffmpeg, libx265, libx264 and whisper.cpp read the
+// same as toolchain 2, the releases' versions-darwin-arm64.txt diffed on 2026-10-27), a Mac still
+// on toolchain 2 (Slipstream 1.2.0, worker v0.2.4): rung and whisper jobs go on reaching the Mac;
+// only caption jobs need libass. The toolchain's own number is never a tool.
+func TestAToolchain2WorkerAgainstAToolchain3Reference(t *testing.T) {
+	e := newEnv(t, "encoder")
+	tc2 := []Tool{{"ffmpeg", "9.0.2"}, {"libx265", "4.3+1-e9b8812"}, {"libx264", "core 165 r3222 b35605a"}, {"whisper.cpp", "v1.9.5"}}
+	tc3 := append(append([]Tool(nil), tc2...), Tool{"libass", "0.17.5"})
+	ref := e.worker("encoder", tc3)
+	mac := e.worker("mac", tc2)
+	e.s.st.Workers[ref].Caps.Fonts = []string{"Inter ExtraBold"}
+	e.s.st.Workers[mac].Caps.AppVersion = "0.2.4"
+	rep := must(e.s.GetCapabilities(mac))
+	if !contains(rep.Accepted, KindRung) || !contains(rep.Accepted, KindWhisper) || len(rep.Refused) != 0 {
+		t.Fatalf("the Mac's kinds: accepted %v refused %+v", rep.Accepted, rep.Refused)
+	}
+	e.rung("a.2160-archive", "archive")
+	if why := e.s.mismatch(e.s.st.Workers[mac], e.s.st.Jobs["a.2160-archive"]); why != "" {
+		t.Fatalf("a rung: %q", why)
+	}
+	f := e.source("w/sound.wav", "RIFF")
+	if _, _, err := e.s.Submit("w.whisper", JobSubmit{Kind: KindWhisper, Priority: "stage1", Params: json.RawMessage(`{"model_sha256":"` + modelSHA + `","language":"de"}`),
+		Source: SourceIn{FileIn: f, Container: "wav"}, Result: ResultSpec{Name: "w.json", MaxBytes: 1 << 20}}); err != nil {
+		t.Fatal(err)
+	}
+	if why := e.s.mismatch(e.s.st.Workers[mac], e.s.st.Jobs["w.whisper"]); why != "" {
+		t.Fatalf("whisper: %q", why)
+	}
+	ass := e.source("v/captions.ass", "[Script Info]")
+	params := `{"rung":"loop","codec":"libx264","preset":"veryfast","crf":20,"width":1080,"height":1080,"captions":{"input":"captions","font":"Inter ExtraBold"}}`
+	if _, _, err := e.s.Submit("v.loop", JobSubmit{Kind: KindRung, Priority: PriorityNow, Params: json.RawMessage(params),
+		Source: SourceIn{FileIn: e.source("v/master.mov", "m"), Width: 3840, Height: 2160}, Inputs: map[string]FileIn{"captions": ass}, Result: ResultSpec{Name: "loop.mp4", MaxBytes: 1 << 30}}); err != nil {
+		t.Fatal(err)
+	}
+	if why := e.s.mismatch(e.s.st.Workers[mac], e.s.st.Jobs["v.loop"]); why == "" {
+		t.Fatal("a caption job reached a worker without libass")
+	}
+	if why := e.s.mismatch(e.s.st.Workers[ref], e.s.st.Jobs["v.loop"]); why != "" {
+		t.Fatalf("the caption job on the reference: %q", why)
+	}
+	if l := e.claim(mac); l == nil || l.Job.ID == "v.loop" {
+		t.Fatalf("the Mac's claim: %+v", l)
+	}
+}
