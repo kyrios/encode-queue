@@ -27,7 +27,7 @@ jobs:
         include:
           - name: encode-queue
             file: docker/queue.Dockerfile
-          - name: encode-worker
+          - name: slipstream # the helper's image; encode-worker is its binary
             file: docker/worker.Dockerfile
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

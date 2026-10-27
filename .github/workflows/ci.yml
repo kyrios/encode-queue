@@ -53,12 +53,12 @@ jobs:
           file: docker/worker.Dockerfile
           platforms: linux/amd64
           load: true
-          tags: encode-worker:ci
+          tags: slipstream:ci
           cache-from: type=gha,scope=worker
           cache-to: type=gha,mode=max,scope=worker
       - name: the images start, and the worker's tools are there
         run: |
           docker run --rm encode-queue:ci -version
-          docker run --rm encode-worker:ci versions | tee versions.json
+          docker run --rm slipstream:ci versions | tee versions.json
           for t in ffmpeg libx265 libx264 whisper.cpp; do jq -e --arg t "$t" '.tools[] | select(.name == $t)' versions.json >/dev/null; done
           jq -e '.fonts | index("Inter ExtraBold")' versions.json >/dev/null

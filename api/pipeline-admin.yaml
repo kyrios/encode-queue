@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.2.0
+  version: 1.3.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -372,6 +372,20 @@ paths:
         The job is `cancelled`; a worker that holds it stops at its next progress report
         (`410 lease_cancelled`), and results still waiting are dropped. The pipeline learns it
         through `/changes`. A finished job answers `409 finished`.
+
+        The body is optional: `by` (who cancelled, for example the Encoder page's signed-in
+        user or `pipeline`) and `reason` (one line, for example `von Hand` or
+        `neue Datei hochgeladen`). Both show in the job's `cancelled`. Without them, `by` is the
+        caller's token (`admin` or `pipeline`) and `reason` is null.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                by: { type: string, maxLength: 64, examples: [thorsten] }
+                reason: { type: string, maxLength: 200, examples: [von Hand, neue Datei hochgeladen] }
       responses:
         '200':
           description: The job, cancelled.
@@ -912,6 +926,14 @@ components:
             would finish each first, each worker starting when its current attempts finish
             (see **Estimates**). Null when unknown, for example for whisper jobs and before
             any worker has a speed on the job's class.
+        cancelled:
+          type: [object, 'null']
+          description: 'Who cancelled the job, why and when; null for a job never cancelled, and again after `retry`.'
+          required: [by, reason, at]
+          properties:
+            by: { type: string, examples: [thorsten, admin, pipeline] }
+            reason: { type: [string, 'null'], examples: [von Hand, neue Datei hochgeladen] }
+            at: { type: string, format: date-time }
         waiting:
           oneOf: [{ $ref: '#/components/schemas/Waiting' }, { type: 'null' }]
           description: 'For a `queued` job that no worker could take now, why; null when one could and the job waits only for its turn or a free slot, and for every job not queued.'
@@ -1075,6 +1097,15 @@ components:
             NAT this is the router's address. Null until a handshake.
           examples: ['203.0.113.7:51820', '[2001:db8::7]:61234']
         last_handshake: { type: [string, 'null'], format: date-time, description: 'The peer''s last WireGuard handshake; null before the first.' }
+        tunnel_since:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            When the tunnel last came up: the handshake that turned `tunnel_state` to `up` after
+            it was `down` or before any. It stays while the tunnel stays up (the handshakes
+            that renew it every 2 minutes do not move it), and is null while it is down. The
+            queue looks at the tunnel every second; after the queue restarts, it is the first
+            handshake since.
         tunnel_state:
           type: [string, 'null']
           enum: [up, down, null]

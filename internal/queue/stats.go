@@ -369,3 +369,23 @@ func (s *Store) forecast(now time.Time) map[string]time.Time {
 	}
 	return out
 }
+
+// watchTunnels notes when each worker's tunnel came up: the handshake that made it up after
+// it was down or before any. A renewal while it stays up leaves the time as it is.
+func (s *Store) watchTunnels(now time.Time) {
+	peers := s.peerStatus()
+	if peers == nil {
+		return
+	}
+	for _, w := range s.st.Workers {
+		p, ok := peers[w.PublicKey]
+		up := ok && !p.LastHandshake.IsZero() && now.Sub(p.LastHandshake) <= tunnelUp
+		switch {
+		case !up:
+			w.tunnelSince = nil
+		case w.tunnelSince == nil:
+			t := p.LastHandshake
+			w.tunnelSince = &t
+		}
+	}
+}

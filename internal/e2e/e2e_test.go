@@ -462,6 +462,18 @@ func TestTokensAreKeptApart(t *testing.T) {
 	if code := h.call("POST", "/v1/jobs/cleanup", adminToken, map[string]any{"states": []string{"queued"}}, nil); code != 422 {
 		t.Fatalf("cleaning up queued jobs: %d", code)
 	}
+	// Cancel with and without a body.
+	h.rungJob("one_1.2160-archive", "archive", nil)
+	h.rungJob("one_2.2160-archive", "archive", nil)
+	var v queue.JobView
+	if code := h.call("POST", "/v1/jobs/one_1.2160-archive/cancel", adminToken, map[string]string{"by": "thorsten", "reason": "von Hand"}, &v); code != 200 ||
+		v.Cancelled == nil || v.Cancelled.By != "thorsten" || *v.Cancelled.Reason != "von Hand" {
+		t.Fatalf("cancel with a body: %d %+v", code, v.Cancelled)
+	}
+	if code := h.call("POST", "/v1/jobs/one_2.2160-archive/cancel", pipelineToken, nil, &v); code != 200 ||
+		v.Cancelled == nil || v.Cancelled.By != "pipeline" || v.Cancelled.Reason != nil {
+		t.Fatalf("cancel without a body: %d %+v", code, v.Cancelled)
+	}
 }
 
 func TestPreemptionOverTheTunnel(t *testing.T) {

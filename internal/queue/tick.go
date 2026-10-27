@@ -46,6 +46,7 @@ func (s *Store) Tick() {
 			changed = true
 		}
 	}
+	s.watchTunnels(now)
 	if s.liftExclusions(now) {
 		changed = true
 	}
