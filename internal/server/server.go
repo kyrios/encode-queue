@@ -617,6 +617,18 @@ func (s *Server) AdminHandler(withMetrics bool) http.Handler {
 		writeJSON(w, 200, v)
 		return nil
 	})
+	h("POST /v1/jobs/cleanup", callerAdmin, func(w http.ResponseWriter, r *http.Request) error {
+		var c queue.Cleanup
+		if err := decode(r, 64<<10, &c); err != nil {
+			return err
+		}
+		v, err := st.CleanupJobs(c)
+		if err != nil {
+			return err
+		}
+		writeJSON(w, 200, v)
+		return nil
+	})
 	h("POST /v1/jobs/{job_id}/assign", callerNone, func(w http.ResponseWriter, r *http.Request) error {
 		var a queue.Assign
 		if err := decode(r, 64<<10, &a); err != nil {

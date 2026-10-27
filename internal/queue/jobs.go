@@ -812,7 +812,59 @@ func (s *Store) ResultFile(id string, attempt int) (path, sha string, err error)
 	return filepath.Join(s.cfg.ResultDir, l.Result.Path), l.Result.SHA256, nil
 }
 
-// purgeDone forgets finished jobs older than DoneKeep.
+// Cleanup is a removal of finished jobs from the Encoder page.
+type Cleanup struct {
+	States     []string `json:"states"`
+	OlderThanS int64    `json:"older_than_s,omitempty"`
+}
+
+// CleanupResult is what a cleanup removed.
+type CleanupResult struct {
+	Removed  int      `json:"removed"`
+	JobIDs   []string `json:"job_ids"`
+	Revision int64    `json:"revision"`
+}
+
+// CleanupJobs removes the finished jobs in the given states, as Forget does each.
+func (s *Store) CleanupJobs(c Cleanup) (CleanupResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(c.States) == 0 {
+		return CleanupResult{}, errf(422, "invalid", "states is empty")
+	}
+	for _, st := range c.States {
+		if st != StateDone && st != StateCancelled && st != StateFailed {
+			return CleanupResult{}, errf(422, "invalid", "state %q: only done, cancelled and failed jobs are removed", st)
+		}
+	}
+	if c.OlderThanS < 0 {
+		return CleanupResult{}, errf(422, "invalid", "older_than_s below 0")
+	}
+	now := s.cfg.Now()
+	out := CleanupResult{JobIDs: []string{}}
+	for _, j := range s.st.Jobs {
+		if !contains(c.States, j.Final) {
+			continue
+		}
+		if c.OlderThanS > 0 && (j.FinishedAt == nil || now.Sub(*j.FinishedAt) < time.Duration(c.OlderThanS)*time.Second) {
+			continue
+		}
+		out.JobIDs = append(out.JobIDs, j.ID)
+	}
+	sort.Strings(out.JobIDs)
+	for _, id := range out.JobIDs {
+		s.dropJob(s.st.Jobs[id])
+	}
+	out.Removed = len(out.JobIDs)
+	if out.Removed > 0 {
+		s.cfg.Log.Info("cleanup", "states", c.States, "removed", out.Removed)
+		s.touch(true)
+	}
+	out.Revision = s.st.Revision
+	return out, nil
+}
+
+// purgeDone forgets finished jobs older than DoneKeep (EQ_JOB_RETENTION).
 func (s *Store) purgeDone(now time.Time) bool {
 	changed := false
 	for _, j := range s.st.Jobs {
