@@ -59,9 +59,12 @@ type harness struct {
 	evMu    sync.Mutex
 	events  []map[string]any
 	verdict func(job queue.JobView, attempt queue.AttemptView, file []byte) (string, string)
+	// calibrate: the workers paired from now on encode the calibration clip first.
+	calibrate bool
 }
 
-func newHarness(t *testing.T) *harness {
+// newHarness starts a queue; `opts` change its configuration (a reference worker).
+func newHarness(t *testing.T, opts ...func(*queue.Config)) *harness {
 	t.Helper()
 	dir := t.TempDir()
 	log := slog.New(slog.NewTextHandler(logWriter{t}, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -80,6 +83,9 @@ func newHarness(t *testing.T) *harness {
 		PauseGiveBack: 2 * time.Second, PauseGrace: 2 * time.Second,
 		Subnet: netip.MustParsePrefix("10.99.0.0/24"), TunnelAddress: addr, ServerPublicKey: key.Public().String(),
 		Endpoint: fmt.Sprintf("127.0.0.1:%d", door.Port()), API: "http://10.99.0.1:8090/v1", Log: log}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	os.MkdirAll(cfg.SourceDir, 0o755)
 	store, err := queue.Open(cfg)
 	if err != nil {
@@ -184,7 +190,7 @@ func (h *harness) pair(name string) *testWorker {
 	}
 	self, _ := os.Executable()
 	w, err := worker.New(worker.Config{Version: "0.1.0", StateDir: h.t.TempDir(), FFmpeg: self, WhisperCLI: self,
-		WhisperVersion: "v1.9.5", ModelsDir: h.models, MaxParallel: 1, ChunkBytes: 1 << 10,
+		WhisperVersion: "v1.9.5", ModelsDir: h.models, MaxParallel: 1, ChunkBytes: 1 << 10, Calibrate: h.calibrate,
 		LongPoll: time.Second, LogEvery: 200 * time.Millisecond, RetryAfter: 200 * time.Millisecond,
 		Log: h.log.With("worker", name), Events: func(ev map[string]any) {
 			h.evMu.Lock()
@@ -241,14 +247,20 @@ func (h *harness) rungJob(id, prio string, extra map[string]any) {
 	}
 }
 
-func (h *harness) whisperJob(id string) {
+func (h *harness) whisperJob(id string) { h.t.Helper(); h.whisperJobAt(id, "stage1") }
+
+// model puts the whisper jobs' model where the workers look for it.
+func (h *harness) model() [32]byte {
+	os.WriteFile(filepath.Join(h.models, "ggml-small.bin"), []byte("a model"), 0o644)
+	return sha256.Sum256([]byte("a model"))
+}
+
+func (h *harness) whisperJobAt(id, prio string) {
 	h.t.Helper()
-	model := filepath.Join(h.models, "ggml-small.bin")
-	os.WriteFile(model, []byte("a model"), 0o644)
-	s := sha256.Sum256([]byte("a model"))
+	s := h.model()
 	up := strings.Split(id, ".")[0]
 	f := h.source(up+"/speech.wav", "RIFF....WAVEfmt ")
-	body := map[string]any{"kind": "whisper", "priority": "stage1", "upload_id": up,
+	body := map[string]any{"kind": "whisper", "priority": prio, "upload_id": up,
 		"params": map[string]any{"model_sha256": hex.EncodeToString(s[:]), "model": "ggml-small.bin", "language": "de"},
 		"source": map[string]any{"path": f.Path, "bytes": f.Bytes, "sha256": f.SHA256, "container": "wav"},
 		"result": map[string]any{"name": "whisper.json", "max_bytes": 1 << 20}}
@@ -476,6 +488,64 @@ func TestTokensAreKeptApart(t *testing.T) {
 	}
 }
 
+// "Calibration clip" (v0.2.5): both workers encode the clip once per rung class at pairing, and
+// the second has a calibrated tempo against the reference before it ran a single job.
+func TestCalibrationAtPairing(t *testing.T) {
+	h := newHarness(t, func(c *queue.Config) { c.ReferenceWorker = "encoder" })
+	h.calibrate = true
+	t.Setenv("FAKE_FRAMES", "3")
+	enc := h.pair("encoder")
+	mac := h.pair("mac")
+	worker := func(id string) queue.WorkerView {
+		var v queue.WorkerView
+		h.call("GET", "/v1/workers/"+id, adminToken, nil, &v)
+		return v
+	}
+	h.waitFor("both calibrated", 60*time.Second, func() bool {
+		v := worker(mac.id)
+		return worker(enc.id).RelativeSpeedSource != nil && v.RelativeSpeedSource != nil
+	})
+	v := worker(mac.id)
+	if *v.RelativeSpeedSource != "calibrated" || v.RelativeSpeed == nil || *v.RelativeSpeed <= 0 {
+		t.Fatalf("mac: %v %v", v.RelativeSpeed, v.RelativeSpeedSource)
+	}
+	n := 0
+	for _, c := range v.SpeedClasses {
+		if c.Source == "calibrated" && c.ReferenceFPS != nil {
+			n++
+		}
+	}
+	if n != 8 {
+		t.Fatalf("calibrated classes against the reference: %d of %+v", n, v.SpeedClasses)
+	}
+}
+
+// "Sofort" in the extra slot (v0.2.5): a worker limited to one job at a time encodes a long archive
+// rung, and captions someone waits for run beside it, over the tunnel, without preempting it.
+func TestSofortBesideAnEncode(t *testing.T) {
+	h := newHarness(t)
+	h.pipeline()
+	t.Setenv("FAKE_FRAMES", "1000")
+	t.Setenv("FAKE_FRAME_MS", "10")
+	h.model() // before the worker starts: it reads its models once
+	h.pair("encoder")
+	h.rungJob("old_1.2160-archive", "archive", nil)
+	h.waitFor("old_1.2160-archive encoding", 30*time.Second, func() bool {
+		p := h.job("old_1.2160-archive").Progress
+		return p != nil && p.Phase == "encoding"
+	})
+	h.whisperJobAt("one_529.whisper", "now")
+	w := h.waitState("one_529.whisper", "done", 30*time.Second)
+	if len(w.Attempts) != 1 || w.Attempts[0].Worker.Name != "encoder" {
+		t.Fatalf("the Sofort job's attempts: %+v", w.Attempts)
+	}
+	// The encode ran on all the while: still its first attempt, nothing preempted.
+	o := h.job("old_1.2160-archive")
+	if o.State != "leased" || len(o.Attempts) != 1 || o.Attempts[0].State != "active" {
+		t.Fatalf("the archive job beside it: %s %+v", o.State, o.Attempts)
+	}
+}
+
 func TestPreemptionOverTheTunnel(t *testing.T) {
 	h := newHarness(t)
 	h.pipeline()
@@ -483,7 +553,13 @@ func TestPreemptionOverTheTunnel(t *testing.T) {
 	t.Setenv("FAKE_FRAME_MS", "10")
 	h.pair("encoder")
 	h.rungJob("old_1.2160-archive", "archive", nil)
-	h.waitState("old_1.2160-archive", "leased", 30*time.Second)
+	// The fake encode reads FAKE_FRAMES when it starts, and "leased" comes before that (the
+	// source is still downloading): wait for its first frames, so the archive encode is the long
+	// one for certain and cannot finish before stage 1 preempts it.
+	h.waitFor("old_1.2160-archive encoding", 30*time.Second, func() bool {
+		p := h.job("old_1.2160-archive").Progress
+		return p != nil && p.Phase == "encoding" && p.FramesDone != nil && *p.FramesDone > 0
+	})
 	os.Setenv("FAKE_FRAMES", "5") // the stage 1 job is short
 	h.rungJob("new_2.2160-stage1", "stage1", nil)
 	n := h.waitState("new_2.2160-stage1", "done", 30*time.Second)

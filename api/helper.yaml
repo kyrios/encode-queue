@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue helper API
-  version: 1.1.1
+  version: 1.2.0
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
@@ -707,6 +707,29 @@ components:
             os_version: { type: string, examples: ['15.6', '13'] }
             arch: { type: string, examples: [arm64, amd64] }
             kernel: { type: string, description: 'The kernel release (`uname -r`); in a container, the host''s.', examples: ['6.12.48+deb13-amd64', '24.6.0'] }
+        calibration:
+          type: object
+          description: |
+            The worker's fps on the calibration clip (v0.2.5): 10 s of 4K test pattern with grain
+            that it makes with its own ffmpeg, bit-exact, then encodes once per rung class with
+            the rung's real flags. It runs at pairing and again when ffmpeg, libx265 or libx264
+            change (`EQ_CALIBRATE=false` turns it off). The queue compares only calibrations of
+            the same clip and drops one made with tools the worker no longer reports.
+          required: [clip_sha256, tools, at, classes]
+          properties:
+            clip_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+            tools: { type: array, items: { $ref: '#/components/schemas/Tool' }, description: 'ffmpeg, libx264 and libx265 as they were.' }
+            at: { type: string, format: date-time }
+            classes:
+              type: array
+              maxItems: 32
+              items:
+                type: object
+                required: [class, frames, fps]
+                properties:
+                  class: { type: string, examples: ['libx265 3840x2160 slower'] }
+                  frames: { type: integer, description: 'How many of the clip''s frames it encoded.' }
+                  fps: { type: number, exclusiveMinimum: 0 }
     CapabilityReport:
       type: object
       required: [capabilities, accepted, min_app_version]
@@ -731,6 +754,7 @@ components:
         disk_free_bytes: { type: integer }
         on_battery: { type: boolean }
         memory_used_bytes: { type: integer, description: 'RAM in use: macOS active, wired and compressed pages; Linux MemTotal less MemAvailable.' }
+        threads_busy: { type: integer, minimum: 0, description: 'How many threads the worker''s own tools kept busy since the last presence (v0.2.5): Linux from their process groups'' CPU time, macOS from ps''s %cpu. Left out when unknown.' }
     PresenceAck:
       type: object
       required: [server_time, presence_every_s, paused_until]
@@ -854,6 +878,13 @@ components:
           description: Narrow this claim to some of the accepted kinds.
           items: { $ref: '#/components/schemas/JobKind' }
         max_source_bytes: { type: integer }
+        extra:
+          type: boolean
+          description: |
+            The worker's extra slot (v0.2.5): it takes only `now` jobs, one lease at a time, on top
+            of `max_parallel_jobs`; beside other work only while the worker's free RAM (its
+            memory less the last presence's `memory_used_bytes` less 1 GB) holds the job's
+            expected peak. Regular claims count only regular leases.
     Lease:
       type: object
       required: [lease_id, attempt, job, state, expires_at, renew_every_s, pause_give_back_s, params]

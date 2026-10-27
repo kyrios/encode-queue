@@ -222,9 +222,13 @@ func (c *Client) PutCapabilities(ctx context.Context, caps Capabilities) (Capabi
 	return r, err
 }
 
-func (c *Client) PutPresence(ctx context.Context, state string, diskFree, memUsed int64) (PresenceAck, error) {
+// PutPresence is the heartbeat; threadsBusy below 0 is unknown and not sent.
+func (c *Client) PutPresence(ctx context.Context, state string, diskFree, memUsed int64, threadsBusy int) (PresenceAck, error) {
 	var a PresenceAck
 	body := map[string]any{"state": state}
+	if threadsBusy >= 0 {
+		body["threads_busy"] = threadsBusy
+	}
 	if diskFree > 0 {
 		body["disk_free_bytes"] = diskFree
 	}
@@ -235,9 +239,14 @@ func (c *Client) PutPresence(ctx context.Context, state string, diskFree, memUse
 	return a, err
 }
 
-// Claim long-polls for a job; nil without an error when none came.
-func (c *Client) Claim(ctx context.Context, wait time.Duration) (*Lease, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", c.url("/leases"), strings.NewReader("{}"))
+// Claim long-polls for a job; nil without an error when none came. `extra` is the extra slot,
+// which takes only Sofort jobs, on top of max_parallel_jobs (v0.2.5).
+func (c *Client) Claim(ctx context.Context, wait time.Duration, extra bool) (*Lease, error) {
+	body := "{}"
+	if extra {
+		body = `{"extra":true}`
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", c.url("/leases"), strings.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

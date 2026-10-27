@@ -43,6 +43,7 @@ type flags struct {
 	hostAppName, hostAppVersion           string
 	threads, jobs                         int
 	gpu                                   string
+	calibrate                             string
 	ffmpeg, ffprobe, whisperCLI, models   string
 	whisperVersion, fonts, control        string
 }
@@ -65,6 +66,7 @@ func main() {
 	flag.IntVar(&f.threads, "threads", env.Int("EQ_CPU_THREADS", 0), "x265's pool and whisper.cpp's threads, 0 for the tools' own (EQ_CPU_THREADS)")
 	flag.StringVar(&f.gpu, "gpu", env.String("EQ_GPU", "false"), "whisper.cpp may use the GPU: true or false (EQ_GPU)")
 	flag.IntVar(&f.jobs, "jobs", env.Int("EQ_MAX_PARALLEL_JOBS", 1), "jobs at once (EQ_MAX_PARALLEL_JOBS)")
+	flag.StringVar(&f.calibrate, "calibrate", env.String("EQ_CALIBRATE", "true"), "encode the calibration clip at pairing and on a tools change: true or false (EQ_CALIBRATE)")
 	flag.StringVar(&f.ffmpeg, "ffmpeg", env.String("EQ_FFMPEG", "ffmpeg"), "ffmpeg (EQ_FFMPEG)")
 	flag.StringVar(&f.ffprobe, "ffprobe", env.String("EQ_FFPROBE", "ffprobe"), "ffprobe, for the toolchain's set (EQ_FFPROBE)")
 	flag.StringVar(&f.whisperCLI, "whisper-cli", env.String("EQ_WHISPER_CLI", "whisper-cli"), "whisper-cli (EQ_WHISPER_CLI)")
@@ -129,6 +131,7 @@ func run(cmd string, f flags, env *config.Env) error {
 		CPUThreads:     f.threads,
 		GPU:            f.gpu == "true" || f.gpu == "1" || f.gpu == "yes",
 		MaxParallel:    f.jobs,
+		Calibrate:      f.calibrate == "true",
 		Log:            log,
 	}
 	if cmd == "healthcheck" {

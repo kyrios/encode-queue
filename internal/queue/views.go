@@ -353,6 +353,8 @@ type WorkerJob struct {
 	FPS      *float64 `json:"fps"`
 	Speed    *float64 `json:"speed"`
 	ETAS     *int64   `json:"eta_s"`
+	// Extra: in the worker's extra slot, beside its max_parallel_jobs (v0.2.5).
+	Extra bool `json:"extra"`
 }
 
 // WorkerView is a worker as pipeline-admin.yaml shows it.
@@ -385,8 +387,12 @@ type WorkerView struct {
 	System        WorkerSystem    `json:"system"`
 	Transfer      Transfer        `json:"transfer"`
 	RelativeSpeed *float64        `json:"relative_speed"`
-	SpeedClasses  []SpeedClass    `json:"speed_classes"`
-	FreeAt        *time.Time      `json:"free_at"`
+	// RelativeSpeedSource: "measured" from delivered jobs, "calibrated" from the calibration
+	// clip until there are some (v0.2.5); null without a relative speed.
+	RelativeSpeedSource *string        `json:"relative_speed_source"`
+	SpeedEstimate       *SpeedEstimate `json:"speed_estimate"`
+	SpeedClasses        []SpeedClass   `json:"speed_classes"`
+	FreeAt              *time.Time     `json:"free_at"`
 }
 
 // WorkerSystem is the worker's machine, from its capabilities' hardware.
@@ -395,6 +401,7 @@ type WorkerSystem struct {
 	CPUCores     *int    `json:"cpu_cores"`
 	CPUThreads   *int    `json:"cpu_threads"`
 	ThreadsInUse *int    `json:"threads_in_use"`
+	ThreadsBusy  *int    `json:"threads_busy"`
 	MemoryBytes  *int64  `json:"memory_bytes"`
 	MemoryUsed   *int64  `json:"memory_used_bytes"`
 	OSName       *string `json:"os_name"`
@@ -439,6 +446,13 @@ func (s *Store) system(w *Worker) WorkerSystem {
 		v.MemoryBytes = &m
 	}
 	v.MemoryUsed = w.MemoryUsed
+	if b := w.ThreadsBusy; b != nil {
+		n := *b
+		if v.CPUThreads != nil && n > *v.CPUThreads {
+			n = *v.CPUThreads
+		}
+		v.ThreadsBusy = &n
+	}
 	v.ThreadsInUse = v.CPUThreads
 	if t := w.Limits.CPUThreads; t != nil {
 		n := *t
@@ -474,6 +488,15 @@ func (s *Store) rate(t TransferStats, now time.Time) TransferRate {
 	return r
 }
 
+// SpeedEstimate is "Tempo" before a measured relative speed exists: the running job's live fps
+// over the reference's median on its rung class (v0.2.5).
+type SpeedEstimate struct {
+	Value        float64 `json:"value"`
+	Class        string  `json:"class"`
+	FPS          float64 `json:"fps"`
+	ReferenceFPS float64 `json:"reference_fps"`
+}
+
 // SpeedClass is a worker's average fps on one rung class, beside the reference's.
 type SpeedClass struct {
 	Class         string    `json:"class"`
@@ -486,6 +509,8 @@ type SpeedClass struct {
 	ReferenceFPS  *float64  `json:"reference_fps"`
 	RelativeSpeed *float64  `json:"relative_speed"`
 	UpdatedAt     time.Time `json:"updated_at"`
+	// Source: "measured" (delivered jobs, Samples of them) or "calibrated" (the clip, v0.2.5).
+	Source string `json:"source"`
 }
 
 func (s *Store) peerStatus() map[string]PeerStatus {
@@ -536,16 +561,26 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 	}
 	v.System = s.system(w)
 	v.Transfer = Transfer{Download: s.rate(w.Download, now), Upload: s.rate(w.Upload, now)}
-	v.RelativeSpeed = s.relativeSpeed(w)
-	if refW := s.referenceWorker(); refW == w && len(w.Speeds) > 0 {
-		one := 1.0
-		v.RelativeSpeed = &one
+	rel, src := s.relativeSpeedSource(w)
+	v.RelativeSpeed = rel
+	if refW := s.referenceWorker(); refW == w {
+		v.RelativeSpeed, src = nil, ""
+		if len(w.Speeds) > 0 || len(calibratedClasses(w)) > 0 {
+			one := 1.0
+			v.RelativeSpeed, src = &one, SpeedCalibrated
+			if len(w.Speeds) > 0 {
+				src = SpeedMeasured
+			}
+		}
+	}
+	if src != "" {
+		v.RelativeSpeedSource = &src
 	}
 	v.SpeedClasses = []SpeedClass{}
 	refW := s.referenceWorker()
 	for _, h := range w.Speeds {
 		sc := SpeedClass{Class: h.Class, Codec: h.Codec, Width: h.Width, Height: h.Height, Preset: h.Preset,
-			FPS: h.median(), Samples: len(h.FPS), UpdatedAt: h.UpdatedAt, RelativeSpeed: s.classRelative(w, h.Class)}
+			FPS: h.median(), Samples: len(h.FPS), UpdatedAt: h.UpdatedAt, RelativeSpeed: s.classRelative(w, h.Class), Source: SpeedMeasured}
 		if refW != nil {
 			if rh := refW.speed(h.Class); rh != nil {
 				f := rh.median()
@@ -554,12 +589,29 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 		}
 		v.SpeedClasses = append(v.SpeedClasses, sc)
 	}
+	// The calibrated classes it has no measured result on yet.
+	if w.Caps != nil && w.Caps.Calibration != nil {
+		for _, cc := range w.Caps.Calibration.Classes {
+			if w.speed(cc.Class) != nil {
+				continue
+			}
+			codec, width, height, preset := parseClass(cc.Class)
+			sc := SpeedClass{Class: cc.Class, Codec: codec, Width: width, Height: height, Preset: preset,
+				FPS: cc.FPS, UpdatedAt: w.Caps.Calibration.At, RelativeSpeed: s.calibratedRelative(w, cc.Class), Source: SpeedCalibrated}
+			if refW != nil {
+				if f, clip := calibratedFPS(refW, cc.Class); f > 0 && clip == w.Caps.Calibration.ClipSHA256 {
+					sc.ReferenceFPS = &f
+				}
+			}
+			v.SpeedClasses = append(v.SpeedClasses, sc)
+		}
+	}
 	v.FreeAt = s.freeAt(w, now, "")
 	acc, ref := s.kinds(w)
 	v.AcceptedKinds = acc
 	v.Refused = append(v.Refused, ref...)
 	for _, l := range s.activeLeases(w.ID) {
-		wj := WorkerJob{JobID: l.JobID, LeaseID: l.ID, Attempt: l.Attempt}
+		wj := WorkerJob{JobID: l.JobID, LeaseID: l.ID, Attempt: l.Attempt, Extra: l.Extra}
 		if j := s.st.Jobs[l.JobID]; j != nil {
 			wj.Title = strp(j.Spec.Title)
 			if j.rung != nil {
@@ -571,7 +623,34 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 		}
 		v.Jobs = append(v.Jobs, wj)
 	}
+	if v.RelativeSpeed == nil {
+		v.SpeedEstimate = s.speedEstimate(w)
+	}
 	return v
+}
+
+// speedEstimate is the worker's live fps on the rung job it encodes against the reference's
+// median on that class, or nil: a new worker shows a tempo while its first job runs, before any
+// result has been measured.
+func (s *Store) speedEstimate(w *Worker) *SpeedEstimate {
+	ref := s.referenceWorker()
+	if ref == nil || ref == w {
+		return nil
+	}
+	for _, l := range s.activeLeases(w.ID) {
+		j := s.st.Jobs[l.JobID]
+		p := l.Progress
+		if j == nil || j.rung == nil || p == nil || p.Phase != "encoding" || p.FPS == nil || *p.FPS <= 0 {
+			continue
+		}
+		class := rungClass(j.rung)
+		rh := ref.speed(class)
+		if rh == nil || rh.median() <= 0 {
+			continue
+		}
+		return &SpeedEstimate{Value: *p.FPS / rh.median(), Class: class, FPS: *p.FPS, ReferenceFPS: rh.median()}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------- lists

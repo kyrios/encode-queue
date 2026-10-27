@@ -394,6 +394,7 @@ func (s *Store) PutCapabilities(id string, c Capabilities) (CapabilityReport, er
 			c.HostApp = nil
 		}
 	}
+	checkCalibration(&c)
 	w.Caps = &c
 	s.touch(true)
 	return s.report(w), nil
@@ -419,6 +420,9 @@ type Presence struct {
 	DiskFree   *int64 `json:"disk_free_bytes,omitempty"`
 	Battery    *bool  `json:"on_battery,omitempty"`
 	MemoryUsed *int64 `json:"memory_used_bytes,omitempty"`
+	// ThreadsBusy: how many threads the worker's own tools kept busy since its last presence
+	// (v0.2.5).
+	ThreadsBusy *int `json:"threads_busy,omitempty"`
 }
 
 // PresenceAck answers a heartbeat.
@@ -446,6 +450,10 @@ func (s *Store) PutPresence(id string, p Presence) (PresenceAck, error) {
 	if p.MemoryUsed != nil {
 		w.MemoryUsed = p.MemoryUsed
 	}
+	if p.ThreadsBusy != nil && *p.ThreadsBusy < 0 {
+		return PresenceAck{}, errf(422, "invalid", "threads_busy is 0 or more")
+	}
+	w.ThreadsBusy = p.ThreadsBusy
 	s.touch(false)
 	now := s.cfg.Now()
 	ack := PresenceAck{ServerTime: now.UTC(), PresenceEveryS: int(s.cfg.PresenceEvery / time.Second), Draining: s.draining}
