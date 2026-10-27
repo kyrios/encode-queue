@@ -41,7 +41,7 @@ var MetricHelp = []struct{ Name, Type, Help string }{
 	{"encode_queue_worker_memory_bytes", "gauge", "The worker's memory."},
 	{"encode_queue_worker_memory_used_bytes", "gauge", "The worker's memory in use, from its last presence."},
 	{"encode_queue_worker_transfer_bytes_per_second", "gauge", "Moving average of the worker's transfer rate through the tunnel, by direction (download: sources, upload: results)."},
-	{"encode_queue_worker_relative_speed", "gauge", "The worker's encoding speed against the reference worker on the same rung classes, a moving average; 1 is as fast."},
+	{"encode_queue_worker_relative_speed", "gauge", "The worker's encoding speed against the reference worker on the same rung classes, a moving average, or from the calibration clip until it has measured results; 1 is as fast."},
 	{"encode_queue_worker_last_handshake_timestamp_seconds", "gauge", "The worker's last WireGuard handshake, in Unix seconds."},
 	{"encode_queue_jobs_pinned", "gauge", "Queued jobs the Encoder page sent to one worker, waiting for it."},
 }

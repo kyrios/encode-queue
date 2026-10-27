@@ -746,8 +746,13 @@ components:
         result came late); `done`, `failed` and `cancelled` are finished.
     Priority:
       type: string
-      enum: [stage1, stage2, archive]
-      description: ADR-0005's order. Stage 1 of a new upload first.
+      enum: [now, stage1, stage2, archive]
+      description: |
+        ADR-0005's order, stage 1 of a new upload first, and before it `now` (v0.2.5, the Encoder
+        page's "Sofort"): a job someone in Funkhaus waits for, such as captions from the audio or
+        a Loop. A `now` job is first in line and may run in a worker's extra slot beside other
+        work, on top of `max_parallel_jobs`, while the worker's free RAM holds the job's expected
+        peak with 1 GB to spare. It never preempts a lease.
     LeaseState:
       type: string
       enum: [active, delivered, given_back, expired, preempted, cancelled, failed]
@@ -1086,6 +1091,7 @@ components:
               fps: { type: [number, 'null'] }
               speed: { type: [number, 'null'] }
               eta_s: { type: [integer, 'null'] }
+              extra: { type: boolean, description: 'In the worker''s extra slot, beside its `max_parallel_jobs` (v0.2.5): a `now` job.' }
         last_seen: { type: [string, 'null'], format: date-time, description: '"Zuletzt".' }
         added_at: { type: string, format: date-time }
         counts: { $ref: '#/components/schemas/WorkerCounts' }
@@ -1127,6 +1133,12 @@ components:
             (`EQ_REFERENCE_WORKER`, `encoder`); 1.0 is as fast, 1.8 is 1.8 times as fast. The
             median of the `relative_speed` of its `speed_classes` that have one. The reference
             worker itself is 1.0 once it has a class. Null while no class has both sides.
+            Before any measured class, the median of the calibrated ones (v0.2.5): every worker
+            encodes the same clip once per rung class at pairing and on a tools change.
+        relative_speed_source:
+          type: [string, 'null']
+          enum: [measured, calibrated, null]
+          description: Where `relative_speed` comes from; null without one.
         speed_estimate:
           type: [object, 'null']
           description: |
@@ -1161,6 +1173,7 @@ components:
         cpu_cores: { type: [integer, 'null'], description: Physical cores. }
         cpu_threads: { type: [integer, 'null'], description: Logical CPUs the worker can use. }
         threads_in_use: { type: [integer, 'null'], description: 'The encoder''s thread limit: `limits.cpu_threads`, or `cpu_threads` when there is no limit.' }
+        threads_busy: { type: [integer, 'null'], description: 'How many threads the worker''s own tools kept busy since its last presence, at most `cpu_threads` (v0.2.5); null when its last presence did not say.' }
         memory_bytes: { type: [integer, 'null'], description: RAM in all. }
         memory_used_bytes: { type: [integer, 'null'], description: 'RAM in use, from the worker''s last presence (in a container: the host''s).' }
         os_name: { type: [string, 'null'], examples: [macOS, 'Debian GNU/Linux'] }
@@ -1190,11 +1203,12 @@ components:
         width: { type: integer }
         height: { type: integer }
         preset: { type: string }
-        fps: { type: number, description: The median fps of its last results on this class. }
-        samples: { type: integer, minimum: 1, maximum: 5, description: How many results the median is of. }
-        reference_fps: { type: [number, 'null'], description: The reference worker's median on this class; null until it has one. }
+        fps: { type: number, description: 'The median fps of its last results on this class, or its calibrated fps.' }
+        samples: { type: integer, minimum: 0, maximum: 5, description: 'How many results the median is of; 0 for a calibrated class.' }
+        reference_fps: { type: [number, 'null'], description: The reference worker's median on this class (its calibrated fps on the same clip for a calibrated one); null until it has one. }
         relative_speed: { type: [number, 'null'], description: '`fps` / `reference_fps`.' }
         updated_at: { type: string, format: date-time }
+        source: { type: string, enum: [measured, calibrated], description: 'Delivered jobs, or the calibration clip (v0.2.5) for a class without them.' }
     Candidate:
       type: object
       required: [worker, state, available, current]
