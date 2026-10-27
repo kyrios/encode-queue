@@ -274,7 +274,7 @@ func TestWorkerSystemAndEndpoint(t *testing.T) {
 	var b strings.Builder
 	e.s.WriteMetrics(&b, "test")
 	for _, want := range []string{
-		`encode_queue_worker_info{worker_id="` + w + `",worker="mac",app_version="0.2.0",os="macOS 15.6",cpu_model="Apple M2 Max",arch="arm64"} 1`,
+		`encode_queue_worker_info{worker_id="` + w + `",worker="mac",app_version="0.2.0",os="macOS 15.6",cpu_model="Apple M2 Max",arch="arm64",host_app="",host_app_version=""} 1`,
 		`encode_queue_worker_cpu_threads_in_use{worker_id="` + w + `",worker="mac"} 8`,
 		`encode_queue_worker_last_handshake_timestamp_seconds{worker_id="` + w + `",worker="mac"} ` + fmt.Sprint(float64(hs.Unix())),
 	} {
@@ -372,5 +372,70 @@ func TestPinEndsWhenTheTargetLeaves(t *testing.T) {
 	}
 	if l := e.claim(enc); l == nil || l.Job.ID != "a.archive" {
 		t.Fatalf("after the pin ended the encoder claimed %+v", l)
+	}
+}
+
+// Whatever the job and the workers, a candidate that is not available says why.
+func TestUnavailableCandidatesSayWhy(t *testing.T) {
+	e := newEnv(t, "encoder")
+	enc := e.worker("encoder", reference)
+	e.worker("odd", []Tool{{"ffmpeg", "8.0"}, {"libx265", "4.0"}, {"libx264", "core 1"}})
+	// Paired, but its first hello is still pending.
+	if _, err := e.s.AddWorker(WorkerCreate{Name: "new", PublicKey: key(9)}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(id string, wantAvailable map[string]bool, wantCode map[string]string) {
+		t.Helper()
+		c := must(e.s.JobCandidates(id))
+		for _, it := range c.Items {
+			if it.Available != wantAvailable[it.Worker.Name] {
+				t.Errorf("%s on %s: available %v", id, it.Worker.Name, it.Available)
+			}
+			if !it.Available && (it.ReasonCode == nil || it.Reason == nil || *it.Reason == "") {
+				t.Errorf("%s on %s: unavailable without a reason %+v", id, it.Worker.Name, it)
+				continue
+			}
+			if want := wantCode[it.Worker.Name]; want != "" && *it.ReasonCode != want {
+				t.Errorf("%s on %s: reason_code %s, want %s", id, it.Worker.Name, *it.ReasonCode, want)
+			}
+		}
+	}
+	e.rung("a.stage1", "stage1")
+	check("a.stage1", map[string]bool{"encoder": true}, map[string]string{"odd": "worker_mismatch", "new": "worker_offline"})
+	l := e.claim(enc)
+	if err := e.deliver(enc, l.ID, "file"); err != nil {
+		t.Fatal(err)
+	}
+	all := map[string]string{"encoder": "not_movable", "odd": "not_movable", "new": "not_movable"}
+	check("a.stage1", nil, all) // checking
+	e.s.PutVerdict("a.stage1", 1, Verdict{Verdict: VerdictAccepted})
+	check("a.stage1", nil, all) // done
+}
+
+func TestHostApp(t *testing.T) {
+	e := newEnv(t, "")
+	w := e.worker("mac", reference)
+	e.s.cfg.MinAppVersion = "0.2.0"
+	// host_app's version is not the worker's: 1.0.3 passes, and an old one does not fail.
+	if _, err := e.s.PutCapabilities(w, Capabilities{AppVersion: "0.2.1", OS: "macOS 26.1", Tools: reference,
+		HostApp: &HostApp{Name: "Slipstream", Version: "0.0.1"}}); err != nil {
+		t.Fatal(err)
+	}
+	v := must(e.s.GetWorker(w))
+	if v.HostApp == nil || v.HostApp.Name != "Slipstream" || v.HostApp.Version != "0.0.1" || *v.AppVersion != "0.2.1" {
+		t.Fatalf("host_app %+v app_version %v", v.HostApp, v.AppVersion)
+	}
+	var b strings.Builder
+	e.s.WriteMetrics(&b, "test")
+	if !strings.Contains(b.String(), `host_app="Slipstream",host_app_version="0.0.1"} 1`) {
+		t.Fatalf("no host_app labels:\n%s", b.String())
+	}
+	if _, err := e.s.PutCapabilities(w, Capabilities{AppVersion: "0.1.0", OS: "x", Tools: reference,
+		HostApp: &HostApp{Name: "Slipstream", Version: "9.9.9"}}); code(err) != "app_too_old" {
+		t.Fatalf("the worker's own version still counts: %v", err)
+	}
+	e.reopen()
+	if v := must(e.s.GetWorker(w)); v.HostApp == nil || v.HostApp.Name != "Slipstream" {
+		t.Fatalf("after a restart %+v", v.HostApp)
 	}
 }

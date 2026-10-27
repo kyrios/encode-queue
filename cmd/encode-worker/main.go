@@ -40,6 +40,7 @@ type flags struct {
 	stateDir, keyFile, tunnelFile, tunnel string
 	endpoint, workDir                     string
 	name, appVersion                      string
+	hostAppName, hostAppVersion           string
 	threads, jobs                         int
 	gpu                                   string
 	ffmpeg, ffprobe, whisperCLI, models   string
@@ -59,6 +60,8 @@ func main() {
 	flag.StringVar(&f.workDir, "work-dir", env.String("EQ_WORK_DIR", ""), "scratch space for sources and results (EQ_WORK_DIR; default STATE/work)")
 	flag.StringVar(&f.name, "name", env.String("EQ_WORKER_NAME", ""), "this worker's name, for its log (the queue keeps the name it was paired with)")
 	flag.StringVar(&f.appVersion, "app-version", env.String("EQ_APP_VERSION", ""), "the version the queue compares with its minimum (EQ_APP_VERSION; default the worker's)")
+	flag.StringVar(&f.hostAppName, "host-app-name", env.String("EQ_HOST_APP_NAME", ""), "the app this worker runs inside, for the Encoder page (EQ_HOST_APP_NAME, e.g. Slipstream)")
+	flag.StringVar(&f.hostAppVersion, "host-app-version", env.String("EQ_HOST_APP_VERSION", ""), "that app's version (EQ_HOST_APP_VERSION)")
 	flag.IntVar(&f.threads, "threads", env.Int("EQ_CPU_THREADS", 0), "x265's pool and whisper.cpp's threads, 0 for the tools' own (EQ_CPU_THREADS)")
 	flag.StringVar(&f.gpu, "gpu", env.String("EQ_GPU", "false"), "whisper.cpp may use the GPU: true or false (EQ_GPU)")
 	flag.IntVar(&f.jobs, "jobs", env.Int("EQ_MAX_PARALLEL_JOBS", 1), "jobs at once (EQ_MAX_PARALLEL_JOBS)")
@@ -114,6 +117,8 @@ func run(cmd string, f flags, env *config.Env) error {
 	}
 	cfg := worker.Config{
 		Version:        appVersion,
+		HostAppName:    f.hostAppName,
+		HostAppVersion: f.hostAppVersion,
 		StateDir:       f.stateDir,
 		WorkDir:        f.workDir,
 		FFmpeg:         f.ffmpeg,

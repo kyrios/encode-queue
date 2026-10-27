@@ -27,6 +27,12 @@ type Tool struct {
 	Version string `json:"version"`
 }
 
+// HostApp is the app a worker runs inside.
+type HostApp struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
 // Model is a whisper model by its sha256.
 type Model struct {
 	Name   string `json:"name"`
@@ -38,6 +44,7 @@ type Model struct {
 type Capabilities struct {
 	AppVersion string          `json:"app_version"`
 	OS         string          `json:"os"`
+	HostApp    *HostApp        `json:"host_app,omitempty"`
 	Tools      []Tool          `json:"tools"`
 	Models     []Model         `json:"models,omitempty"`
 	Fonts      []string        `json:"fonts,omitempty"`
@@ -442,7 +449,11 @@ func DetectCapabilities(ctx context.Context, cfg Config) (Capabilities, []string
 	} else {
 		problems = append(problems, "ffmpeg has no libass: no jobs with burnt-in captions")
 	}
-	return Capabilities{AppVersion: cfg.Version, OS: osName(), Tools: tools, Models: models,
+	var host *HostApp
+	if cfg.HostAppName != "" {
+		host = &HostApp{Name: cfg.HostAppName, Version: cfg.HostAppVersion}
+	}
+	return Capabilities{AppVersion: cfg.Version, OS: osName(), HostApp: host, Tools: tools, Models: models,
 		Fonts: fonts, Hardware: hardware()}, problems
 }
 

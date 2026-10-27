@@ -363,6 +363,7 @@ type WorkerView struct {
 	PublicKey     string          `json:"public_key"`
 	Address       string          `json:"tunnel_address"`
 	AppVersion    *string         `json:"app_version"`
+	HostApp       *HostApp        `json:"host_app"`
 	OS            *string         `json:"os"`
 	Tools         []Tool          `json:"tools"`
 	Models        []Model         `json:"models"`
@@ -504,7 +505,7 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 		v.PausedUntil = w.PausedUntil
 	}
 	if c := w.Caps; c != nil {
-		v.AppVersion, v.OS = strp(c.AppVersion), strp(c.OS)
+		v.AppVersion, v.OS, v.HostApp = strp(c.AppVersion), strp(c.OS), c.HostApp
 		v.Tools = append(v.Tools, c.Tools...)
 		v.Models = append(v.Models, c.Models...)
 		v.Fonts = append(v.Fonts, c.Fonts...)

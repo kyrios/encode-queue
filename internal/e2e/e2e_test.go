@@ -477,40 +477,59 @@ func TestPreemptionOverTheTunnel(t *testing.T) {
 func TestAssignOverTheTunnel(t *testing.T) {
 	h := newHarness(t)
 	h.pipeline()
-	t.Setenv("FAKE_FRAMES", "1000")
+	t.Setenv("FAKE_FRAMES", "5")
 	t.Setenv("FAKE_FRAME_MS", "10")
-	enc := h.pair("encoder")
+	ids := map[string]string{"encoder": h.pair("encoder").id, "mac": h.pair("mac").id}
+	// Both connected, and both said what they run, before anything is asked of them.
+	for name, id := range ids {
+		h.waitFor(name+" idle", 30*time.Second, func() bool {
+			var w queue.WorkerView
+			h.call("GET", "/v1/workers/"+id, adminToken, nil, &w)
+			return w.State == "idle" && len(w.AcceptedKinds) > 0
+		})
+	}
+	// Only now a long first attempt: the fake ffmpeg also answers the workers' tool checks.
+	os.Setenv("FAKE_FRAMES", "100000") // it runs until it is moved
 	h.rungJob("old_1.2160-archive", "archive", nil)
 	j := h.waitState("old_1.2160-archive", "leased", 30*time.Second)
-	if j.Worker == nil || j.Worker.Name != "encoder" {
-		t.Fatalf("leased by %+v", j.Worker)
+	from := j.Worker.ID
+	to := ids["mac"]
+	if from == to {
+		to = ids["encoder"]
 	}
-	os.Setenv("FAKE_FRAMES", "5")
-	mac := h.pair("mac")
-	h.waitFor("the mac idle", 30*time.Second, func() bool {
-		var w queue.WorkerView
-		h.call("GET", "/v1/workers/"+mac.id, adminToken, nil, &w)
-		return w.State == "idle" && len(w.AcceptedKinds) > 0
-	})
+	os.Setenv("FAKE_FRAMES", "5") // the second attempt is short
 	var c queue.Candidates
-	if code := h.call("GET", "/v1/jobs/"+j.ID+"/candidates", adminToken, nil, &c); code != 200 || len(c.Items) != 2 ||
-		!c.Items[0].Current || !c.Items[1].Available || c.Items[1].Current {
+	if code := h.call("GET", "/v1/jobs/"+j.ID+"/candidates", adminToken, nil, &c); code != 200 || len(c.Items) != 2 {
 		t.Fatalf("candidates %d %+v", code, c.Items)
 	}
+	for _, it := range c.Items {
+		if it.Current != (it.Worker.ID == from) || !it.Available || it.ReasonCode != nil {
+			t.Fatalf("candidate %+v", it)
+		}
+	}
 	var v queue.JobView
-	if code := h.call("POST", "/v1/jobs/"+j.ID+"/assign", adminToken, map[string]string{"worker_id": mac.id}, &v); code != 200 {
+	if code := h.call("POST", "/v1/jobs/"+j.ID+"/assign", adminToken, map[string]string{"worker_id": to}, &v); code != 200 {
 		t.Fatalf("assign: %d", code)
 	}
-	if v.PinnedTo == nil || v.PinnedTo.WorkerID != mac.id {
+	if v.PinnedTo == nil || v.PinnedTo.WorkerID != to {
 		t.Fatalf("pinned to %+v", v.PinnedTo)
 	}
 	if code := h.call("POST", "/v1/jobs/"+j.ID+"/assign", adminToken, map[string]string{"worker_id": "wk_zzzzzzzz"}, nil); code != 404 {
 		t.Fatalf("an unknown worker: %d", code)
 	}
 	d := h.waitState(j.ID, "done", 30*time.Second)
-	if len(d.Attempts) != 2 || d.Attempts[0].Worker.ID != enc.id || d.Attempts[0].State != "preempted" ||
-		d.Attempts[0].EndCode == nil || *d.Attempts[0].EndCode != "assigned" || d.Attempts[1].Worker.ID != mac.id || d.PinnedTo != nil {
+	if len(d.Attempts) != 2 || d.Attempts[0].Worker.ID != from || d.Attempts[0].State != "preempted" ||
+		d.Attempts[0].EndCode == nil || *d.Attempts[0].EndCode != "assigned" || d.Attempts[1].Worker.ID != to || d.PinnedTo != nil {
 		t.Fatalf("the attempts: %+v", d.Attempts)
+	}
+	// A finished job has no target, and every candidate says why.
+	if code := h.call("GET", "/v1/jobs/"+j.ID+"/candidates", adminToken, nil, &c); code != 200 {
+		t.Fatalf("candidates of a done job: %d", code)
+	}
+	for _, it := range c.Items {
+		if it.Available || it.ReasonCode == nil || *it.ReasonCode != "not_movable" || it.Reason == nil {
+			t.Fatalf("candidate of a done job %+v", it)
+		}
 	}
 }
 
