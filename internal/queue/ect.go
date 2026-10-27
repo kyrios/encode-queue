@@ -157,7 +157,8 @@ func (s *Store) verdict(w *Worker, j *Job, now time.Time) (take bool, mine *ECT,
 	}
 	var best *ECT
 	for _, v := range s.st.Workers {
-		if v == w || !s.eligible(v, j, now) {
+		// Only a worker that takes work now is a better one (claiming, v0.2.10).
+		if v == w || !s.eligible(v, j, now) || !s.claiming(v, now) {
 			continue
 		}
 		if e, ok := s.ect(v, j, false, now); ok && (best == nil || e.S < best.S) {
@@ -178,6 +179,46 @@ func (s *Store) verdict(w *Worker, j *Job, now time.Time) (take bool, mine *ECT,
 	default:
 		return s.waited(j, now) > maxWait[j.Priority], mine, runnerUp
 	}
+}
+
+// Why a claim had the comparison it had (v0.2.10; Thorsten, 2026-10-27, on a stage-1 job with
+// ect_s and runner_up null: "Why?"). The Encoder page says it in words.
+const (
+	ScoringScored      = "scored"       // its ECT against the best other worker's
+	ScoringWaited      = "waited"       // a better worker existed; the job waited its max_wait
+	ScoringAssigned    = "assigned"     // sent to this worker on the Encoder page
+	ScoringOnlyWorker  = "only_worker"  // no other worker could take it
+	ScoringNotClaiming = "not_claiming" // others could, but asked for no work
+	ScoringNoSpeed     = "speed_unknown"
+)
+
+// scoringNote is why the claim of j by w had the comparison it had: mine and runnerUp as the
+// verdict gave them.
+func (s *Store) scoringNote(w *Worker, j *Job, mine, runnerUp *ECT, now time.Time) string {
+	if runnerUp != nil {
+		if mine == nil || mine.S > runnerUp.S*ectSlack {
+			return ScoringWaited
+		}
+		return ScoringScored
+	}
+	claiming, idle := 0, 0
+	for _, v := range s.st.Workers {
+		if v == w || !s.eligible(v, j, now) {
+			continue
+		}
+		if s.claiming(v, now) {
+			claiming++
+		} else {
+			idle++
+		}
+	}
+	switch {
+	case claiming > 0:
+		return ScoringNoSpeed // others ask, but no speed for the job's class is known for them
+	case idle > 0:
+		return ScoringNotClaiming
+	}
+	return ScoringOnlyWorker
 }
 
 // learn folds a delivered rung or whisper attempt's compute time into the worker's correction

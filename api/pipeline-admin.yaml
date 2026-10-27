@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.7.0
+  version: 1.8.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -878,6 +878,10 @@ components:
         progress: { oneOf: [{ $ref: '#/components/schemas/Progress' }, { type: 'null' }] }
         model_sha256: { type: [string, 'null'], description: 'The whisper model this attempt ran (v0.2.7), the best of the job''s `models` its worker held.' }
         ect_s: { type: [number, 'null'], description: 'Its worker''s expected completion time at the claim, in seconds (v0.2.7; README, "Which worker gets a job").' }
+        scoring:
+          type: [string, 'null']
+          enum: [scored, waited, assigned, only_worker, not_claiming, speed_unknown, null]
+          description: 'Why the claim had the comparison it had (1.8.0; README, "Which worker gets a job"); null for an attempt from before.'
         runner_up:
           type: [object, 'null']
           description: The best other worker's expected completion time at the claim; null when none could be estimated.
@@ -1128,6 +1132,7 @@ components:
               eta_s: { type: [integer, 'null'] }
               extra: { type: boolean, description: 'In the worker''s extra slot, beside its `max_parallel_jobs` (v0.2.5): a `now` job.' }
         last_seen: { type: [string, 'null'], format: date-time, description: '"Zuletzt".' }
+        claiming: { type: boolean, description: 'It asked for work within two presence intervals or works on a lease (1.8.0).' }
         added_at: { type: string, format: date-time }
         counts: { $ref: '#/components/schemas/WorkerCounts' }
         endpoint:
@@ -1264,6 +1269,7 @@ components:
         reason: { type: [string, 'null'], examples: ['libx265 differs: worker 4.0, reference 4.3+1-e9b8812'] }
         current: { type: boolean, description: It runs the job now. }
         pinned: { type: boolean, description: The job is pinned to it. }
+        claiming: { type: boolean, description: 'It asked for work within two presence intervals or works (1.8.0); one that does not counts in no scoring: "rechnet nicht".' }
         free_at: { type: [string, 'null'], format: date-time }
         relative_speed: { type: [number, 'null'], description: "Its relative speed on the job's class, or its overall one." }
         encode_s: { type: [number, 'null'], description: "The job's encode time there." }

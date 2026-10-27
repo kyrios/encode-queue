@@ -56,6 +56,9 @@ type AttemptView struct {
 	// completion time in seconds, and the best other worker's.
 	ECTS     *float64 `json:"ect_s"`
 	RunnerUp *ECT     `json:"runner_up"`
+	// Scoring: why the claim had that comparison (v0.2.10): scored, waited, assigned,
+	// only_worker, not_claiming, speed_unknown; null for a lease from before.
+	Scoring *string `json:"scoring"`
 }
 
 // JobView is a job as pipeline-admin.yaml shows it.
@@ -118,7 +121,7 @@ func (s *Store) workerRef(id, fallback string) WorkerRef {
 
 func (s *Store) attemptView(j *Job, l *Lease) AttemptView {
 	a := AttemptView{Attempt: l.Attempt, LeaseID: l.ID, Worker: s.workerRef(l.WorkerID, l.Worker), State: l.State,
-		StartedAt: l.CreatedAt, EndedAt: l.EndedAt, EndCode: strp(l.EndCode), ModelSHA256: strp(l.Model), RunnerUp: l.RunnerUp}
+		StartedAt: l.CreatedAt, EndedAt: l.EndedAt, EndCode: strp(l.EndCode), ModelSHA256: strp(l.Model), RunnerUp: l.RunnerUp, Scoring: strp(l.Scoring)}
 	if l.ECT != nil {
 		v := l.ECT.S
 		a.ECTS = &v
@@ -406,10 +409,13 @@ type WorkerJob struct {
 
 // WorkerView is a worker as pipeline-admin.yaml shows it.
 type WorkerView struct {
-	ID            string          `json:"worker_id"`
-	Name          string          `json:"name"`
-	Owner         *string         `json:"owner"`
-	State         string          `json:"state"`
+	ID    string  `json:"worker_id"`
+	Name  string  `json:"name"`
+	Owner *string `json:"owner"`
+	State string  `json:"state"`
+	// Claiming: it asked for work within two presence intervals, or works (v0.2.10); one that
+	// does not counts in no scoring.
+	Claiming      bool            `json:"claiming"`
 	PausedUntil   *time.Time      `json:"paused_until"`
 	PublicKey     string          `json:"public_key"`
 	Address       string          `json:"tunnel_address"`
@@ -579,7 +585,7 @@ func (s *Store) workerView(w *Worker) WorkerView {
 
 func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerView {
 	now := s.cfg.Now()
-	v := WorkerView{ID: w.ID, Name: w.Name, Owner: strp(w.Owner), State: s.workerState(w, now), PublicKey: w.PublicKey,
+	v := WorkerView{ID: w.ID, Name: w.Name, Owner: strp(w.Owner), State: s.workerState(w, now), Claiming: s.claiming(w, now), PublicKey: w.PublicKey,
 		Address: w.Address, Limits: w.Limits, LastSeen: w.LastSeen, AddedAt: w.AddedAt, Counts: w.Counts,
 		Tools: []Tool{}, Models: []Model{}, Fonts: []string{}, Jobs: []WorkerJob{}, Refused: []Refusal{}, Hardware: json.RawMessage("null")}
 	if s.paused(w, now) {

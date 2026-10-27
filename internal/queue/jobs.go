@@ -223,7 +223,7 @@ func (s *Store) betterModelElsewhere(w *Worker, j *Job, now time.Time) bool {
 		return false
 	}
 	for _, v := range s.st.Workers {
-		if v == w || !s.connected(v, now) || s.paused(v, now) || s.mismatch(v, j) != "" {
+		if v == w || !s.claiming(v, now) || s.mismatch(v, j) != "" {
 			continue
 		}
 		if i, _ := modelOn(v, j); i >= 0 && i < mine {
@@ -570,13 +570,16 @@ func (s *Store) UnassignJob(id string) (JobView, error) {
 
 // Candidate is a worker as a target for a job (the move menu).
 type Candidate struct {
-	Worker        WorkerRef  `json:"worker"`
-	State         string     `json:"state"`
-	Available     bool       `json:"available"`
-	ReasonCode    *string    `json:"reason_code"`
-	Reason        *string    `json:"reason"`
-	Current       bool       `json:"current"`
-	Pinned        bool       `json:"pinned"`
+	Worker     WorkerRef `json:"worker"`
+	State      string    `json:"state"`
+	Available  bool      `json:"available"`
+	ReasonCode *string   `json:"reason_code"`
+	Reason     *string   `json:"reason"`
+	Current    bool      `json:"current"`
+	Pinned     bool      `json:"pinned"`
+	// Claiming: it asked for work lately or works (v0.2.10); one that does not counts in no
+	// scoring, so the page says "rechnet nicht".
+	Claiming      bool       `json:"claiming"`
 	FreeAt        *time.Time `json:"free_at"`
 	RelativeSpeed *float64   `json:"relative_speed"`
 	EncodeS       *float64   `json:"encode_s"`
@@ -637,7 +640,7 @@ func (s *Store) JobCandidates(id string) (Candidates, error) {
 	}
 	for _, w := range ws {
 		c := Candidate{Worker: WorkerRef{ID: w.ID, Name: w.Name}, State: s.workerState(w, now),
-			Pinned: j.Pin != nil && j.Pin.WorkerID == w.ID}
+			Pinned: j.Pin != nil && j.Pin.WorkerID == w.ID, Claiming: s.claiming(w, now)}
 		if j.rung != nil {
 			c.RelativeSpeed = s.classRelative(w, rungClass(j.rung))
 		}
