@@ -349,7 +349,10 @@ func (s *Store) kinds(w *Worker) (accepted []string, refused []Refusal) {
 	if w.Caps == nil {
 		return accepted, nil
 	}
-	for _, kind := range []string{KindRung, KindWhisper} {
+	for _, kind := range []string{KindRung, KindWhisper, KindCut, KindRemux, KindCheck} {
+		if kind != KindRung && kind != KindWhisper && versionLess(w.Caps.AppVersion, "0.2.8") {
+			continue // a worker before 0.2.8 knows no such kind; it neither takes nor refuses it
+		}
 		tools, configured, known := s.reference(kind, false)
 		reason := ""
 		switch {

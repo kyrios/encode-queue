@@ -149,3 +149,26 @@ func TestWantedModelsFromTheMeasuredSpeed(t *testing.T) {
 		t.Fatalf("below 7×: %v", got)
 	}
 }
+
+// encoder on v0.2.7, 2026-10-27 18:17: small 2.87×, medium 0.96×, and the queue wanted
+// large-v3-turbo from a guess (2.87 / 2 = 1.4×). A guess does not win over a measured model below
+// it that is too slow, and the best model held stays the fallback.
+func TestEncodersMeasuredSpeedsWantNoGuessedModel(t *testing.T) {
+	e := newEnv(t, "")
+	w := e.worker("encoder", reference)
+	e.timed(w, 8<<30, map[string]float64{SHASmall: 2.87, SHAMedium: 0.96})
+	got := names(must(e.s.GetCapabilities(w)).WantedModels)
+	if len(got) != 2 || got[0] != "ggml-small.bin" || got[1] != "ggml-medium.bin" {
+		t.Fatalf("encoder wants %v, want small and its medium as the fallback", got)
+	}
+	// The same small without a medium measured: the guess for large-v3-turbo stands (a fast Mac).
+	e.timed(w, 32<<30, map[string]float64{SHASmall: 12})
+	if got := names(must(e.s.GetCapabilities(w)).WantedModels); len(got) != 2 || got[1] != "ggml-large-v3-turbo.bin" {
+		t.Fatalf("a fast Mac wants %v", got)
+	}
+	// large-v3-turbo measured fast beside a slow medium: measured, so wanted.
+	e.timed(w, 32<<30, map[string]float64{SHASmall: 2.87, SHAMedium: 0.96, SHALargeV3Turbo: 1.2})
+	if got := names(must(e.s.GetCapabilities(w)).WantedModels); len(got) != 2 || got[1] != "ggml-large-v3-turbo.bin" {
+		t.Fatalf("a measured turbo: %v", got)
+	}
+}

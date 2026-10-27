@@ -803,11 +803,16 @@ components:
 
     JobKind:
       type: string
-      enum: [rung, whisper]
+      enum: [rung, whisper, cut, remux, check]
+      description: |
+        `cut`, `remux` and `check` from v0.2.8 (ADR-0007: every encode and every decode runs on a
+        worker; the pipeline reads headers only). `rung`, `cut` and `remux` check their own result
+        in the same lease (`CheckSettings`) and deliver the figures with it; `check` only checks,
+        for a file no worker encoded.
     Priority:
       type: string
-      enum: [stage1, stage2, archive]
-      description: ADR-0005's order. Stage 1 of a new upload first.
+      enum: [now, stage1, stage2, archive]
+      description: '`now` (v0.2.5; Funkhaus shows it as "Sofort") for a job someone waits for, then ADR-0005''s order. Stage 1 of a new upload first.'
     RungParams:
       type: object
       title: rung
@@ -846,7 +851,18 @@ components:
           properties:
             mode: { type: string, enum: [copy, aac, none], description: '`none` when the source has no sound.' }
             bitrate_kbps: { type: integer, description: For `aac`. }
-            mono: { type: boolean, default: false, description: 'Downmix two channels that carry one signal: `-af pan=mono|c0=0.5*c0+0.5*c1`.' }
+            mono:
+              oneOf: [{ type: boolean }, { type: string, const: measure }]
+              default: false
+              description: |
+                Downmix two channels that carry one signal: `-af pan=mono|c0=0.5*c0+0.5*c1`.
+                `measure` (v0.2.8), for a source with two channels: the worker measures first
+                (`-map 0:a:0 -af pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0-0.5*c1,astats=measure_perchannel=RMS_level:measure_overall=none
+                -f null -`, channel 1 the mid, 2 the side) and downmixes when the side is silent or
+                at least `mono_side_below_db` below the mid. A level it cannot read counts as
+                stereo. `CheckFigures.audio_levels` says what it found.
+            mono_side_below_db: { type: number, default: 40 }
+        check: { $ref: '#/components/schemas/CheckSettings' }
         captions:
           type: [object, 'null']
           description: Captions burnt in by libass (libx264 only). The ASS file is the job input `input`; the worker must have `font`.
@@ -854,6 +870,128 @@ components:
           properties:
             input: { type: string, examples: [captions] }
             font: { type: string, examples: ['Inter ExtraBold'] }
+    CutParams:
+      type: object
+      title: cut
+      description: |
+        A stretch of the source as its own file, frame-exact from `start_s` (v0.2.8; a #one
+        preview from its Folge): `-ss START -i SRC -t LENGTH -map 0:v:0 [-map 0:a:0]
+        -vf [fade=t=out:st=LENGTH-FADE:d=FADE:color=black,]format=yuv420p|yuv420p10le
+        -c:v libx264 -preset P -crf C -profile:v high|high10 [-color_primaries …
+        -color_trc … -colorspace …] [-af afade=t=out:st=…:d=FADE] [-c:a aac -b:a Rk]
+        -map_metadata -1 -map_chapters -1 -movflags +faststart OUT`.
+      required: [start_s, length_s, preset, crf, bit_depth]
+      properties:
+        start_s: { type: number, minimum: 0 }
+        length_s: { type: number, exclusiveMinimum: 0 }
+        fade_s: { type: number, minimum: 0, default: 0 }
+        preset: { type: string, enum: [ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow] }
+        crf: { type: number }
+        bit_depth: { type: integer, enum: [8, 10] }
+        colour:
+          type: object
+          properties:
+            primaries: { type: string, pattern: '^[a-z0-9_-]{1,32}$', examples: [bt709] }
+            transfer: { type: string, pattern: '^[a-z0-9_-]{1,32}$' }
+            space: { type: string, pattern: '^[a-z0-9_-]{1,32}$' }
+        audio:
+          type: [object, 'null']
+          description: Null when the source has no sound.
+          required: [bitrate_kbps]
+          properties:
+            bitrate_kbps: { type: integer, examples: [256] }
+        check: { $ref: '#/components/schemas/CheckSettings' }
+    RemuxParams:
+      type: object
+      title: remux
+      description: |
+        The source's streams in a new MP4, untouched (v0.2.8; the top rung when the source is
+        already what that rung would be): `-i SRC -map 0:v:0 -map 0:a:0? -c copy [-tag:v hvc1]
+        -movflags +faststart OUT`. `framemd5` compares the video and, when there is one, the
+        first sound stream.
+      properties:
+        hvc1_tag: { type: boolean, default: false, description: For an HEVC source. }
+        check: { $ref: '#/components/schemas/CheckSettings' }
+    CheckParams:
+      type: object
+      title: check
+      description: |
+        Only the check (v0.2.8), for a file no worker encoded, such as a set imported from
+        elsewhere or a re-check of a published file. The file is the job input `candidate`; the
+        job's source is the reference for `compare` and `framemd5` (a decode-only check sends the
+        candidate as the source). Nothing is downloaded: ffmpeg reads both over HTTP, with range
+        requests, through a proxy the worker opens on 127.0.0.1 for this lease alone (the tunnel
+        lives inside the worker). The result is `outcome: figures`.
+      required: [check]
+      properties:
+        candidate: { type: string, default: candidate, description: The job input holding the file to check. }
+        width: { type: integer, description: 'The candidate''s width, from the pipeline''s header check: `compare` scales the reference to it.' }
+        height: { type: integer }
+        audio: { type: boolean, default: true, description: 'Whether `framemd5` lists the sound too.' }
+        check: { $ref: '#/components/schemas/CheckSettings' }
+    CheckSettings:
+      type: object
+      description: |
+        The check of the result, in the same lease after the encode and before the upload
+        (v0.2.8). The worker measures and reports (`CheckFigures`); the pipeline compares the
+        figures with its floors and accepts or rejects. Floors never reach a worker.
+      properties:
+        decode: { type: boolean, default: true, description: 'A full decode of the result: `-v error -xerror -i OUT -map 0 -f null -`. Lines of the null muxer about equal timestamps of variable-rate frames are not errors.' }
+        frames: { type: boolean, default: true, description: The frames the result and the source decode to. }
+        compare:
+          type: [object, 'null']
+          description: |
+            The result against the source, scaled to the result's size, on every `every`th frame:
+            `select='not(mod(n\,N))',setpts=N/TB,fps=1` on both sides, SSIM and PSNR-Y on the
+            10-bit path, XPSNR in 8 bits, libvmaf with `vmaf.model` when asked. Two decoder
+            threads per input and for the filter graph; libvmaf without a thread pool (4K peaks
+            at about 0.7 GB without vmaf, 1.1 GB with).
+          properties:
+            every: { type: integer, minimum: 1, default: 5 }
+            metrics: { type: array, items: { type: string, enum: [ssim, psnr_y, xpsnr] }, default: [ssim, psnr_y, xpsnr] }
+            vmaf:
+              type: [object, 'null']
+              properties:
+                model: { type: string, examples: [vmaf_v0.6.1, vmaf_4k_v0.6.1] }
+        framemd5: { type: boolean, default: false, description: 'Every packet of the result against the source''s (stream, dts, pts, duration and size in seconds, md5, side data): for a remux.' }
+    CheckFigures:
+      type: object
+      description: What the check found (v0.2.8). Absent figures were not asked for.
+      properties:
+        decode:
+          type: object
+          required: [errors]
+          properties:
+            errors: { type: integer }
+            lines: { type: array, maxItems: 20, items: { type: string } }
+        frames: { type: integer, description: Frames the result decodes to. }
+        source_frames: { type: integer, description: Frames the source decodes to (an edit list may hide some from its header). }
+        duration_s: { type: number, description: The result's length as decoded. }
+        compare:
+          type: object
+          properties:
+            every: { type: integer }
+            pairs: { type: integer, description: Frame pairs compared. }
+            ssim: { type: [number, 'null'] }
+            psnr_y: { type: [number, string, 'null'], description: 'dB, or "inf" for identical pictures.' }
+            xpsnr: { type: [number, string, 'null'] }
+            vmaf: { type: [number, 'null'] }
+            vmaf_model: { type: [string, 'null'] }
+        framemd5:
+          type: object
+          required: [match]
+          properties:
+            match: { type: boolean }
+            packets: { type: integer }
+            first_difference: { type: [string, 'null'], examples: ['packet 1204 of stream 0: size 18412 against 18410'] }
+        audio_levels:
+          type: object
+          description: 'For `audio.mono` = `measure`.'
+          properties:
+            mid_db: { type: [number, string, 'null'], description: 'RMS level, or "-inf" for silence.' }
+            side_db: { type: [number, string, 'null'] }
+            mono: { type: boolean, description: Whether the worker downmixed. }
+        check_s: { type: number, description: Seconds the check took. }
     WhisperParams:
       type: object
       title: whisper
@@ -950,7 +1088,10 @@ components:
           oneOf:
             - $ref: '#/components/schemas/RungParams'
             - $ref: '#/components/schemas/WhisperParams'
-          description: '`RungParams` for `kind: rung`, `WhisperParams` for `kind: whisper`.'
+            - $ref: '#/components/schemas/CutParams'
+            - $ref: '#/components/schemas/RemuxParams'
+            - $ref: '#/components/schemas/CheckParams'
+          description: 'The params of the job''s kind: `RungParams` for `rung`, `WhisperParams` for `whisper`, `CutParams`, `RemuxParams`, `CheckParams`.'
         result:
           type: object
           properties:
@@ -968,7 +1109,7 @@ components:
       type: object
       required: [phase]
       properties:
-        phase: { type: string, enum: [downloading, encoding, uploading, paused] }
+        phase: { type: string, enum: [downloading, encoding, checking, uploading, paused], description: "`checking` (v0.2.8): the check step after the encode; a worker may also go on saying `encoding`." }
         fraction: { type: number, minimum: 0, maximum: 1 }
         frames_done: { type: integer }
         frames_total: { type: integer }
@@ -1002,6 +1143,15 @@ components:
             frames: { type: integer }
             encode_s: { type: number }
             tools: { type: array, items: { $ref: '#/components/schemas/Tool' }, description: The tools that made it. }
+            check: { $ref: '#/components/schemas/CheckFigures' }
+        - type: object
+          title: Figures
+          description: The result of a `check` job (v0.2.8). No file.
+          required: [outcome, check, tools]
+          properties:
+            outcome: { type: string, const: figures }
+            check: { $ref: '#/components/schemas/CheckFigures' }
+            tools: { type: array, items: { $ref: '#/components/schemas/Tool' } }
         - type: object
           title: A failure
           required: [outcome, code, message]
@@ -1010,8 +1160,11 @@ components:
             code:
               type: string
               enum: [source_checksum, decode_failed, encode_failed, tool_missing, model_missing, out_of_memory,
-                     local_check_failed, file_not_found, killed, other]
+                     local_check_failed, check_failed, file_not_found, killed, other]
               description: |
+                `check_failed` (v0.2.8): the check step could not run, for example ffmpeg exited
+                non-zero while comparing. Figures below a floor are no failure: the worker reports
+                them and the pipeline rejects.
                 `killed`: the tool ended by a signal (the kernel's OOM killer sends SIGKILL). It and
                 `out_of_memory` blame the machine, not the tools: the queue counts the failure but
                 gives the job to the same worker again; only the second such failure of the job on
@@ -1035,7 +1188,7 @@ components:
       properties:
         lease_id: { $ref: '#/components/schemas/LeaseId' }
         attempt: { type: integer }
-        outcome: { type: string, enum: [file, failed] }
+        outcome: { type: string, enum: [file, figures, failed] }
         verdict:
           type: string
           enum: [checking, accepted, rejected, superseded, failed]

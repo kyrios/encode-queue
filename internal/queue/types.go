@@ -128,6 +128,8 @@ type RungParams struct {
 	VBVBufsize *int      `json:"vbv_bufsize_kbit,omitempty"`
 	Audio      *Audio    `json:"audio,omitempty"`
 	Captions   *Captions `json:"captions,omitempty"`
+	// Check: what the worker checks of its result in the same lease (v0.2.8).
+	Check *CheckSettings `json:"check,omitempty"`
 }
 
 // Crop is a crop before the scale.
@@ -142,7 +144,9 @@ type Crop struct {
 type Audio struct {
 	Mode        string `json:"mode"`
 	BitrateKbps int    `json:"bitrate_kbps,omitempty"`
-	Mono        bool   `json:"mono,omitempty"`
+	Mono        Mono   `json:"mono,omitempty"`
+	// MonoSideBelowDB: with mono "measure", how far below the mid the side must be (40 dB).
+	MonoSideBelowDB *float64 `json:"mono_side_below_db,omitempty"`
 }
 
 // Captions are burnt in by libass from a job input.
@@ -262,4 +266,7 @@ func errf(status int, code, format string, args ...any) *Error {
 var toolsByKind = map[string][]string{
 	KindRung:    {"ffmpeg", "libx265", "libx264"},
 	KindWhisper: {"whisper.cpp"},
+	KindCut:     {"ffmpeg", "libx264"},
+	KindRemux:   {"ffmpeg"},
+	KindCheck:   {"ffmpeg"},
 }

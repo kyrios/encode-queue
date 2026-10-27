@@ -12,9 +12,14 @@ Linux server or Mac. **Slipstream** is the encoder helper's name on every machin
   The peer list is the queue's state.
 - **The worker** (`encode-worker`) pairs by its public key, long-polls for a job, fetches the
   source with range requests, runs ffmpeg (libx265, libx264) or whisper.cpp at `nice 19`, reports
-  progress and log lines, and uploads the result over tus.
-- **The pipeline judges.** The queue never checks quality: the pipeline accepts or rejects every
-  result against ADR-0005's floors. The first accepted result wins.
+  progress and log lines, and uploads the result over tus. Jobs are rungs, whisper runs, and
+  from v0.2.8 cuts, remuxes and checks: every encode and every decode runs on a worker.
+- **The worker measures, the pipeline judges** (v0.2.8). After a rung, a cut or a remux the
+  same lease checks the result: a full decode, its frames and length, SSIM, PSNR-Y and XPSNR
+  (and VMAF when asked) against the source, the packets of a remux. The figures go with the
+  file; the pipeline, which reads headers only, accepts or rejects them against ADR-0005's
+  floors, which never reach a worker. The queue never judges quality. The first accepted
+  result wins. A `check` job checks a file no worker encoded, as it streams from the queue.
 
 ## The APIs
 
@@ -59,6 +64,9 @@ All three are OpenAPI 3.1.
   it unless a connected worker holds a better one; the lease names the one chosen. The queue
   tells each worker which models to hold (`wanted_models`): small for caption timing and the
   best one it runs at least `EQ_WHISPER_MIN_SPEED_PCT` per cent of real time by its calibration.
+  A model it has not timed is guessed from small's speed, but not wanted while a model below it
+  measured too slow; when none clears the threshold, the best model it holds stays wanted as its
+  fallback (encoder's medium at 0.96×). The speed never keeps a held model from a job.
   The worker fetches those from ggerganov/whisper.cpp at a pinned revision only, checks their
   sha256 and times them on the calibration's speech clip.
 - **Leases** last 120 s and are renewed every 30 s with the progress; the long poll waits 25 s;
@@ -84,6 +92,13 @@ All three are OpenAPI 3.1.
   threads the worker's own tools kept busy since its last presence.
   Each job has `eta_s` and `finish_at`; `GET /v1/jobs/{id}/candidates` estimates the job on
   every worker for the move menu, and `DELETE /v1/jobs/{id}/assign` ends a pin.
+- **Cut, remux and check** (v0.2.8; ADR-0007: every encode and decode on a worker): the queue
+  takes `cut`, `remux` and `check` jobs with strict params, matches `cut` on the reference's
+  ffmpeg and libx264 and the others on its ffmpeg, and gives them, a rung's `check` step and
+  `audio.mono: measure` only to workers of 0.2.8 or later. A worker's check figures arrive with
+  its file (`result.check`), or alone from a `check` job (`outcome: figures`, no file); they wait
+  as `checking` for the pipeline's verdict like a file, and the job's attempts show them. A
+  worker may report the phase `checking` while it checks.
 - **Late results** are taken and judged while the job is not done; the first accepted wins,
   later ones are `superseded`. A rejected or failed result excludes its worker from that job;
   after `max_failures` (3) the job is `failed`.
@@ -156,6 +171,7 @@ docker run --rm -p 8090:8090 -p 51821:51821/udp -v /srv/eq:/data \
 | `EQ_WORK_DIR` | where sources and results are while a job runs; default `$EQ_WORKER_STATE_DIR/work` |
 | `EQ_FFMPEG`, `EQ_WHISPER_CLI` | the tools; default `ffmpeg`, `whisper-cli` from `PATH` |
 | `EQ_WHISPER_VERSION` | the whisper.cpp release, when there is no `versions.txt` beside `whisper-cli` (the toolchain has one) |
+| `EQ_TOOLCHAIN_VERSIONS` | the toolchain's `versions.txt` when it is not beside ffmpeg and whisper-cli (Slipstream's signed bundle keeps it in `Contents/Resources`): libass's and whisper.cpp's versions come from it; `EQ_WHISPER_VERSION` still wins (v0.2.8) |
 | `EQ_WHISPER_MODELS_DIR` | the `*.bin` models, found by sha256 (`/models` in the image); the models the queue wants are fetched into it, or into `STATE/models` without it. A read-only folder (encoder's, filled by infra) fetches nothing: a wanted model it lacks is `unavailable`, provided by the host, never a failure |
 | `EQ_CALIBRATE` | `false` skips the calibration at pairing (`true` by default) |
 | `EQ_FONTS` | font families to announce besides fontconfig's, comma-separated |
@@ -197,10 +213,16 @@ nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name �
 
 Without `--control stdio`, `--control <path>` serves [worker-control.yaml](api/worker-control.yaml)
 on a Unix socket instead.
+`encode-worker selftest` encodes, cuts and remuxes a three-second clip with the machine's own
+ffmpeg, checks each result and prints the figures; it exits 1 with the problems. A lease works
+in its own folder below `EQ_WORK_DIR`, deleted however the lease ends; at start the worker
+deletes any lease folder a crash left.
+
 `encode-worker versions` prints what the worker runs, exactly as the queue will compare it. The
 worker builds ffmpeg's arguments itself from the job's structured settings, in the order
 infra's `video-encode` did (a test compares them with `video-encode`'s own), so a worker's file
-is the file `encoder` made before the split.
+is the file `encoder` made before the split. The cut and the check run the commands
+video-pipeline ran itself before v0.2.8 (testdata/pipeline-v028-args.json).
 
 ### The images
 

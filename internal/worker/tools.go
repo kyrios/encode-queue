@@ -112,10 +112,10 @@ func DetectTools(ctx context.Context, cfg Config) ([]Tool, []string) {
 		// version in versions.txt). A caption job asks for the reference's version exactly, so
 		// every worker that may take one renders the same subtitles.
 		if hasAss(ctx, cfg.FFmpeg) {
-			if v := toolchainVersion(cfg.FFmpeg, "libass"); v != "" {
+			if v := toolVersion(cfg, cfg.FFmpeg, "libass"); v != "" {
 				tools = append(tools, Tool{"libass", v})
 			} else {
-				problems = append(problems, "libass: no version in a versions.txt beside ffmpeg")
+				problems = append(problems, "libass: no version (EQ_TOOLCHAIN_VERSIONS, or versions.txt beside ffmpeg)")
 			}
 		}
 		if s, err := oneFrame(ctx, cfg.FFmpeg, "libx264", "h264"); err == nil {
@@ -135,12 +135,12 @@ func DetectTools(ctx context.Context, cfg Config) ([]Tool, []string) {
 		problems = append(problems, fmt.Sprintf("whisper.cpp: %s not found", cfg.WhisperCLI))
 	} else {
 		if wv == "" {
-			wv = toolchainVersion(cli, "whisper.cpp")
+			wv = toolVersion(cfg, cli, "whisper.cpp")
 		}
 		if wv != "" {
 			tools = append(tools, Tool{"whisper.cpp", wv})
 		} else {
-			problems = append(problems, "whisper.cpp: no version (EQ_WHISPER_VERSION, or versions.txt beside whisper-cli)")
+			problems = append(problems, "whisper.cpp: no version (EQ_WHISPER_VERSION, EQ_TOOLCHAIN_VERSIONS, or versions.txt beside whisper-cli)")
 		}
 	}
 	return tools, problems
@@ -176,13 +176,30 @@ func fileExists(p string) bool {
 	return err == nil && !fi.IsDir()
 }
 
+// toolVersion is a tool's version from the toolchain's versions.txt: the file
+// cfg.ToolchainVersions names (EQ_TOOLCHAIN_VERSIONS, v0.2.8), else the one beside the binary.
+// **Slipstream's signed bundle keeps them apart**: ffmpeg sits in Contents/Helpers, where
+// codesign allows no data files, and versions.txt in Contents/Resources; a symlink does not
+// help, since EvalSymlinks follows it to the binary's own directory.
+func toolVersion(cfg Config, binary, name string) string {
+	if cfg.ToolchainVersions != "" {
+		return versionIn(cfg.ToolchainVersions, name)
+	}
+	return toolchainVersion(binary, name)
+}
+
 // toolchainVersion reads a tool's version from the toolchain's versions.txt beside a binary
 // ("whisper.cpp v1.9.5"), since whisper-cli cannot print its own.
 func toolchainVersion(binary, name string) string {
 	if p, err := filepath.EvalSymlinks(binary); err == nil {
 		binary = p
 	}
-	data, err := os.ReadFile(filepath.Join(filepath.Dir(binary), "versions.txt"))
+	return versionIn(filepath.Join(filepath.Dir(binary), "versions.txt"), name)
+}
+
+// versionIn is the version a versions.txt gives `name` ("libass 0.17.5"), or "".
+func versionIn(path, name string) string {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}

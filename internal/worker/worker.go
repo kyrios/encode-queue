@@ -27,12 +27,16 @@ type Config struct {
 	FFmpeg         string
 	WhisperCLI     string
 	WhisperVersion string
-	ModelsDir      string
-	Fonts          []string
-	CPUThreads     int // 0: the tools' own
-	GPU            bool
-	MaxParallel    int
-	Calibrate      bool // the calibration clip at pairing and on a tools change (calibrate.go)
+	// ToolchainVersions is the toolchain's versions.txt when it does not lie beside the
+	// binaries (EQ_TOOLCHAIN_VERSIONS, v0.2.8): every tool version but ffmpeg's, x265's and
+	// x264's, which the tools print, is read from it. WhisperVersion still wins for whisper.cpp.
+	ToolchainVersions string
+	ModelsDir         string
+	Fonts             []string
+	CPUThreads        int // 0: the tools' own
+	GPU               bool
+	MaxParallel       int
+	Calibrate         bool // the calibration clip at pairing and on a tools change (calibrate.go)
 	// FetchClient fetches the whisper models the queue wants (fetch.go); nil: the default client.
 	FetchClient *http.Client
 	ChunkBytes  int64
@@ -414,6 +418,9 @@ func (w *Worker) Run(ctx context.Context) error {
 		case <-time.After(w.cfg.RetryAfter):
 		}
 	}
+	// hello gave back every lease a former run left, so no lease folder is in use: what is
+	// there is a crash's leftover (v0.2.8). Before the presence loop, which reports the room.
+	w.sweepWork()
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() { defer wg.Done(); w.presenceLoop(ctx) }()
@@ -666,6 +673,28 @@ func (w *Worker) claimLoop(ctx context.Context, slot int) {
 			continue
 		}
 		w.runLease(ctx, l)
+	}
+}
+
+// sweepWork deletes the lease folders (`ls_…`) in the work directory that no run of this
+// worker holds: what a crash or a kill left behind. Each lease's folder is deleted when it ends.
+func (w *Worker) sweepWork() {
+	ents, err := os.ReadDir(w.cfg.WorkDir)
+	if err != nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, e := range ents {
+		if !strings.HasPrefix(e.Name(), "ls_") {
+			continue
+		}
+		if _, held := w.runs[e.Name()]; held {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(w.cfg.WorkDir, e.Name())); err == nil {
+			w.cfg.Log.Info("deleted a lease folder left behind", "folder", e.Name())
+		}
 	}
 }
 

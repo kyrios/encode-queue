@@ -137,8 +137,15 @@ func TestAReadOnlyModelsFolderIsNoFailure(t *testing.T) {
 	w, events := fetchWorker(t, hf)
 	ro := filepath.Join(w.cfg.StateDir, "ro")
 	os.MkdirAll(ro, 0o755)
-	os.Chmod(ro, 0o555)
-	t.Cleanup(func() { os.Chmod(ro, 0o755) })
+	if os.Geteuid() == 0 {
+		// Root writes into a 0555 folder (the toolchain image's tests run as root): a folder
+		// below a plain file cannot be made or written by anyone.
+		os.WriteFile(filepath.Join(ro, "file"), nil, 0o644)
+		ro = filepath.Join(ro, "file", "models")
+	} else {
+		os.Chmod(ro, 0o555)
+		t.Cleanup(func() { os.Chmod(ro, 0o755) })
+	}
 	w.cfg.ModelsDir = ro
 	m := WantedModel{Name: "ggml-large-v3-turbo.bin", SHA256: strings.Repeat("a", 64), Bytes: 1624555275, URL: pinned}
 	for i := 0; i < 2; i++ {
