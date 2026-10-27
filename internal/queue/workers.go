@@ -272,7 +272,14 @@ func (s *Store) seen(w *Worker) {
 }
 
 func (s *Store) connected(w *Worker, now time.Time) bool {
-	return w.LastSeen != nil && now.Sub(*w.LastSeen) <= 3*s.cfg.PresenceEvery
+	if w.LastSeen == nil {
+		return false // never heard of, restart or not
+	}
+	last := *w.LastSeen
+	if s.started.After(last) {
+		last = s.started // the queue's own downtime does not count
+	}
+	return now.Sub(last) <= 3*s.cfg.PresenceEvery
 }
 
 func (s *Store) paused(w *Worker, now time.Time) bool {
