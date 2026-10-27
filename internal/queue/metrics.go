@@ -37,6 +37,7 @@ var MetricHelp = []struct{ Name, Type, Help string }{
 	{"encode_queue_worker_info", "gauge", "The worker's version, OS, CPU model, architecture and the app it runs inside (host_app, host_app_version), as labels; always 1."},
 	{"encode_queue_worker_cpu_threads", "gauge", "Logical CPUs the worker can use."},
 	{"encode_queue_worker_cpu_threads_in_use", "gauge", "The encoder's thread limit: the worker's cpu_threads limit, or all its CPUs."},
+	{"encode_queue_worker_cpu_threads_busy", "gauge", "Threads the worker's own tools kept busy since its last presence."},
 	{"encode_queue_worker_memory_bytes", "gauge", "The worker's memory."},
 	{"encode_queue_worker_memory_used_bytes", "gauge", "The worker's memory in use, from its last presence."},
 	{"encode_queue_worker_transfer_bytes_per_second", "gauge", "Moving average of the worker's transfer rate through the tunnel, by direction (download: sources, upload: results)."},
@@ -155,6 +156,9 @@ func (s *Store) WriteMetrics(w io.Writer, version string) {
 		}
 		if sys.ThreadsInUse != nil {
 			add("encode_queue_worker_cpu_threads_in_use", l, float64(*sys.ThreadsInUse))
+		}
+		if sys.ThreadsBusy != nil {
+			add("encode_queue_worker_cpu_threads_busy", l, float64(*sys.ThreadsBusy))
 		}
 		if sys.MemoryBytes != nil {
 			add("encode_queue_worker_memory_bytes", l, float64(*sys.MemoryBytes))

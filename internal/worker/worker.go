@@ -138,6 +138,7 @@ type Worker struct {
 	pauseCh     chan struct{} // closed and replaced when the pause changes
 	quit        chan struct{}
 	quitOnce    sync.Once
+	busy        *busySampler // used by the presence loop only
 }
 
 // New is a worker that talks to the queue through api.
@@ -147,7 +148,7 @@ func New(cfg Config, api *Client) (*Worker, error) {
 		return nil, err
 	}
 	return &Worker{cfg: cfg, api: api, runs: map[string]*run{}, pauseCh: make(chan struct{}), quit: make(chan struct{}),
-		jobLimit: cfg.MaxParallel, limitCh: make(chan struct{})}, nil
+		jobLimit: cfg.MaxParallel, limitCh: make(chan struct{}), busy: newBusySampler()}, nil
 }
 
 // emit sends an event to cfg.Events.
@@ -413,6 +414,10 @@ func (w *Worker) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func(slot int) { defer wg.Done(); w.claimLoop(ctx, slot) }(i)
 	}
+	// The extra slot (v0.2.5): one Sofort job beside the others, whatever the job limit; the
+	// queue hands it one only while this machine's RAM allows.
+	wg.Add(1)
+	go func() { defer wg.Done(); w.claimLoop(ctx, extraSlot) }()
 	wg.Wait()
 	return nil
 }
@@ -508,7 +513,7 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 		if unix.Statfs(w.cfg.WorkDir, &st) == nil {
 			free = int64(st.Bavail) * int64(st.Bsize)
 		}
-		ack, err := w.api.PutPresence(ctx, state, free, memoryUsed())
+		ack, err := w.api.PutPresence(ctx, state, free, memoryUsed(), w.busy.sample(w.toolGroups(), time.Now()))
 		w.contact(err)
 		if err == nil {
 			w.setPause(ack.PausedUntil, true)
@@ -528,13 +533,35 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 	}
 }
 
+// extraSlot is the claim loop of the extra slot, which no job limit holds back.
+const extraSlot = -1
+
+// toolGroups are the process groups of the tools running now, one per run.
+func (w *Worker) toolGroups() []int {
+	w.mu.Lock()
+	runs := make([]*run, 0, len(w.runs))
+	for _, r := range w.runs {
+		runs = append(runs, r)
+	}
+	w.mu.Unlock()
+	var out []int
+	for _, r := range runs {
+		r.mu.Lock()
+		if r.cmd != nil && r.cmd.Process != nil {
+			out = append(out, r.cmd.Process.Pid)
+		}
+		r.mu.Unlock()
+	}
+	return out
+}
+
 // claimLoop is one job slot; slots at or above the job limit wait.
 func (w *Worker) claimLoop(ctx context.Context, slot int) {
 	for ctx.Err() == nil {
 		w.mu.Lock()
 		limit, ch := w.jobLimit, w.limitCh
 		w.mu.Unlock()
-		if slot >= limit {
+		if slot != extraSlot && slot >= limit {
 			select {
 			case <-ctx.Done():
 				return
@@ -545,7 +572,7 @@ func (w *Worker) claimLoop(ctx context.Context, slot int) {
 		if err := w.waitUnpaused(ctx); err != nil {
 			return
 		}
-		l, err := w.api.Claim(ctx, w.cfg.LongPoll)
+		l, err := w.api.Claim(ctx, w.cfg.LongPoll, slot == extraSlot)
 		w.contact(err)
 		if err != nil {
 			if ctx.Err() != nil {

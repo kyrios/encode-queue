@@ -398,6 +398,7 @@ type WorkerSystem struct {
 	CPUCores     *int    `json:"cpu_cores"`
 	CPUThreads   *int    `json:"cpu_threads"`
 	ThreadsInUse *int    `json:"threads_in_use"`
+	ThreadsBusy  *int    `json:"threads_busy"`
 	MemoryBytes  *int64  `json:"memory_bytes"`
 	MemoryUsed   *int64  `json:"memory_used_bytes"`
 	OSName       *string `json:"os_name"`
@@ -442,6 +443,13 @@ func (s *Store) system(w *Worker) WorkerSystem {
 		v.MemoryBytes = &m
 	}
 	v.MemoryUsed = w.MemoryUsed
+	if b := w.ThreadsBusy; b != nil {
+		n := *b
+		if v.CPUThreads != nil && n > *v.CPUThreads {
+			n = *v.CPUThreads
+		}
+		v.ThreadsBusy = &n
+	}
 	v.ThreadsInUse = v.CPUThreads
 	if t := w.Limits.CPUThreads; t != nil {
 		n := *t

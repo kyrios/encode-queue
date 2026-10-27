@@ -166,6 +166,7 @@ type Worker struct {
 	Upload      TransferStats `json:"upload"`
 	Speeds      []*SpeedHist  `json:"speeds,omitempty"` // most recent first
 	MemoryUsed  *int64        `json:"memory_used_bytes,omitempty"`
+	ThreadsBusy *int          `json:"threads_busy,omitempty"`
 
 	tunnelSince *time.Time // when the tunnel last came up; not kept over a restart
 }
