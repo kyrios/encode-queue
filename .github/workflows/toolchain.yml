@@ -2,7 +2,8 @@ name: toolchain
 
 # Builds toolchain/versions for linux/amd64 (the image ghcr.io/kyrios/encode-toolchain) and for
 # macOS arm64 (a tarball). A pull request that changes it builds both; a tag toolchain-<N>
-# pushes the image as :<N> and releases the tarball.
+# pushes the image as :<N> and releases the tarball with the six source tarballs it was built
+# from: ffmpeg in it is GPLv3, and the release is where its Corresponding Source lives.
 on:
   pull_request:
     paths: ['toolchain/**', '.github/workflows/toolchain.yml']
@@ -44,6 +45,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.v.outputs.toolchain }}
+            org.opencontainers.image.licenses=GPL-3.0-or-later AND GPL-2.0-or-later AND LGPL-2.0-or-later AND BSD-2-Clause-Patent AND MIT
           cache-from: type=gha,scope=toolchain
           cache-to: type=gha,mode=max,scope=toolchain
       - if: github.ref_type == 'tag'
@@ -62,10 +64,50 @@ jobs:
           mv dist/encode-toolchain/bin/* dist/encode-toolchain/ && rmdir dist/encode-toolchain/bin
           tar czf encode-toolchain-darwin-arm64.tar.gz -C dist encode-toolchain
           cat dist/encode-toolchain/versions.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          ls dist/encode-toolchain/licenses | tee -a "$GITHUB_STEP_SUMMARY"
+      # The exact tarballs it was built from (each checked by its sha256), under their own names.
+      - name: sources
+        run: |
+          . toolchain/versions
+          s=$RUNNER_TEMP/toolchain/src
+          mkdir sources
+          cp "$s/ffmpeg.tar.xz" "sources/ffmpeg-$FFMPEG_VERSION.tar.xz"
+          cp "$s/x265.tar.gz" "sources/x265_$X265_VERSION.tar.gz"
+          cp "$s/x264.tar.gz" "sources/x264-$X264_COMMIT.tar.gz"
+          cp "$s/vmaf.tar.gz" "sources/vmaf-$VMAF_VERSION.tar.gz"
+          cp "$s/lame.tar.gz" "sources/lame-$LAME_VERSION.tar.gz"
+          cp "$s/whisper.tar.gz" "sources/whisper.cpp-$WHISPER_VERSION.tar.gz"
+          (cd sources && shasum -a 256 *)
+      # A new toolchain number with the same sources must report the same tools: the queue
+      # matches workers by these strings, and the pipeline's manifests name them.
+      - name: the same tools as the last toolchain
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . toolchain/versions
+          prev=$((TOOLCHAIN - 1))
+          gh release download "toolchain-$prev" -R "$GITHUB_REPOSITORY" -p encode-toolchain-darwin-arm64.tar.gz -D "$RUNNER_TEMP/prev"
+          tar xzf "$RUNNER_TEMP/prev/encode-toolchain-darwin-arm64.tar.gz" -C "$RUNNER_TEMP/prev"
+          if diff "$RUNNER_TEMP/prev/encode-toolchain/versions.json" dist/encode-toolchain/versions.json; then
+            echo "versions.json: the same as toolchain $prev" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::versions.json differs from toolchain $prev: workers on the two toolchains get different jobs"
+          fi
+          for f in ffmpeg ffprobe whisper-cli; do
+            a=$(shasum -a 256 < "$RUNNER_TEMP/prev/encode-toolchain/$f" | cut -c1-64)
+            b=$(shasum -a 256 < "dist/encode-toolchain/$f" | cut -c1-64)
+            if [ "$a" = "$b" ]; then r="the same bytes"; else r="other bytes"; fi
+            echo "$f: $r as toolchain $prev ($a / $b)" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: encode-toolchain-darwin-arm64
           path: encode-toolchain-darwin-arm64.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sources
+          path: sources/*
 
   release:
     if: github.ref_type == 'tag'
@@ -77,11 +119,23 @@ jobs:
         with:
           name: encode-toolchain-darwin-arm64
           path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sources
+          path: dist
       - run: |
           cp toolchain/versions dist/versions
           tar xzf dist/encode-toolchain-darwin-arm64.tar.gz -O encode-toolchain/versions.txt > dist/versions-darwin-arm64.txt
+          tar xzf dist/encode-toolchain-darwin-arm64.tar.gz -O encode-toolchain/licenses/SOURCES.md > dist/SOURCES.md
           (cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS)
-          gh release create "$GITHUB_REF_NAME" dist/* --title "Toolchain ${GITHUB_REF_NAME#toolchain-}" --verify-tag \
-            --notes "ffmpeg, x265, x264, libvmaf, lame and whisper.cpp as toolchain/versions pins them. Linux: ghcr.io/kyrios/encode-toolchain:${GITHUB_REF_NAME#toolchain-}."
+          n=${GITHUB_REF_NAME#toolchain-}
+          {
+            echo "ffmpeg, x265, x264, libvmaf, lame and whisper.cpp as toolchain/versions pins them. Linux: ghcr.io/kyrios/encode-toolchain:$n; macOS arm64: encode-toolchain-darwin-arm64.tar.gz."
+            echo
+            echo "**Licences.** ffmpeg and ffprobe are built with --enable-gpl --enable-version3 and are GPLv3; x264 and x265 are GPLv2 or later, LAME LGPL, libvmaf BSD-2-Clause-Patent, whisper.cpp MIT. Each licence ships in licenses/ (in the tarball, and /opt/encode-toolchain/licenses in the image)."
+            echo
+            echo "**Corresponding Source**: the six tarballs attached here, exactly as built (ffmpeg-*, x265_*, x264-*, vmaf-*, lame-*, whisper.cpp-*), and toolchain/build.sh with toolchain/versions at this tag. SOURCES.md lists each with its URL and sha256 and ffmpeg's configuration."
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Toolchain $n" --verify-tag --notes-file notes.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

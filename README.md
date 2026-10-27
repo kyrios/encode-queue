@@ -172,7 +172,9 @@ is the file `encoder` made before the split.
   libass, and whisper-cli, in `/opt/encode-toolchain/bin` (on `PATH`) with `versions.txt`, on
   Debian 13. The worker image and video-pipeline's image build FROM it, so every worker and the
   pipeline run the same build. Tag `toolchain-<N>` releases it, with
-  `encode-toolchain-darwin-arm64.tar.gz` (whisper.cpp with Metal; no libass) for Macs.
+  `encode-toolchain-darwin-arm64.tar.gz` (whisper.cpp with Metal; no libass) for Macs and the
+  source tarballs it was built from. Each component's licence and `SOURCES.md` are in
+  `/opt/encode-toolchain/licenses` (and `licenses/` in the tarball): see "Licence".
 - `ghcr.io/kyrios/slipstream`: Slipstream for Linux, the worker (`encode-worker`) on that
   toolchain. Models are not in the image; mount them at `/models` or point
   `EQ_WHISPER_MODELS_DIR` at a read-only mount. Up to v0.2.2 this image was
@@ -232,4 +234,11 @@ pause, rejected and failed results, cancelling.
 
 ## Licence
 
-MIT.
+encode-queue's own code (the queue and the worker) is MIT: [LICENSE](LICENSE).
+
+The toolchain is not: ffmpeg and ffprobe are built with `--enable-gpl --enable-version3`, so
+they are **GPLv3**, linked with x264 and x265 (GPLv2 or later), LAME (LGPL) and libvmaf
+(BSD-2-Clause-Patent); whisper-cli is MIT. From toolchain 2 on, every image and tarball carries
+each licence and `SOURCES.md` in `licenses/`, and the `toolchain-<N>` release attaches the exact
+source tarballs (the Corresponding Source). The worker calls ffmpeg as a separate program; it
+links none of it.

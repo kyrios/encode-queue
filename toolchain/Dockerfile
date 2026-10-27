@@ -18,4 +18,5 @@ RUN mkdir -p /usr/local/share/encode-toolchain \
     && ln -s /opt/encode-toolchain/bin/versions.json /opt/encode-toolchain/bin/versions.txt /usr/local/share/encode-toolchain/
 ENV PATH=/opt/encode-toolchain/bin:$PATH
 RUN ffmpeg -hide_banner -version | head -1 && ffmpeg -hide_banner -filters | grep -q ' ass ' \
-    && whisper-cli --help >/dev/null 2>&1 && cat /opt/encode-toolchain/bin/versions.txt
+    && whisper-cli --help >/dev/null 2>&1 && cat /opt/encode-toolchain/bin/versions.txt \
+    && test -s /opt/encode-toolchain/licenses/SOURCES.md && ls /opt/encode-toolchain/licenses
