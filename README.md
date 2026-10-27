@@ -181,12 +181,19 @@ is the file `encoder` made before the split.
 - `ghcr.io/kyrios/encode-queue`: the queue, on distroless.
 - `ghcr.io/kyrios/encode-toolchain:<N>`: the one toolchain of [`toolchain/versions`](toolchain/versions),
   built from source: ffmpeg with libx265 (8, 10 and 12 bits), libx264, libvmaf, libmp3lame and
-  libass, and whisper-cli, in `/opt/encode-toolchain/bin` (on `PATH`) with `versions.txt`, on
-  Debian 13. The worker image and video-pipeline's image build FROM it, so every worker and the
-  pipeline run the same build. Tag `toolchain-<N>` releases it, with
-  `encode-toolchain-darwin-arm64.tar.gz` (whisper.cpp with Metal; no libass) for Macs and the
-  source tarballs it was built from. Each component's licence and `SOURCES.md` are in
+  libass, fc-list, and whisper-cli, in `/opt/encode-toolchain/bin` (on `PATH`) with
+  `versions.txt`, on Debian 13. The worker image and video-pipeline's image build FROM it, so
+  every worker and the pipeline run the same build. Tag `toolchain-<N>` releases it, with
+  `encode-toolchain-darwin-arm64.tar.gz` (whisper.cpp with Metal) for Macs and the source
+  tarballs it was built from. Each component's licence and `SOURCES.md` are in
   `/opt/encode-toolchain/licenses` (and `licenses/` in the tarball): see "Licence".
+- **Captions are the same on Linux and macOS** from toolchain 3 on: libass and its stack
+  (HarfBuzz, FriBidi, FreeType, fontconfig, Expat) are built from source on both, and
+  `fonts/` holds Inter with a `fonts.conf` that sees only those fonts. The image sets
+  `FONTCONFIG_FILE=/opt/encode-toolchain/fonts/fonts.conf`; an app that embeds the macOS
+  tarball sets `FONTCONFIG_FILE` to its `fonts/fonts.conf` and puts its `fc-list` first on the
+  worker's `PATH`. The toolchain workflow burns the same ASS file on both and compares the
+  pictures.
 - `ghcr.io/kyrios/slipstream`: Slipstream for Linux, the worker (`encode-worker`) on that
   toolchain. Models are not in the image; mount them at `/models` or point
   `EQ_WHISPER_MODELS_DIR` at a read-only mount. Up to v0.2.2 this image was
@@ -252,8 +259,9 @@ pause, rejected and failed results, cancelling.
 encode-queue's own code (the queue and the worker) is MIT: [LICENSE](LICENSE).
 
 The toolchain is not: ffmpeg and ffprobe are built with `--enable-gpl --enable-version3`, so
-they are **GPLv3**, linked with x264 and x265 (GPLv2 or later), LAME (LGPL) and libvmaf
-(BSD-2-Clause-Patent); whisper-cli is MIT. From toolchain 2 on, every image and tarball carries
+they are **GPLv3**, linked with x264 and x265 (GPLv2 or later), LAME and FriBidi (LGPL), libvmaf
+(BSD-2-Clause-Patent), libass (ISC), FreeType (FTL or GPLv2 or later), and HarfBuzz, fontconfig
+and Expat (MIT-style); whisper-cli is MIT, and the Inter fonts are OFL-1.1. From toolchain 2 on, every image and tarball carries
 each licence and `SOURCES.md` in `licenses/`, and the `toolchain-<N>` release attaches the exact
 source tarballs (the Corresponding Source). The worker calls ffmpeg as a separate program; it
 links none of it.

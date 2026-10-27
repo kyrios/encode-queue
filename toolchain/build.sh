@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Builds the toolchain of toolchain/versions into PREFIX/bin: ffmpeg and ffprobe (libx265 with
-# 8, 10 and 12 bits, libx264, libvmaf, libmp3lame, and libass on Linux), whisper-cli (Metal on
+# 8, 10 and 12 bits, libx264, libvmaf, libmp3lame, and libass), fc-list, whisper-cli (Metal on
 # macOS), and versions.txt and versions.json with each tool's version string as the worker
-# reads it. PREFIX/licenses gets each component's licence from its source and SOURCES.md:
+# reads it. PREFIX/fonts holds Inter and fonts.conf, which sees only those fonts: point
+# FONTCONFIG_FILE at it, and libass picks the same font on every machine. PREFIX/licenses gets each component's licence from its source and SOURCES.md:
 # ffmpeg, built with --enable-gpl --enable-version3, is GPLv3, and whoever ships it ships these
 # and points to the source (the toolchain release attaches the tarballs).
 #
 #   toolchain/build.sh PREFIX [WORKDIR]
 #
+# meson at toolchain/versions' MESON_VERSION (from PyPI) on both platforms.
 # On Linux (the image's build stage) it needs build-essential, nasm, cmake, meson, ninja, xxd,
 # pkg-config, curl, git (x265 reads its version file only when git is found), and libass-dev
 # and zlib1g-dev; on macOS Xcode's tools, cmake, meson, ninja
@@ -50,6 +52,50 @@ fetch "$X264_URL" x264.tar.gz "$X264_SHA256"
 fetch "$VMAF_URL" vmaf.tar.gz "$VMAF_SHA256"
 fetch "$LAME_URL" lame.tar.gz "$LAME_SHA256"
 fetch "$WHISPER_URL" whisper.tar.gz "$WHISPER_SHA256"
+fetch "$EXPAT_URL" expat.tar.xz "$EXPAT_SHA256"
+fetch "$FREETYPE_URL" freetype.tar.xz "$FREETYPE_SHA256"
+fetch "$FRIBIDI_URL" fribidi.tar.xz "$FRIBIDI_SHA256"
+fetch "$HARFBUZZ_URL" harfbuzz.tar.xz "$HARFBUZZ_SHA256"
+fetch "$FONTCONFIG_URL" fontconfig.tar.xz "$FONTCONFIG_SHA256"
+fetch "$LIBASS_URL" libass.tar.xz "$LIBASS_SHA256"
+fetch "$INTER_URL" inter.zip "$INTER_SHA256"
+
+# The caption stack, static, from source on both platforms, so libass, its shaping and its font
+# matching are the same versions everywhere (no system libraries, no CoreText).
+mesonlib() { # dir options...
+  local d=$1
+  shift
+  (cd "$work/$d" && meson setup build --prefix="$deps" --libdir=lib --buildtype=release \
+    --default-library=static --wrap-mode=nodownload "$@" >"$work/$d.log" 2>&1 \
+    && ninja -C build >>"$work/$d.log" 2>&1 && ninja -C build install >>"$work/$d.log" 2>&1) \
+    || { tail -60 "$work/$d.log"; tail -40 "$work/$d/build/meson-logs/meson-log.txt" 2>/dev/null; exit 1; }
+}
+case $(meson --version) in "$MESON_VERSION") ;; *) echo "meson $(meson --version), not $MESON_VERSION" >&2; exit 1 ;; esac
+echo "== expat $EXPAT_VERSION"
+unpack expat.tar.xz expat
+(cd "$work/expat" && cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$deps" \
+  -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DEXPAT_SHARED_LIBS=OFF \
+  -DEXPAT_BUILD_TOOLS=OFF -DEXPAT_BUILD_EXAMPLES=OFF -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_DOCS=OFF \
+  >/dev/null && cmake --build build -j"$jobs" >/dev/null && cmake --install build >/dev/null)
+echo "== freetype $FREETYPE_VERSION"
+unpack freetype.tar.xz freetype
+mesonlib freetype -Dbrotli=disabled -Dbzip2=disabled -Dharfbuzz=disabled -Dpng=disabled -Dzlib=disabled
+echo "== fribidi $FRIBIDI_VERSION"
+unpack fribidi.tar.xz fribidi
+mesonlib fribidi -Ddocs=false -Dbin=false -Dtests=false
+echo "== harfbuzz $HARFBUZZ_VERSION"
+unpack harfbuzz.tar.xz harfbuzz
+mesonlib harfbuzz -Dfreetype=enabled -Dglib=disabled -Dgobject=disabled -Dcairo=disabled -Dchafa=disabled \
+  -Dicu=disabled -Dgraphite2=disabled -Dcoretext=disabled -Dintrospection=disabled -Dtests=disabled \
+  -Ddocs=disabled -Dutilities=disabled -Dbenchmark=disabled
+echo "== fontconfig $FONTCONFIG_VERSION"
+unpack fontconfig.tar.xz fontconfig
+mesonlib fontconfig -Dxml-backend=expat -Dtools=enabled -Dtests=disabled -Ddoc=disabled -Dnls=disabled \
+  -Dcache-build=disabled -Diconv=disabled
+echo "== libass $LIBASS_VERSION"
+unpack libass.tar.xz libass
+mesonlib libass -Dfontconfig=enabled -Dcoretext=disabled -Ddirectwrite=disabled -Dtest=disabled \
+  -Dcompare=disabled -Dprofile=disabled -Dfuzz=disabled -Dcheckasm=disabled
 
 echo "== x265 $X265_VERSION: 8-bit main with the 10- and 12-bit libraries linked in"
 unpack x265.tar.gz x265
@@ -112,10 +158,7 @@ make -s install >/dev/null
 echo "== ffmpeg $FFMPEG_VERSION"
 unpack ffmpeg.tar.xz ffmpeg
 cd "$work/ffmpeg"
-extra=()
-if [ "$os" != Darwin ]; then
-  extra+=(--enable-libass --enable-libfontconfig --enable-libfreetype --enable-libfribidi --enable-libharfbuzz)
-fi
+extra=(--enable-libass --enable-libfontconfig --enable-libfreetype --enable-libfribidi --enable-libharfbuzz)
 ./configure --prefix="$prefix" --enable-gpl --enable-version3 --disable-autodetect --enable-zlib \
   --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libmp3lame ${extra[@]+"${extra[@]}"} \
   --disable-doc --disable-ffplay --disable-debug --pkg-config-flags=--static \
@@ -138,6 +181,23 @@ fi
 cmake -B build "${wargs[@]}" >/dev/null
 cmake --build build -j"$jobs" --target whisper-cli >/dev/null
 install -m 0755 build/bin/whisper-cli "$prefix/bin/"
+# The worker lists the fonts with fc-list: the toolchain's own, built with its fontconfig.
+install -m 0755 "$deps/bin/fc-list" "$prefix/bin/"
+
+echo "== fonts: Inter $INTER_VERSION and a fonts.conf that sees only them"
+rm -rf "$prefix/fonts" && mkdir -p "$prefix/fonts" "$work/inter"
+(cd "$work/inter" && unzip -q -o "$work/src/inter.zip")
+cp "$work/inter"/extras/ttf/Inter-*.ttf "$prefix/fonts/"
+cat > "$prefix/fonts/fonts.conf" <<'F'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<!-- encode-toolchain: the toolchain's fonts and no others, so libass takes the same font on
+     every machine. FONTCONFIG_FILE points here; the paths are relative to this file. -->
+<fontconfig>
+  <dir prefix="relative">.</dir>
+  <cachedir prefix="xdg">encode-toolchain-fontconfig</cachedir>
+</fontconfig>
+F
 
 echo "== licences"
 lic=$prefix/licenses
@@ -151,11 +211,21 @@ cp "$work/lame/COPYING" "$lic/lame-COPYING"
 cp "$work/lame/LICENSE" "$lic/lame-LICENSE"
 # whisper.cpp's licence covers ggml, which it carries.
 cp "$work/whisper/LICENSE" "$lic/whisper.cpp-LICENSE"
+cp "$work/libass/COPYING" "$lic/libass-COPYING"
+cp "$work/harfbuzz/COPYING" "$lic/harfbuzz-COPYING"
+cp "$work/fribidi/COPYING" "$lic/fribidi-COPYING"
+# FreeType offers the FTL or GPLv2 or later; both suit a GPLv3 ffmpeg. Both ship.
+cp "$work/freetype/LICENSE.TXT" "$lic/freetype-LICENSE.TXT"
+cp "$work/freetype/docs/FTL.TXT" "$lic/freetype-FTL.TXT"
+cp "$work/freetype/docs/GPLv2.TXT" "$lic/freetype-GPLv2.TXT"
+cp "$work/fontconfig/COPYING" "$lic/fontconfig-COPYING"
+cp "$work/expat/COPYING" "$lic/expat-COPYING"
+cp "$work/inter/LICENSE.txt" "$lic/Inter-LICENSE.txt"
 config=$("$prefix/bin/ffmpeg" -hide_banner -buildconf 2>/dev/null | sed -n 's/^ *\(--.*\)/\1/p' | tr '\n' ' ')
 if [ "$os" = Darwin ]; then
   system="zlib and the C++ runtime are macOS's own; nothing else is linked."
 else
-  system="libass, fontconfig, freetype, fribidi, harfbuzz, zlib and libgomp are Debian 13's packages, linked from the image; their copyright files are in /usr/share/doc/<package>/copyright there."
+  system="zlib, the C++ runtime and libgomp are Debian 13's, linked from the image; their copyright files are in /usr/share/doc/<package>/copyright there."
 fi
 cat > "$lic/SOURCES.md" <<S
 # encode-toolchain $TOOLCHAIN: what is in it and where its source is
@@ -165,7 +235,7 @@ the **GNU GPL version 3** (ffmpeg-COPYING.GPLv3, ffmpeg-LICENSE.md); the librari
 them keep their own licences, in this folder. whisper-cli is MIT.
 
 **The Corresponding Source** is attached to the release \`toolchain-$TOOLCHAIN\` of
-https://github.com/kyrios/encode-queue: the six tarballs below, byte for byte, and the build
+https://github.com/kyrios/encode-queue: the tarballs below, byte for byte, and the build
 script \`toolchain/build.sh\` with \`toolchain/versions\` at that tag.
 
 | component | version | licence | file here | source | sha256 |
@@ -176,6 +246,16 @@ script \`toolchain/build.sh\` with \`toolchain/versions\` at that tag.
 | libvmaf | $VMAF_VERSION | BSD-2-Clause-Patent | libvmaf-LICENSE | $VMAF_URL | $VMAF_SHA256 |
 | LAME (libmp3lame) | $LAME_VERSION | LGPL-2.0-or-later | lame-COPYING, lame-LICENSE | $LAME_URL | $LAME_SHA256 |
 | whisper.cpp (with ggml) | $WHISPER_VERSION | MIT | whisper.cpp-LICENSE | $WHISPER_URL | $WHISPER_SHA256 |
+| libass | $LIBASS_VERSION | ISC | libass-COPYING | $LIBASS_URL | $LIBASS_SHA256 |
+| HarfBuzz | $HARFBUZZ_VERSION | MIT (Old MIT) | harfbuzz-COPYING | $HARFBUZZ_URL | $HARFBUZZ_SHA256 |
+| GNU FriBidi | $FRIBIDI_VERSION | LGPL-2.1-or-later | fribidi-COPYING | $FRIBIDI_URL | $FRIBIDI_SHA256 |
+| FreeType | $FREETYPE_VERSION | FTL or GPL-2.0-or-later | freetype-LICENSE.TXT, freetype-FTL.TXT, freetype-GPLv2.TXT | $FREETYPE_URL | $FREETYPE_SHA256 |
+| fontconfig (with fc-list) | $FONTCONFIG_VERSION | MIT-style | fontconfig-COPYING | $FONTCONFIG_URL | $FONTCONFIG_SHA256 |
+| Expat | $EXPAT_VERSION | MIT | expat-COPYING | $EXPAT_URL | $EXPAT_SHA256 |
+| Inter (fonts/) | $INTER_VERSION | OFL-1.1 | Inter-LICENSE.txt | $INTER_URL | $INTER_SHA256 |
+
+Portions of this software are copyright © 2026 The FreeType Project (https://freetype.org).
+All rights reserved.
 
 System libraries: $system
 
@@ -200,10 +280,11 @@ libx264 $x264v
 libvmaf $VMAF_VERSION
 lame $LAME_VERSION
 whisper.cpp $WHISPER_VERSION
+libass $LIBASS_VERSION
 V
 # The same as JSON in helper.yaml's Tool form, for the pipeline's manifests.
-printf '[\n  {"name": "ffmpeg", "version": "%s"},\n  {"name": "libx265", "version": "%s"},\n  {"name": "libx264", "version": "%s"},\n  {"name": "libvmaf", "version": "%s"},\n  {"name": "lame", "version": "%s"},\n  {"name": "whisper.cpp", "version": "%s"}\n]\n' \
-  "$ffv" "$x265v" "$x264v" "$VMAF_VERSION" "$LAME_VERSION" "$WHISPER_VERSION" > versions.json
+printf '[\n  {"name": "ffmpeg", "version": "%s"},\n  {"name": "libx265", "version": "%s"},\n  {"name": "libx264", "version": "%s"},\n  {"name": "libvmaf", "version": "%s"},\n  {"name": "lame", "version": "%s"},\n  {"name": "whisper.cpp", "version": "%s"},\n  {"name": "libass", "version": "%s"}\n]\n' \
+  "$ffv" "$x265v" "$x264v" "$VMAF_VERSION" "$LAME_VERSION" "$WHISPER_VERSION" "$LIBASS_VERSION" > versions.json
 cat versions.txt versions.json
 for v in "$ffv" "$x265v" "$x264v"; do
   case $v in ''|unknown*) echo "a version string is empty or unknown" >&2; exit 1 ;; esac
@@ -220,8 +301,7 @@ need() { # what names...
     grep -Eq "^ *[A-Z.]+( [a-z.])? +([^ ]+,)?$n(,[^ ]+)?( |$)" <<<"$list" || { echo "ffmpeg lacks $what $n" >&2; exit 1; }
   done
 }
-filters=(scale select setpts fps format split crop fade afade pan astats ssim psnr xpsnr libvmaf)
-[ "$os" = Darwin ] || filters+=(ass subtitles)
+filters=(scale select setpts fps format split crop fade afade pan astats ssim psnr xpsnr libvmaf ass subtitles)
 need filters "${filters[@]}"
 need encoders libx264 libx265 aac pcm_s16le libmp3lame
 need muxers mp4 mov wav mp3 null framemd5 hevc h264
@@ -231,6 +311,13 @@ need filters testsrc testsrc2 sine color
 ./ffmpeg -hide_banner -nostdin -loglevel error -f lavfi -i testsrc2=s=320x180:d=0.2 -frames:v 4 \
   -c:v libx265 -pix_fmt yuv420p10le -x265-params log-level=error -f null - || { echo "no 10-bit x265" >&2; exit 1; }
 ./whisper-cli --help >/dev/null 2>&1 || { echo "whisper-cli does not start" >&2; exit 1; }
+# Captions: with the toolchain's fonts.conf, libass takes Inter ExtraBold, as the pipeline asks.
+export FONTCONFIG_FILE="$prefix/fonts/fonts.conf"
+./fc-list : family | grep -q '^Inter' || { echo "fc-list does not see Inter" >&2; exit 1; }
+took=$(./ffmpeg -hide_banner -nostdin -loglevel verbose -f lavfi -i color=c=0x203040:s=1080x1920:d=0.04 \
+  -frames:v 1 -vf "ass=filename=$here/check/captions.ass" -f null - 2>&1 | grep 'fontselect' || true)
+echo "$took"
+echo "$took" | grep -q 'Inter-ExtraBold' || { echo "libass did not take Inter-ExtraBold" >&2; exit 1; }
 if [ "$os" = Darwin ]; then
   for f in ffmpeg ffprobe whisper-cli; do
     if otool -L "$f" | tail -n +2 | grep -v -E '^\s*(/usr/lib/|/System/)'; then

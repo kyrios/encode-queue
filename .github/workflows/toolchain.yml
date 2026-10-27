@@ -1,14 +1,16 @@
 name: toolchain
 
 # Builds toolchain/versions for linux/amd64 (the image ghcr.io/kyrios/encode-toolchain) and for
-# macOS arm64 (a tarball). A pull request that changes it builds both; a tag toolchain-<N>
-# pushes the image as :<N> and releases the tarball with the six source tarballs it was built
-# from: ffmpeg in it is GPLv3, and the release is where its Corresponding Source lives.
+# macOS arm64 (a tarball). A pull request that changes it, or a push to a branch
+# toolchain-build/*, builds both and checks that both burn the same captions; a tag
+# toolchain-<N> pushes the image as :<N> and releases the tarball with the source tarballs it
+# was built from: ffmpeg in it is GPLv3, and the release is where its Corresponding Source lives.
 on:
   pull_request:
     paths: ['toolchain/**', '.github/workflows/toolchain.yml']
   push:
     tags: ['toolchain-*']
+    branches: ['toolchain-build/**']
 
 permissions:
   contents: write
@@ -45,11 +47,29 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.v.outputs.toolchain }}
-            org.opencontainers.image.licenses=GPL-3.0-or-later AND GPL-2.0-or-later AND LGPL-2.0-or-later AND BSD-2-Clause-Patent AND MIT
+            org.opencontainers.image.licenses=GPL-3.0-or-later AND GPL-2.0-or-later AND LGPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-2-Clause-Patent AND ISC AND FTL AND MIT AND OFL-1.1
           cache-from: type=gha,scope=toolchain
           cache-to: type=gha,mode=max,scope=toolchain
       - if: github.ref_type == 'tag'
         run: echo "ghcr.io/kyrios/encode-toolchain:${{ steps.v.outputs.toolchain }}@${{ steps.build.outputs.digest }}" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The check frame: toolchain/check/captions.ass burned in, as raw RGB for the comparison
+      # with macOS, a PNG to look at, and libass's log with the font it took.
+      - name: captions
+        if: github.ref_type != 'tag'
+        run: |
+          mkdir -p captions
+          docker run --rm -v "$PWD/toolchain/check:/check:ro" -v "$PWD/captions:/out" \
+            ghcr.io/kyrios/encode-toolchain:${{ steps.v.outputs.toolchain }} sh -c '
+              ffmpeg -hide_banner -nostdin -loglevel verbose -f lavfi -i color=c=0x203040:s=1080x1920:d=0.04 \
+                -frames:v 1 -vf "ass=filename=/check/captions.ass,format=rgb24" -f rawvideo /out/linux.rgb 2> /out/linux.log
+              ffmpeg -hide_banner -nostdin -loglevel error -f lavfi -i color=c=0x203040:s=1080x1920:d=0.04 \
+                -frames:v 1 -vf "ass=filename=/check/captions.ass" /out/linux.png'
+          grep fontselect captions/linux.log | tee -a "$GITHUB_STEP_SUMMARY"
+      - if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: captions-linux
+          path: captions/*
 
   macos:
     runs-on: macos-15
@@ -57,7 +77,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: build tools for the build (on the runner only)
-        run: brew install meson ninja pkgconf
+        run: |
+          brew install ninja pkgconf gperf
+          . toolchain/versions
+          echo "meson==$MESON_VERSION --hash=sha256:$MESON_SHA256" > "$RUNNER_TEMP/meson.txt"
+          python3 -m venv "$RUNNER_TEMP/meson" && "$RUNNER_TEMP/meson/bin/pip" install -q --only-binary :all: --require-hashes -r "$RUNNER_TEMP/meson.txt"
+          echo "$RUNNER_TEMP/meson/bin" >> "$GITHUB_PATH"
       - name: build
         run: |
           toolchain/build.sh "$PWD/dist/encode-toolchain" "$RUNNER_TEMP/toolchain"
@@ -77,11 +102,19 @@ jobs:
           cp "$s/vmaf.tar.gz" "sources/vmaf-$VMAF_VERSION.tar.gz"
           cp "$s/lame.tar.gz" "sources/lame-$LAME_VERSION.tar.gz"
           cp "$s/whisper.tar.gz" "sources/whisper.cpp-$WHISPER_VERSION.tar.gz"
+          cp "$s/libass.tar.xz" "sources/libass-$LIBASS_VERSION.tar.xz"
+          cp "$s/harfbuzz.tar.xz" "sources/harfbuzz-$HARFBUZZ_VERSION.tar.xz"
+          cp "$s/fribidi.tar.xz" "sources/fribidi-$FRIBIDI_VERSION.tar.xz"
+          cp "$s/freetype.tar.xz" "sources/freetype-$FREETYPE_VERSION.tar.xz"
+          cp "$s/fontconfig.tar.xz" "sources/fontconfig-$FONTCONFIG_VERSION.tar.xz"
+          cp "$s/expat.tar.xz" "sources/expat-$EXPAT_VERSION.tar.xz"
+          cp "$s/inter.zip" "sources/Inter-$INTER_VERSION.zip"
           (cd sources && shasum -a 256 *)
-      # A new toolchain number with the same sources must report the same tools: the queue
-      # matches workers by these strings, and the pipeline's manifests name them.
-      - name: the same tools as the last toolchain
-        if: github.event_name == 'pull_request'
+      # What changed against the last toolchain. A tool it had must keep its version string: the
+      # queue matches workers by these strings, and the pipeline's manifests name them. A tool
+      # may be added (libass in toolchain 3). Changed binaries are listed.
+      - name: what changed since the last toolchain
+        if: github.ref_type != 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -89,19 +122,49 @@ jobs:
           prev=$((TOOLCHAIN - 1))
           gh release download "toolchain-$prev" -R "$GITHUB_REPOSITORY" -p encode-toolchain-darwin-arm64.tar.gz -D "$RUNNER_TEMP/prev"
           tar xzf "$RUNNER_TEMP/prev/encode-toolchain-darwin-arm64.tar.gz" -C "$RUNNER_TEMP/prev"
-          # A difference fails: workers on the two toolchains would get different jobs. A change
-          # of a tool's version is a deliberate change; drop this step for that pull request.
-          if ! diff "$RUNNER_TEMP/prev/encode-toolchain/versions.json" dist/encode-toolchain/versions.json; then
-            echo "::error::versions.json differs from toolchain $prev: workers on the two toolchains get different jobs"
-            exit 1
-          fi
-          echo "versions.json: the same as toolchain $prev" | tee -a "$GITHUB_STEP_SUMMARY"
-          for f in ffmpeg ffprobe whisper-cli; do
-            a=$(shasum -a 256 < "$RUNNER_TEMP/prev/encode-toolchain/$f" | cut -c1-64)
+          python3 - "$RUNNER_TEMP/prev/encode-toolchain/versions.json" dist/encode-toolchain/versions.json "$prev" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          old = {t["name"]: t["version"] for t in json.load(open(sys.argv[1]))}
+          new = {t["name"]: t["version"] for t in json.load(open(sys.argv[2]))}
+          bad = False
+          for n in sorted(old.keys() | new.keys()):
+              if n not in new:
+                  print(f"- {n}: gone (was {old[n]})"); bad = True
+              elif n not in old:
+                  print(f"- {n}: new, {new[n]}")
+              elif old[n] != new[n]:
+                  print(f"- {n}: {old[n]} -> {new[n]}"); bad = True
+              else:
+                  print(f"- {n}: {new[n]}, as in toolchain {sys.argv[3]}")
+          if bad:
+              print("::error::a tool's version changed or went: workers on the two toolchains would get different jobs")
+              sys.exit(1)
+          PY
+          for f in ffmpeg ffprobe whisper-cli fc-list; do
             b=$(shasum -a 256 < "dist/encode-toolchain/$f" | cut -c1-64)
-            if [ "$a" = "$b" ]; then r="the same bytes"; else r="other bytes"; fi
-            echo "$f: $r as toolchain $prev ($a / $b)" | tee -a "$GITHUB_STEP_SUMMARY"
-          done
+            if [ ! -f "$RUNNER_TEMP/prev/encode-toolchain/$f" ]; then
+              echo "$f: new ($b)"
+            else
+              a=$(shasum -a 256 < "$RUNNER_TEMP/prev/encode-toolchain/$f" | cut -c1-64)
+              if [ "$a" = "$b" ]; then echo "$f: the same bytes as toolchain $prev"; else echo "$f: other bytes than toolchain $prev ($a -> $b)"; fi
+            fi
+          done | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: captions
+        if: github.ref_type != 'tag'
+        run: |
+          t=dist/encode-toolchain
+          mkdir -p captions
+          export FONTCONFIG_FILE="$PWD/$t/fonts/fonts.conf"
+          "$t/ffmpeg" -hide_banner -nostdin -loglevel verbose -f lavfi -i color=c=0x203040:s=1080x1920:d=0.04 \
+            -frames:v 1 -vf "ass=filename=toolchain/check/captions.ass,format=rgb24" -f rawvideo captions/macos.rgb 2> captions/macos.log
+          "$t/ffmpeg" -hide_banner -nostdin -loglevel error -f lavfi -i color=c=0x203040:s=1080x1920:d=0.04 \
+            -frames:v 1 -vf "ass=filename=toolchain/check/captions.ass" captions/macos.png
+          grep fontselect captions/macos.log | tee -a "$GITHUB_STEP_SUMMARY"
+      - if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: captions-macos
+          path: captions/*
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: encode-toolchain-darwin-arm64
@@ -110,6 +173,45 @@ jobs:
         with:
           name: sources
           path: sources/*
+
+  # The same ASS file on the same frame, burned in on Linux and on macOS: the same picture within a
+  # small tolerance, and libass took Inter ExtraBold on both.
+  captions:
+    if: github.ref_type != 'tag'
+    needs: [linux, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: captions-*
+          merge-multiple: true
+          path: captions
+      - name: the same captions on both
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import re, sys
+          a = open("captions/linux.rgb", "rb").read()
+          b = open("captions/macos.rgb", "rb").read()
+          assert len(a) == len(b) == 1080 * 1920 * 3, (len(a), len(b))
+          diff = [abs(x - y) for x, y in zip(a, b)]
+          pixels = sum(1 for i in range(0, len(diff), 3) if max(diff[i:i + 3]) > 8)
+          share = pixels / (1080 * 1920)
+          print(f"pixels that differ by more than 8 of 255: {pixels} ({share:.4%}), largest difference {max(diff)}")
+          fonts = {}
+          for p in ("linux", "macos"):
+              took = re.findall(r"fontselect: \((.*?)\) -> ([^,\s]+)", open(f"captions/{p}.log").read())
+              fonts[p] = sorted({f.rsplit("/", 1)[-1] for _, f in took})
+              print(f"{p}: libass took {fonts[p]}")
+          bad = []
+          if share > 0.001:
+              bad.append("the two frames differ in more than 0.1 % of their pixels")
+          for p, f in fonts.items():
+              if not f or any("Inter-ExtraBold" not in x for x in f):
+                  bad.append(f"{p}: libass took {f}, not Inter-ExtraBold")
+          for m in bad:
+              print(f"::error::{m}")
+          sys.exit(1 if bad else 0)
+          PY
 
   release:
     if: github.ref_type == 'tag'
@@ -134,9 +236,9 @@ jobs:
           {
             echo "ffmpeg, x265, x264, libvmaf, lame and whisper.cpp as toolchain/versions pins them. Linux: ghcr.io/kyrios/encode-toolchain:$n; macOS arm64: encode-toolchain-darwin-arm64.tar.gz."
             echo
-            echo "**Licences.** ffmpeg and ffprobe are built with --enable-gpl --enable-version3 and are GPLv3; x264 and x265 are GPLv2 or later, LAME LGPL, libvmaf BSD-2-Clause-Patent, whisper.cpp MIT. Each licence ships in licenses/ (in the tarball, and /opt/encode-toolchain/licenses in the image)."
+            echo "**Licences.** ffmpeg and ffprobe are built with --enable-gpl --enable-version3 and are GPLv3; x264 and x265 are GPLv2 or later, LAME and FriBidi LGPL, libvmaf BSD-2-Clause-Patent, libass ISC, FreeType FTL or GPLv2+, HarfBuzz, fontconfig, Expat and whisper.cpp MIT-style, Inter OFL-1.1. Each licence ships in licenses/ (in the tarball, and /opt/encode-toolchain/licenses in the image)."
             echo
-            echo "**Corresponding Source**: the six tarballs attached here, exactly as built (ffmpeg-*, x265_*, x264-*, vmaf-*, lame-*, whisper.cpp-*), and toolchain/build.sh with toolchain/versions at this tag. SOURCES.md lists each with its URL and sha256 and ffmpeg's configuration."
+            echo "**Corresponding Source**: the source tarballs attached here, exactly as built, and toolchain/build.sh with toolchain/versions at this tag. SOURCES.md lists each with its version, licence, URL and sha256, and ffmpeg's configuration."
           } > notes.md
           gh release create "$GITHUB_REF_NAME" dist/* --title "Toolchain $n" --verify-tag --notes-file notes.md
         env:
