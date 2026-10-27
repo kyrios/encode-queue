@@ -80,7 +80,8 @@ jobs:
         run: |
           brew install ninja pkgconf gperf
           . toolchain/versions
-          python3 -m venv "$RUNNER_TEMP/meson" && "$RUNNER_TEMP/meson/bin/pip" install -q "meson==$MESON_VERSION"
+          echo "meson==$MESON_VERSION --hash=sha256:$MESON_SHA256" > "$RUNNER_TEMP/meson.txt"
+          python3 -m venv "$RUNNER_TEMP/meson" && "$RUNNER_TEMP/meson/bin/pip" install -q --only-binary :all: --require-hashes -r "$RUNNER_TEMP/meson.txt"
           echo "$RUNNER_TEMP/meson/bin" >> "$GITHUB_PATH"
       - name: build
         run: |

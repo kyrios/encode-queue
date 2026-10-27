@@ -10,7 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
     && rm -rf /var/lib/apt/lists/*
 COPY versions build.sh /toolchain/
 # meson as toolchain/versions pins it (Debian's is too old for fontconfig), only for the build.
-RUN . /toolchain/versions && python3 -m venv /opt/meson && /opt/meson/bin/pip install --no-cache-dir "meson==$MESON_VERSION" \
+RUN . /toolchain/versions && python3 -m venv /opt/meson \
+    && echo "meson==$MESON_VERSION --hash=sha256:$MESON_SHA256" > /tmp/meson.txt \
+    && /opt/meson/bin/pip install --no-cache-dir --only-binary :all: --require-hashes -r /tmp/meson.txt \
     && ln -s /opt/meson/bin/meson /usr/local/bin/meson
 COPY check /toolchain/check/
 RUN /toolchain/build.sh /opt/encode-toolchain /tmp/toolchain && rm -rf /tmp/toolchain

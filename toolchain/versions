@@ -41,6 +41,8 @@ WHISPER_SHA256=ff1a9053feb509ff9d7729703355541ae9690073a6b1c40eb692c962e0dc1720
 # The build tool for the meson-built parts, from PyPI on both platforms: fontconfig 2.18 needs
 # meson 1.11 or later, and Debian 13 has 1.7.
 MESON_VERSION=1.12.1
+# PyPI's wheel meson-1.12.1-py3-none-any.whl; pip installs it with --require-hashes.
+MESON_SHA256=930bc7542cbd9f57009e182fd014eba48cf1a0180a7b9006d2d32d8f168d8b02
 
 # The caption stack (libass with fontconfig), the same on Linux and macOS.
 LIBASS_VERSION=0.17.5
