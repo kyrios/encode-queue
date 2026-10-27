@@ -114,6 +114,43 @@ func TestRelativeSpeed(t *testing.T) {
 	}
 }
 
+// Thorsten, 2026-10-27: "Why is the Mac not showing its speed?" A new worker has no measured
+// relative speed until it delivers; while its first job encodes, its live fps against the
+// reference's on that class is the estimate.
+func TestSpeedEstimate(t *testing.T) {
+	e := newEnv(t, "encoder")
+	ref := e.worker("encoder", reference)
+	mac := e.worker("mac", reference)
+	e.rung("x.archive", "archive")
+	l := e.claim(mac)
+	e.s.Renew(mac, l.ID, Progress{Phase: "encoding", FPS: f64(3)})
+	if v := must(e.s.GetWorker(mac)); v.SpeedEstimate != nil {
+		t.Fatalf("an estimate before the reference has a result on the class: %+v", v.SpeedEstimate)
+	}
+	e.encode(ref, "r1.archive", 10)
+	e.s.Renew(mac, l.ID, Progress{Phase: "downloading"})
+	if v := must(e.s.GetWorker(mac)); v.SpeedEstimate != nil {
+		t.Fatalf("an estimate while downloading: %+v", v.SpeedEstimate)
+	}
+	e.s.Renew(mac, l.ID, Progress{Phase: "encoding", FPS: f64(3)})
+	v := must(e.s.GetWorker(mac))
+	if est := v.SpeedEstimate; v.RelativeSpeed != nil || est == nil || math.Abs(est.Value-0.3) > 1e-9 || est.Class != "libx265 3840x2160 slower" || est.FPS != 3 || est.ReferenceFPS != 10 {
+		t.Fatalf("live: relative %v estimate %+v", v.RelativeSpeed, v.SpeedEstimate)
+	}
+	if v := must(e.s.GetWorker(ref)); v.SpeedEstimate != nil {
+		t.Fatalf("the reference estimates itself: %+v", v.SpeedEstimate)
+	}
+	// Once measured, the measured value stands and the estimate is gone.
+	e.result(mac, l.ID, 1000, 50) // 20 fps
+	if v := must(e.s.GetWorker(mac)); v.RelativeSpeed == nil || *v.RelativeSpeed != 2 || v.SpeedEstimate != nil {
+		t.Fatalf("measured: %v estimate %+v", v.RelativeSpeed, v.SpeedEstimate)
+	}
+	b, _ := json.Marshal(must(e.s.GetWorker(ref)))
+	if !strings.Contains(string(b), `"speed_estimate":null`) {
+		t.Fatalf("speed_estimate missing from the JSON: %s", b)
+	}
+}
+
 func TestForecastAndCandidates(t *testing.T) {
 	e := newEnv(t, "encoder")
 	ref := e.worker("encoder", reference)

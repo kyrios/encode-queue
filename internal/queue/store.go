@@ -122,6 +122,8 @@ type Lease struct {
 	EndCode   string     `json:"end_code,omitempty"`
 	Progress  *Progress  `json:"progress,omitempty"`
 	Result    *Result    `json:"result,omitempty"`
+	// Extra: claimed past max_parallel_jobs, in the worker's extra slot (v0.2.5).
+	Extra bool `json:"extra,omitempty"`
 }
 
 // Result is what an attempt delivered.
@@ -164,6 +166,7 @@ type Worker struct {
 	Upload      TransferStats `json:"upload"`
 	Speeds      []*SpeedHist  `json:"speeds,omitempty"` // most recent first
 	MemoryUsed  *int64        `json:"memory_used_bytes,omitempty"`
+	ThreadsBusy *int          `json:"threads_busy,omitempty"`
 
 	tunnelSince *time.Time // when the tunnel last came up; not kept over a restart
 }
@@ -211,6 +214,9 @@ type Store struct {
 	dirty    bool
 	saveReq  chan struct{}
 	draining bool
+	// started: when this queue opened its state. Its downtime does not count against a worker
+	// or a lease (Open, connected).
+	started time.Time
 
 	// OnPeers is called, with the lock held, whenever the peer list changes.
 	OnPeers func(peers []PeerInfo)
@@ -245,6 +251,17 @@ func Open(cfg Config) (*Store, error) {
 		return nil, err
 	}
 	s.st = st
+	// **A restart keeps the leases** (v0.2.6): a worker heard of 30 s before a stop of a minute
+	// and calling again 30 s after the start was "offline" for the housekeeping, and its encode
+	// went back to the queue. Since the start counts as the last contact, and every active lease
+	// gets one lease time from the start, a worker that comes back keeps its work; one that does
+	// not is offline 3 presences after the start, as before.
+	s.started = cfg.Now()
+	for _, l := range st.Leases {
+		if l.State == LeaseActive && l.ExpiresAt.Before(s.started.Add(cfg.Lease)) {
+			l.ExpiresAt = s.started.Add(cfg.Lease)
+		}
+	}
 	for _, j := range st.Jobs {
 		if j.Priority == "" {
 			j.Priority = j.Spec.Priority

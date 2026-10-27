@@ -28,8 +28,12 @@ All three are OpenAPI 3.1.
 
 ## How it behaves
 
-- **Priorities**: `stage1`, then `stage2`, then `archive`, and a place within each, which the
-  Encoder page can change. A worker gets the first job it may run.
+- **Priorities**: `now`, then `stage1`, then `stage2`, then `archive`, and a place within each,
+  which the Encoder page can change. A worker gets the first job it may run. `now` (the Encoder
+  page's "Sofort") is for a job someone in Funkhaus waits for: it never preempts, and a worker
+  takes one in its **extra slot** beside other work, on top of `max_parallel_jobs`, while its free
+  RAM (memory less the last presence's use less 1 GB) holds the job's expected peak (a 4K
+  `slower` encode 5.5 GB, whisper medium 2.5 GB). Without the RAM it simply waits first in line.
 - **Exact tool versions**: a worker gets a job only if its tools match the job's `requires`
   exactly, as text. Without `requires` a job requires the tools of the reference worker
   (`EQ_REFERENCE_WORKER`, `encoder`'s own worker container): ffmpeg, libx265 and libx264 for a
@@ -50,6 +54,13 @@ All three are OpenAPI 3.1.
   cores, threads in use, memory, OS, the transfer rates the queue measures (source downloads
   and result uploads, a moving average), and `relative_speed`: its fps against the reference
   worker's (the median of its last 5 results per codec, size and preset, against the reference's).
+  Until a worker has measured results, the **calibration** gives it one: at pairing and when
+  ffmpeg, libx265 or libx264 change, every worker (the reference too) makes the same 10 s 4K clip
+  with its own ffmpeg, bit-exact, and encodes it once per rung class of the ladder with the
+  rung's real flags, about a minute; `relative_speed_source` says `calibrated` or `measured`.
+  `EQ_CALIBRATE=false` turns it off. Without either, `speed_estimate` gives the live fps of the
+  rung job it encodes against the reference's median on that class. `threads_busy` is how many
+  threads the worker's own tools kept busy since its last presence.
   Each job has `eta_s` and `finish_at`; `GET /v1/jobs/{id}/candidates` estimates the job on
   every worker for the move menu, and `DELETE /v1/jobs/{id}/assign` ends a pin.
 - **Late results** are taken and judged while the job is not done; the first accepted wins,
@@ -154,7 +165,8 @@ nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name �
   `phase`, `fraction`, `fps`, `speed`, `eta_s`; at every phase change and once a second),
   `idle`, `result` (`lease_id`, `title`, `verdict`: `accepted`, `rejected` or `given_back`,
   `check`), `paused` (`until` or null), `update` (`latest`, when the queue wants a newer app),
-  `tools` (`tools: [{name, version}]`), `log` (`lease_id`, `line`).
+  `tools` (`tools: [{name, version}]`), `log` (`lease_id`, `line`), `calibrating` (`classes`,
+  when the calibration clip starts) and `calibrated` (`classes`, when it is done).
 - **Standard error** is the log for people.
 
 Without `--control stdio`, `--control <path>` serves [worker-control.yaml](api/worker-control.yaml)
@@ -219,10 +231,11 @@ otherwise). Per-worker series carry `worker_id` and
 | `encode_queue_worker_info` | gauge | The worker's version, OS, CPU model, architecture and the app it runs inside (host_app, host_app_version), as labels; always 1. |
 | `encode_queue_worker_cpu_threads` | gauge | Logical CPUs the worker can use. |
 | `encode_queue_worker_cpu_threads_in_use` | gauge | The encoder's thread limit: the worker's cpu_threads limit, or all its CPUs. |
+| `encode_queue_worker_cpu_threads_busy` | gauge | Threads the worker's own tools kept busy since its last presence. |
 | `encode_queue_worker_memory_bytes` | gauge | The worker's memory. |
 | `encode_queue_worker_memory_used_bytes` | gauge | The worker's memory in use, from its last presence. |
 | `encode_queue_worker_transfer_bytes_per_second` | gauge | Moving average of the worker's transfer rate through the tunnel, by direction (download: sources, upload: results). |
-| `encode_queue_worker_relative_speed` | gauge | The worker's encoding speed against the reference worker on the same rung classes, a moving average; 1 is as fast. |
+| `encode_queue_worker_relative_speed` | gauge | The worker's encoding speed against the reference worker on the same rung classes, a moving average, or from the calibration clip until it has measured results; 1 is as fast. |
 | `encode_queue_worker_last_handshake_timestamp_seconds` | gauge | The worker's last WireGuard handshake, in Unix seconds. |
 | `encode_queue_jobs_pinned` | gauge | Queued jobs the Encoder page sent to one worker, waiting for it. |
 <!-- /metrics -->

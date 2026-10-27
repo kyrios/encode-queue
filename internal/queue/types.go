@@ -15,8 +15,12 @@ const (
 	KindWhisper = "whisper"
 )
 
-// Priorities, first first (ADR-0005's order).
-var Priorities = []string{"stage1", "stage2", "archive"}
+// Priorities, first first (ADR-0005's order). "now" (the Encoder page's "Sofort", v0.2.5) is for a
+// job someone in Funkhaus waits for: captions from the audio, a Loop. It goes first in line, may
+// run in a worker's extra slot beside a long encode, and never preempts.
+const PriorityNow = "now"
+
+var Priorities = []string{PriorityNow, "stage1", "stage2", "archive"}
 
 func prioIndex(p string) int {
 	for i, q := range Priorities {
@@ -91,6 +95,8 @@ type Capabilities struct {
 	Models     []Model         `json:"models,omitempty"`
 	Fonts      []string        `json:"fonts,omitempty"`
 	Hardware   json.RawMessage `json:"hardware,omitempty"`
+	// Calibration: the worker's fps on the calibration clip per rung class (v0.2.5).
+	Calibration *Calibration `json:"calibration,omitempty"`
 }
 
 func (c *Capabilities) tool(name string) (string, bool) {
