@@ -143,6 +143,7 @@ type Worker struct {
 	pauseCh     chan struct{} // closed and replaced when the pause changes
 	quit        chan struct{}
 	quitOnce    sync.Once
+	unavailable map[string]bool // wanted models a read-only models folder cannot take (fetch.go)
 	busy        *busySampler    // used by the presence loop only
 	machine     *machineSampler // likewise
 }

@@ -53,10 +53,23 @@ func (w *Worker) modelsDir() string {
 
 // fetchModels fetches the wanted models the worker lacks, one at a time, and says whether it
 // got one. A failure leaves the others to try.
+//
+// A models folder the worker may not write (encoder's /models, a read-only mount that infra
+// fills) is no failure: the host provides the models there. Each wanted model it lacks is then
+// "unavailable" with that reason, logged once per run, so neither the Encoder page nor an alert
+// shows a failure that is none.
 func (w *Worker) fetchModels(ctx context.Context, wanted []WantedModel) bool {
 	got := false
+	readOnly := !writable(w.modelsDir())
 	for _, m := range wanted {
 		if w.modelPath(m.SHA256) != "" {
+			continue
+		}
+		if readOnly {
+			if w.markUnavailable(m.SHA256) {
+				w.cfg.Log.Info("model provided by the host", "model", m.Name, "dir", w.modelsDir())
+			}
+			w.emitModel(m.SHA256, m.Name, "unavailable", map[string]any{"bytes": m.Bytes, "reason": "the models folder is read-only: the host provides the models"})
 			continue
 		}
 		w.emitModel(m.SHA256, m.Name, "wanted", map[string]any{"bytes": m.Bytes})
@@ -167,6 +180,35 @@ func (w *Worker) fetchModel(ctx context.Context, m WantedModel) error {
 	w.mu.Unlock()
 	w.cfg.Log.Info("model fetched", "model", m.Name, "bytes", m.Bytes)
 	return nil
+}
+
+// markUnavailable notes a model as provided by the host and says whether it was new.
+func (w *Worker) markUnavailable(sha string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.unavailable == nil {
+		w.unavailable = map[string]bool{}
+	}
+	if w.unavailable[sha] {
+		return false
+	}
+	w.unavailable[sha] = true
+	return true
+}
+
+// writable says whether the worker may put files into dir (made when it does not exist yet).
+func writable(dir string) bool {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false
+	}
+	f, err := os.CreateTemp(dir, ".write-test-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	os.Remove(name)
+	return true
 }
 
 // modelPath is the file of a model the worker holds, or "".

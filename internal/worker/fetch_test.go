@@ -129,3 +129,35 @@ func TestFetchRefusesWhatIsNotPinnedOrDoesNotMatch(t *testing.T) {
 		t.Fatal("kept a model whose sha256 did not match")
 	}
 }
+
+// encoder's /models is a read-only mount that infra fills: a model the queue wants there is
+// provided by the host, never a failure (the Encoder page and the alerts must not show one).
+func TestAReadOnlyModelsFolderIsNoFailure(t *testing.T) {
+	hf := &hfStandIn{body: []byte("x")}
+	w, events := fetchWorker(t, hf)
+	ro := filepath.Join(w.cfg.StateDir, "ro")
+	os.MkdirAll(ro, 0o755)
+	os.Chmod(ro, 0o555)
+	t.Cleanup(func() { os.Chmod(ro, 0o755) })
+	w.cfg.ModelsDir = ro
+	m := WantedModel{Name: "ggml-large-v3-turbo.bin", SHA256: strings.Repeat("a", 64), Bytes: 1624555275, URL: pinned}
+	for i := 0; i < 2; i++ {
+		if w.fetchModels(context.Background(), []WantedModel{m}) {
+			t.Fatal("fetched into a read-only folder")
+		}
+	}
+	if len(hf.seen) != 0 {
+		t.Fatal("asked the network for a model it cannot keep")
+	}
+	for _, e := range *events {
+		if e["state"] == "failed" {
+			t.Fatalf("a failure for a model the host provides: %v", e)
+		}
+	}
+	if n := len(*events); n != 2 || (*events)[0]["state"] != "unavailable" || !strings.Contains((*events)[0]["reason"].(string), "read-only") {
+		t.Fatalf("events %v", *events)
+	}
+	if !w.unavailable[m.SHA256] || w.markUnavailable(m.SHA256) {
+		t.Fatal("not noted once")
+	}
+}

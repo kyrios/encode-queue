@@ -156,7 +156,7 @@ docker run --rm -p 8090:8090 -p 51821:51821/udp -v /srv/eq:/data \
 | `EQ_WORK_DIR` | where sources and results are while a job runs; default `$EQ_WORKER_STATE_DIR/work` |
 | `EQ_FFMPEG`, `EQ_WHISPER_CLI` | the tools; default `ffmpeg`, `whisper-cli` from `PATH` |
 | `EQ_WHISPER_VERSION` | the whisper.cpp release, when there is no `versions.txt` beside `whisper-cli` (the toolchain has one) |
-| `EQ_WHISPER_MODELS_DIR` | the `*.bin` models, found by sha256 (`/models` in the image); the models the queue wants are fetched into it, or into `STATE/models` without it (a read-only folder reports each fetch as failed) |
+| `EQ_WHISPER_MODELS_DIR` | the `*.bin` models, found by sha256 (`/models` in the image); the models the queue wants are fetched into it, or into `STATE/models` without it. A read-only folder (encoder's, filled by infra) fetches nothing: a wanted model it lacks is `unavailable`, provided by the host, never a failure |
 | `EQ_CALIBRATE` | `false` skips the calibration at pairing (`true` by default) |
 | `EQ_FONTS` | font families to announce besides fontconfig's, comma-separated |
 | `EQ_HOST_APP_NAME`, `EQ_HOST_APP_VERSION` | the app the worker runs inside (Slipstream and its version), shown on the Encoder page; never compared with the queue's minimum |
@@ -191,7 +191,7 @@ nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name �
   `tools` (`tools: [{name, version}]`), `log` (`lease_id`, `line`), `calibrating` (`classes`,
   when the calibration clip starts) and `calibrated` (`classes`, when it is done), and `model`
   for each whisper model the queue wants (`name`, `sha256`, `state`: `wanted`, `downloading`,
-  `checking`, `calibrating`, `ready` or `failed`; `bytes`, `bytes_done` while downloading,
+  `checking`, `calibrating`, `ready`, `failed`, or `unavailable` when the models folder is read-only and the host provides the models; `bytes`, `bytes_done` while downloading,
   `speed` in times real time once timed, `reason` when it failed).
 - **Standard error** is the log for people.
 
