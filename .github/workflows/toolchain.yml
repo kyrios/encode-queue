@@ -89,11 +89,13 @@ jobs:
           prev=$((TOOLCHAIN - 1))
           gh release download "toolchain-$prev" -R "$GITHUB_REPOSITORY" -p encode-toolchain-darwin-arm64.tar.gz -D "$RUNNER_TEMP/prev"
           tar xzf "$RUNNER_TEMP/prev/encode-toolchain-darwin-arm64.tar.gz" -C "$RUNNER_TEMP/prev"
-          if diff "$RUNNER_TEMP/prev/encode-toolchain/versions.json" dist/encode-toolchain/versions.json; then
-            echo "versions.json: the same as toolchain $prev" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning::versions.json differs from toolchain $prev: workers on the two toolchains get different jobs"
+          # A difference fails: workers on the two toolchains would get different jobs. A change
+          # of a tool's version is a deliberate change; drop this step for that pull request.
+          if ! diff "$RUNNER_TEMP/prev/encode-toolchain/versions.json" dist/encode-toolchain/versions.json; then
+            echo "::error::versions.json differs from toolchain $prev: workers on the two toolchains get different jobs"
+            exit 1
           fi
+          echo "versions.json: the same as toolchain $prev" | tee -a "$GITHUB_STEP_SUMMARY"
           for f in ffmpeg ffprobe whisper-cli; do
             a=$(shasum -a 256 < "$RUNNER_TEMP/prev/encode-toolchain/$f" | cut -c1-64)
             b=$(shasum -a 256 < "dist/encode-toolchain/$f" | cut -c1-64)
