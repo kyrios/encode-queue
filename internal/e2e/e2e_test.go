@@ -570,6 +570,27 @@ func TestCalibrationAtPairing(t *testing.T) {
 	})
 }
 
+// Thorsten's live session, 2026-10-27: both Macs sat "bereit" and claimed nothing while
+// Slipstream 1.3.1's new toolchain made them calibrate again. From v0.2.10 the worker claims while
+// its calibration runs.
+func TestAWorkerClaimsWhileItCalibrates(t *testing.T) {
+	h := newHarness(t)
+	h.pipeline()
+	h.calibrate = true
+	t.Setenv("FAKE_CALIBRATE_MS", "2000") // eight classes: 16 s of calibration
+	h.rungJob("go3x1fpzj30k.1080-stage2", "stage2", nil)
+	mac := h.pair("mac")
+	w := h.waitState("go3x1fpzj30k.1080-stage2", "done", 12*time.Second)
+	if len(w.Attempts) != 1 || w.Attempts[0].Worker.Name != "mac" {
+		t.Fatalf("attempts: %+v", w.Attempts)
+	}
+	var v queue.WorkerView
+	h.call("GET", "/v1/workers/"+mac.id, adminToken, nil, &v)
+	if v.RelativeSpeedSource != nil && *v.RelativeSpeedSource == "calibrated" {
+		t.Fatal("the calibration was done first: the test proves nothing")
+	}
+}
+
 // "Sofort" in the extra slot (v0.2.5): a worker limited to one job at a time encodes a long archive
 // rung, and captions someone waits for run beside it, over the tunnel, without preempting it.
 func TestSofortBesideAnEncode(t *testing.T) {
