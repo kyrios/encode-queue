@@ -26,6 +26,41 @@ jobs:
       - name: the API specs are valid OpenAPI 3.1
         run: npx --yes @redocly/cli@1.25.0 lint api/helper.yaml api/pipeline-admin.yaml api/worker-control.yaml
 
+  # **The path that decides what gets published, with the real toolchain** (v0.2.8): the
+  # worker's check step and a streamed check job through a real queue, with encode-toolchain 3's
+  # own ffmpeg (internal/e2e/real_test.go), and the worker's tests that run ffmpeg. The fake tool
+  # of the other e2e tests runs no check. EQ_REQUIRE_REAL_FFMPEG=1 makes a missing ffmpeg fail
+  # these tests instead of skipping them. They run as uid 1001, not root: as root, a read-only
+  # folder is writable and a worker test's premise is gone.
+  real-ffmpeg:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/kyrios/encode-toolchain:3@sha256:90d801a26a7e695c3b64434bac97f4e95d3d0df664f25c264ae7dc3dc83f502e
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      EQ_REQUIRE_REAL_FFMPEG: "1"
+    steps:
+      - name: a C compiler for -race, and git for the checkout
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends gcc libc6-dev git ca-certificates
+          rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: the real end-to-end test and the worker's tests, with the toolchain's ffmpeg
+        run: |
+          ffmpeg -hide_banner -version | head -1
+          mkdir -p /tmp/u && chown -R 1001:1001 /tmp/u "$GITHUB_WORKSPACE"
+          setpriv --reuid=1001 --regid=1001 --clear-groups \
+            env HOME=/tmp/u GOPATH=/tmp/u/go GOCACHE=/tmp/u/cache PATH="$PATH" EQ_REQUIRE_REAL_FFMPEG=1 \
+            sh -c 'go test -race -count=1 -v -run "^TestReal" ./internal/e2e/ && go test -race -count=1 ./internal/worker/'
+
   images:
     runs-on: ubuntu-24.04
     timeout-minutes: 60

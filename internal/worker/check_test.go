@@ -240,14 +240,18 @@ func TestMonoJSON(t *testing.T) {
 // checkFFmpeg is this machine's ffmpeg when it has what the check runs (the toolchain's does;
 // XPSNR came with ffmpeg 7), else the test is skipped.
 func checkFFmpeg(t *testing.T) string {
+	skip := t.Skipf
+	if os.Getenv("EQ_REQUIRE_REAL_FFMPEG") == "1" { // CI's job in the toolchain image
+		skip = t.Fatalf
+	}
 	ff, err := exec.LookPath("ffmpeg")
 	if err != nil {
-		t.Skip("no ffmpeg")
+		skip("no ffmpeg on PATH")
 	}
 	out, _ := exec.Command(ff, "-hide_banner", "-filters").Output()
 	for _, f := range []string{"xpsnr", "ssim", "psnr", "astats"} {
 		if !regexp.MustCompile(`\s` + f + `\s`).Match(out) {
-			t.Skipf("ffmpeg without the %s filter", f)
+			skip("ffmpeg without the %s filter", f)
 		}
 	}
 	return ff

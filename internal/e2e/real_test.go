@@ -24,21 +24,27 @@ import (
 // streams its two files and delivers figures alone. Each result waits in `checking` with its
 // figures until the pipeline's verdict finishes it.
 
-// realFFmpeg is this machine's ffmpeg when it has what the jobs run, else the test is skipped.
+// realFFmpeg is this machine's ffmpeg when it has what the jobs run, else the test is skipped,
+// or fails where CI runs it in the toolchain's image (EQ_REQUIRE_REAL_FFMPEG=1): there a skip
+// would hide that nothing tested the path that decides what gets published.
 func realFFmpeg(t *testing.T) string {
+	skip := t.Skipf
+	if os.Getenv("EQ_REQUIRE_REAL_FFMPEG") == "1" {
+		skip = t.Fatalf
+	}
 	ff, err := exec.LookPath("ffmpeg")
 	if err != nil {
-		t.Skip("no ffmpeg")
+		skip("no ffmpeg on PATH")
 	}
 	filters, _ := exec.Command(ff, "-hide_banner", "-filters").Output()
 	encoders, _ := exec.Command(ff, "-hide_banner", "-encoders").Output()
 	for _, f := range []string{"xpsnr", "ssim", "psnr", "astats", "fade"} {
 		if !regexp.MustCompile(`\s` + f + `\s`).Match(filters) {
-			t.Skipf("ffmpeg without the %s filter (the toolchain has it)", f)
+			skip("ffmpeg without the %s filter (the toolchain has it)", f)
 		}
 	}
 	if !regexp.MustCompile(`\slibx264\s`).Match(encoders) {
-		t.Skip("ffmpeg without libx264")
+		skip("ffmpeg without libx264")
 	}
 	return ff
 }
