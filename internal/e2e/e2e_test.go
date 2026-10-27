@@ -171,6 +171,12 @@ type testWorker struct {
 // the one line back into the worker, which brings its tunnel up and takes jobs.
 func (h *harness) pair(name string) *testWorker {
 	h.t.Helper()
+	return h.pairWith(name, nil)
+}
+
+// pairWith pairs a worker whose configuration `adjust` changes: its ffmpeg, say.
+func (h *harness) pairWith(name string, adjust func(*worker.Config)) *testWorker {
+	h.t.Helper()
 	key, _ := tunnel.GenerateKey()
 	var en queue.Enrolment
 	if st := h.call("POST", "/v1/workers", adminToken, map[string]string{"name": name, "public_key": key.Public().String()}, &en); st != 201 {
@@ -189,14 +195,18 @@ func (h *harness) pair(name string) *testWorker {
 		h.t.Fatal(err)
 	}
 	self, _ := os.Executable()
-	w, err := worker.New(worker.Config{Version: "0.1.0", StateDir: h.t.TempDir(), FFmpeg: self, WhisperCLI: self,
+	wcfg := worker.Config{Version: "0.1.0", StateDir: h.t.TempDir(), FFmpeg: self, WhisperCLI: self,
 		WhisperVersion: "v1.9.5", ModelsDir: h.models, MaxParallel: 1, ChunkBytes: 1 << 10, Calibrate: h.calibrate, FetchClient: offline,
 		LongPoll: time.Second, LogEvery: 200 * time.Millisecond, RetryAfter: 200 * time.Millisecond,
 		Log: h.log.With("worker", name), Events: func(ev map[string]any) {
 			h.evMu.Lock()
 			h.events = append(h.events, ev)
 			h.evMu.Unlock()
-		}}, api)
+		}}
+	if adjust != nil {
+		adjust(&wcfg)
+	}
+	w, err := worker.New(wcfg, api)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -295,6 +305,12 @@ func (h *harness) runPipeline(ctx context.Context) {
 			}
 			for _, a := range j.Attempts {
 				if a.Result == nil || a.Result.Verdict != "checking" {
+					continue
+				}
+				if a.Result.FileURL == nil { // a check job's figures (v0.2.8): no file to fetch
+					v, reason := h.verdict(j, a, nil)
+					h.call("PUT", fmt.Sprintf("/v1/jobs/%s/attempts/%d/verdict", j.ID, a.Attempt), pipelineToken,
+						map[string]any{"verdict": v, "reason": reason}, nil)
 					continue
 				}
 				req, _ := http.NewRequestWithContext(ctx, "GET", h.admin.URL+*a.Result.FileURL, nil)

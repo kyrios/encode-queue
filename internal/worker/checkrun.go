@@ -55,6 +55,7 @@ func (r *run) measureMono(ctx context.Context, src string, a *AudioParams) (*Aud
 func (r *run) checkResult(ctx context.Context, c *CheckSettings, result, source string, w, h int,
 	sameFrames bool, srcFrames *int64, audio bool) (*CheckFigures, error) {
 	t0 := time.Now()
+	r.setPhase("checking") // v0.2.8: the queue and the Encoder page show the check step
 	r.log("info", "worker", "checking the result")
 	f := &CheckFigures{}
 	ff := r.w.cfg.FFmpeg
@@ -200,7 +201,6 @@ func (r *run) workCheck(ctx context.Context) error {
 		source = ""
 	}
 	r.mu.Lock()
-	r.prog = Progress{Phase: "encoding"}
 	r.encodeStart = time.Now()
 	r.mu.Unlock()
 	audio := p.Audio == nil || *p.Audio

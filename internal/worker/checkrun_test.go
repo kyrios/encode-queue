@@ -55,6 +55,9 @@ func TestCheckResultOfARung(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if ph := r.status().Progress.Phase; ph != "checking" {
+		t.Errorf("the phase during the check: %q", ph)
+	}
 	if f.Decode == nil || f.Decode.Errors != 0 || *f.Frames != 50 || *f.SourceFrames != 50 {
 		t.Errorf("decode %+v frames %v", f.Decode, f.Frames)
 	}

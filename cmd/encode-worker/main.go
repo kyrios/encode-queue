@@ -48,6 +48,7 @@ type flags struct {
 	calibrate                             string
 	ffmpeg, ffprobe, whisperCLI, models   string
 	whisperVersion, fonts, control        string
+	toolchainVersions                     string
 }
 
 func main() {
@@ -74,6 +75,7 @@ func main() {
 	flag.StringVar(&f.whisperCLI, "whisper-cli", env.String("EQ_WHISPER_CLI", "whisper-cli"), "whisper-cli (EQ_WHISPER_CLI)")
 	flag.StringVar(&f.models, "whisper-models", env.String("EQ_WHISPER_MODELS_DIR", ""), "the whisper models, found by sha256 (EQ_WHISPER_MODELS_DIR)")
 	flag.StringVar(&f.whisperVersion, "whisper-version", env.String("EQ_WHISPER_VERSION", ""), "whisper.cpp's release, if no versions.txt is beside whisper-cli (EQ_WHISPER_VERSION)")
+	flag.StringVar(&f.toolchainVersions, "toolchain-versions", env.String("EQ_TOOLCHAIN_VERSIONS", ""), "the toolchain's versions.txt, when it is not beside ffmpeg and whisper-cli: Slipstream's bundle (EQ_TOOLCHAIN_VERSIONS)")
 	flag.StringVar(&f.fonts, "fonts", env.String("EQ_FONTS", ""), "more font families, comma-separated (EQ_FONTS)")
 	flag.StringVar(&f.control, "control", env.String("EQ_CONTROL_SOCKET", ""), "stdio for JSON lines on standard input and output, or a Unix socket path (EQ_CONTROL_SOCKET)")
 	flag.Usage = func() {
@@ -120,21 +122,22 @@ func run(cmd string, f flags, env *config.Env) error {
 		appVersion = strings.TrimPrefix(version, "v")
 	}
 	cfg := worker.Config{
-		Version:        appVersion,
-		HostAppName:    f.hostAppName,
-		HostAppVersion: f.hostAppVersion,
-		StateDir:       f.stateDir,
-		WorkDir:        f.workDir,
-		FFmpeg:         f.ffmpeg,
-		WhisperCLI:     f.whisperCLI,
-		WhisperVersion: f.whisperVersion,
-		ModelsDir:      f.models,
-		Fonts:          fonts,
-		CPUThreads:     f.threads,
-		GPU:            f.gpu == "true" || f.gpu == "1" || f.gpu == "yes",
-		MaxParallel:    f.jobs,
-		Calibrate:      f.calibrate == "true",
-		Log:            log,
+		Version:           appVersion,
+		HostAppName:       f.hostAppName,
+		HostAppVersion:    f.hostAppVersion,
+		StateDir:          f.stateDir,
+		WorkDir:           f.workDir,
+		FFmpeg:            f.ffmpeg,
+		WhisperCLI:        f.whisperCLI,
+		WhisperVersion:    f.whisperVersion,
+		ToolchainVersions: f.toolchainVersions,
+		ModelsDir:         f.models,
+		Fonts:             fonts,
+		CPUThreads:        f.threads,
+		GPU:               f.gpu == "true" || f.gpu == "1" || f.gpu == "yes",
+		MaxParallel:       f.jobs,
+		Calibrate:         f.calibrate == "true",
+		Log:               log,
 	}
 	if cmd == "healthcheck" {
 		fi, err := os.Stat(filepath.Join(f.stateDir, "health"))
