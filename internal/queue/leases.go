@@ -18,6 +18,10 @@ import (
 type LeaseRequest struct {
 	Kinds          []string `json:"kinds,omitempty"`
 	MaxSourceBytes int64    `json:"max_source_bytes,omitempty"`
+	// Extra is the worker's extra slot (v0.2.5), on top of max_parallel_jobs: one lease at a time,
+	// Sofort jobs only, and beside other work only while the worker's free RAM holds the job's
+	// peak.
+	Extra bool `json:"extra,omitempty"`
 }
 
 func (s *Store) activeLeases(workerID string) []*Lease {
@@ -55,8 +59,9 @@ func (s *Store) room() int64 {
 	return free - s.cfg.ResultReserve
 }
 
-// claimable is the first queued job this worker may run now, or nil.
-func (s *Store) claimable(w *Worker, req LeaseRequest) *Job {
+// claimable is the first queued job this worker may run now, or nil. `ramGate`: the claim is the
+// extra slot's beside other work, so the job's peak must fit the worker's free RAM.
+func (s *Store) claimable(w *Worker, req LeaseRequest, ramGate bool) *Job {
 	accepted, _ := s.kinds(w)
 	room := s.room()
 	// The jobs the Encoder page sent to this worker first, then the rest; a job sent to
@@ -86,12 +91,20 @@ func (s *Store) claimable(w *Worker, req LeaseRequest) *Job {
 		if s.mismatch(w, j) != "" {
 			continue
 		}
+		if req.Extra && j.Priority != PriorityNow {
+			continue
+		}
+		if ramGate && !s.ramFits(w, j) {
+			continue
+		}
 		return j
 	}
 	return nil
 }
 
-func (s *Store) canClaim(w *Worker, now time.Time) error {
+// canClaim says why the worker may not claim now. Its regular slots count against
+// max_parallel_jobs; `extra` is its extra slot, which holds one lease on top of them.
+func (s *Store) canClaim(w *Worker, now time.Time, extra bool) error {
 	if s.draining {
 		return errf(503, "draining", "the queue hands out no new work now")
 	}
@@ -101,14 +114,74 @@ func (s *Store) canClaim(w *Worker, now time.Time) error {
 	if s.paused(w, now) {
 		return errf(409, "paused", "paused until %s", w.PausedUntil.Format(time.RFC3339))
 	}
-	max := w.Limits.MaxParallelJobs
-	if max < 1 {
-		max = 1
+	regular, extras := 0, 0
+	for _, l := range s.activeLeases(w.ID) {
+		if l.Extra {
+			extras++
+		} else {
+			regular++
+		}
 	}
-	if len(s.activeLeases(w.ID)) >= max {
-		return errf(409, "limit_reached", "this worker holds %d leases, its limit", max)
+	if extra && extras > 0 {
+		return errf(409, "limit_reached", "this worker's extra slot is taken")
+	}
+	if max := maxJobs(w); !extra && regular >= max {
+		return errf(409, "limit_reached", "this worker holds %d leases, its limit", regular)
 	}
 	return nil
+}
+
+func maxJobs(w *Worker) int {
+	if w.Limits.MaxParallelJobs < 1 {
+		return 1
+	}
+	return w.Limits.MaxParallelJobs
+}
+
+// headroom is the RAM the extra slot leaves free beside a job's expected peak.
+const headroom = 1 << 30
+
+// peakBytes is what a job is expected to take at its peak (measured on encoder, 2026-10-27:
+// a 4K `slower` encode peaks at 4.6 to 5.3 GB). Whisper medium is the large one beside an
+// encode; a model the queue does not know counts as medium.
+func peakBytes(j *Job) int64 {
+	const gb = 1 << 30
+	switch {
+	case j.whisper != nil:
+		m := strings.ToLower(j.whisper.Model)
+		switch {
+		case strings.Contains(m, "large"):
+			return 4 * gb
+		case strings.Contains(m, "tiny"), strings.Contains(m, "base"), strings.Contains(m, "small"):
+			return 1 * gb
+		}
+		return 5 * gb / 2
+	case j.rung != nil:
+		h := min(j.rung.Width, j.rung.Height)
+		slow := j.rung.Preset == "slower" || j.rung.Preset == "veryslow" || j.rung.Preset == "slow"
+		switch {
+		case h >= 2160 && slow:
+			return 11 * gb / 2
+		case h >= 2160:
+			return 4 * gb
+		case h >= 1440:
+			return 3 * gb
+		case h >= 1080:
+			return 2 * gb
+		}
+		return 1 * gb
+	}
+	return 2 * gb
+}
+
+// ramFits says whether the worker's free RAM, by its last presence, holds the job's peak with
+// the headroom. Unknown RAM never fits.
+func (s *Store) ramFits(w *Worker, j *Job) bool {
+	total := s.system(w).MemoryBytes
+	if total == nil || w.MemoryUsed == nil {
+		return false
+	}
+	return *total-*w.MemoryUsed-headroom >= peakBytes(j)
 }
 
 // Claim leases the next job this worker may run, waiting up to wait for one. It returns nil
@@ -128,13 +201,14 @@ func (s *Store) Claim(ctx context.Context, workerID string, req LeaseRequest, wa
 		}
 		s.seen(w)
 		now := s.cfg.Now()
-		if err := s.canClaim(w, now); err != nil {
+		if err := s.canClaim(w, now, req.Extra); err != nil {
 			s.mu.Unlock()
 			return nil, err
 		}
-		if j := s.claimable(w, req); j != nil {
+		ramGate := req.Extra && len(s.activeLeases(w.ID)) > 0
+		if j := s.claimable(w, req, ramGate); j != nil {
 			l := &Lease{ID: newLeaseID(now), JobID: j.ID, WorkerID: w.ID, Worker: w.Name,
-				Attempt: len(j.Attempts) + 1, State: LeaseActive, CreatedAt: now, ExpiresAt: now.Add(s.cfg.Lease)}
+				Attempt: len(j.Attempts) + 1, State: LeaseActive, CreatedAt: now, ExpiresAt: now.Add(s.cfg.Lease), Extra: req.Extra}
 			s.st.Leases[l.ID] = l
 			j.Attempts = append(j.Attempts, l.ID)
 			j.Pin = nil

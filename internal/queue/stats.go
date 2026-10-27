@@ -279,8 +279,8 @@ func (s *Store) freeAt(w *Worker, now time.Time, except string) *time.Time {
 	var ends []time.Time
 	busy := 0
 	for _, l := range s.activeLeases(w.ID) {
-		if l.JobID == except {
-			continue
+		if l.JobID == except || l.Extra {
+			continue // a Sofort job in the extra slot holds no regular slot
 		}
 		busy++
 		if j := s.st.Jobs[l.JobID]; j != nil {
@@ -329,13 +329,19 @@ func (s *Store) forecast(now time.Time) map[string]time.Time {
 			if e := eta(j, l.Progress); e != nil {
 				end := now.Add(time.Duration(*e) * time.Second)
 				out[j.ID] = end
-				if usable {
+				if usable && !l.Extra {
 					slots = append(slots, &slot{w, end})
 				}
 			}
 		}
+		regular := 0
+		for _, l := range active {
+			if !l.Extra {
+				regular++
+			}
+		}
 		if usable {
-			for i := len(active); i < max; i++ {
+			for i := regular; i < max; i++ {
 				slots = append(slots, &slot{w, now})
 			}
 		}

@@ -353,6 +353,8 @@ type WorkerJob struct {
 	FPS      *float64 `json:"fps"`
 	Speed    *float64 `json:"speed"`
 	ETAS     *int64   `json:"eta_s"`
+	// Extra: in the worker's extra slot, beside its max_parallel_jobs (v0.2.5).
+	Extra bool `json:"extra"`
 }
 
 // WorkerView is a worker as pipeline-admin.yaml shows it.
@@ -569,7 +571,7 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 	v.AcceptedKinds = acc
 	v.Refused = append(v.Refused, ref...)
 	for _, l := range s.activeLeases(w.ID) {
-		wj := WorkerJob{JobID: l.JobID, LeaseID: l.ID, Attempt: l.Attempt}
+		wj := WorkerJob{JobID: l.JobID, LeaseID: l.ID, Attempt: l.Attempt, Extra: l.Extra}
 		if j := s.st.Jobs[l.JobID]; j != nil {
 			wj.Title = strp(j.Spec.Title)
 			if j.rung != nil {

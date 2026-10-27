@@ -122,6 +122,8 @@ type Lease struct {
 	EndCode   string     `json:"end_code,omitempty"`
 	Progress  *Progress  `json:"progress,omitempty"`
 	Result    *Result    `json:"result,omitempty"`
+	// Extra: claimed past max_parallel_jobs, in the worker's extra slot (v0.2.5).
+	Extra bool `json:"extra,omitempty"`
 }
 
 // Result is what an attempt delivered.

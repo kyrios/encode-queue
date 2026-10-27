@@ -85,7 +85,7 @@ func (s *Store) pausedTooLong(w *Worker, l *Lease, now time.Time) bool {
 
 // free is whether a worker could take one more job now.
 func (s *Store) free(w *Worker, now time.Time) bool {
-	return s.connected(w, now) && s.canClaim(w, now) == nil
+	return s.connected(w, now) && s.canClaim(w, now, false) == nil
 }
 
 // preempt ends the lowest lease for every new upload's job that no free worker may run
@@ -102,6 +102,9 @@ func (s *Store) preempt(now time.Time) bool {
 	for _, j := range s.queued() {
 		if j.Pin != nil {
 			continue // it waits for its worker
+		}
+		if j.Priority == PriorityNow {
+			continue // Sofort waits first in line or takes an extra slot; it never preempts
 		}
 		p := prioIndex(j.Priority)
 		if p >= prioIndex("archive") {
