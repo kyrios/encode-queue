@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.1.1
+  version: 1.2.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -42,7 +42,10 @@ info:
        and the job is `queued` again, the next attempt with the next number. A result that
        arrives late is still taken and judged; the first one accepted wins.
     6. The pipeline forgets a finished job (`DELETE /jobs/{job_id}`), which deletes its files
-       on the queue. Finished jobs it never forgets go after `EQ_DONE_KEEP` (7 days).
+       on the queue. Finished jobs (`done`, `cancelled`, `failed`) it never forgets leave the
+       state `EQ_JOB_RETENTION` after they finished (default 7 days), their result files and
+       logs with them; the Encoder page can remove them sooner (`POST /jobs/cleanup`). Either
+       way the pipeline sees them as forgotten in `/changes`, and the counts drop at once.
 
     **Priorities and order.** Every job has a priority, ADR-0005's: `stage1`, then `stage2`,
     then `archive`, and a place within it. The queue hands out the first job in that order a
@@ -150,6 +153,34 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/JobList' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /jobs/cleanup:
+    post:
+      tags: [Jobs]
+      operationId: cleanupJobs
+      summary: Remove finished jobs now (admin)
+      description: |
+        Removes every job in one of `states` (only `done`, `cancelled` and `failed`; any other
+        state answers `422 invalid`), optionally only those that finished at least
+        `older_than_s` ago. Each goes as `DELETE /jobs/{id}` would: its result files and logs
+        are deleted, and `/changes` reports it as forgotten. A job whose result the pipeline
+        has not fetched yet is `checking`, never `done`, so it cannot be removed this way.
+        `counts` in `GET /jobs` and `/status` reflect the removal in the same answer.
+      security: [{ admin: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Cleanup' }
+      responses:
+        '200':
+          description: What was removed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CleanupResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Invalid' }
 
   /jobs/{job_id}:
     parameters:
@@ -927,6 +958,24 @@ components:
         after: { $ref: '#/components/schemas/JobId' }
         to: { type: string, enum: [top, bottom] }
         priority: { $ref: '#/components/schemas/Priority' }
+    Cleanup:
+      type: object
+      required: [states]
+      properties:
+        states:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, enum: [done, cancelled, failed] }
+          examples: [[cancelled, failed]]
+        older_than_s: { type: integer, minimum: 0, description: 'Only jobs that finished at least this long ago; 0 or left out: all of them.' }
+    CleanupResult:
+      type: object
+      required: [removed, job_ids, revision]
+      properties:
+        removed: { type: integer, description: How many jobs went. }
+        job_ids: { type: array, items: { $ref: '#/components/schemas/JobId' } }
+        revision: { type: integer, description: "The queue's revision after the removal." }
     Assign:
       type: object
       required: [worker_id]
