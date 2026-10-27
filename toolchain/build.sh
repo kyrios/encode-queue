@@ -65,8 +65,9 @@ mesonlib() { # dir options...
   local d=$1
   shift
   (cd "$work/$d" && meson setup build --prefix="$deps" --libdir=lib --buildtype=release \
-    --default-library=static --wrap-mode=nodownload "$@" >/dev/null && ninja -C build >/dev/null \
-    && ninja -C build install >/dev/null)
+    --default-library=static --wrap-mode=nodownload "$@" >"$work/$d.log" 2>&1 \
+    && ninja -C build >>"$work/$d.log" 2>&1 && ninja -C build install >>"$work/$d.log" 2>&1) \
+    || { tail -60 "$work/$d.log"; tail -40 "$work/$d/build/meson-logs/meson-log.txt" 2>/dev/null; exit 1; }
 }
 echo "== expat $EXPAT_VERSION"
 unpack expat.tar.xz expat
