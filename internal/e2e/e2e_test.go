@@ -241,14 +241,20 @@ func (h *harness) rungJob(id, prio string, extra map[string]any) {
 	}
 }
 
-func (h *harness) whisperJob(id string) {
+func (h *harness) whisperJob(id string) { h.t.Helper(); h.whisperJobAt(id, "stage1") }
+
+// model puts the whisper jobs' model where the workers look for it.
+func (h *harness) model() [32]byte {
+	os.WriteFile(filepath.Join(h.models, "ggml-small.bin"), []byte("a model"), 0o644)
+	return sha256.Sum256([]byte("a model"))
+}
+
+func (h *harness) whisperJobAt(id, prio string) {
 	h.t.Helper()
-	model := filepath.Join(h.models, "ggml-small.bin")
-	os.WriteFile(model, []byte("a model"), 0o644)
-	s := sha256.Sum256([]byte("a model"))
+	s := h.model()
 	up := strings.Split(id, ".")[0]
 	f := h.source(up+"/speech.wav", "RIFF....WAVEfmt ")
-	body := map[string]any{"kind": "whisper", "priority": "stage1", "upload_id": up,
+	body := map[string]any{"kind": "whisper", "priority": prio, "upload_id": up,
 		"params": map[string]any{"model_sha256": hex.EncodeToString(s[:]), "model": "ggml-small.bin", "language": "de"},
 		"source": map[string]any{"path": f.Path, "bytes": f.Bytes, "sha256": f.SHA256, "container": "wav"},
 		"result": map[string]any{"name": "whisper.json", "max_bytes": 1 << 20}}
@@ -476,6 +482,32 @@ func TestTokensAreKeptApart(t *testing.T) {
 	}
 }
 
+// "Sofort" in the extra slot (v0.2.5): a worker limited to one job at a time encodes a long archive
+// rung, and captions someone waits for run beside it, over the tunnel, without preempting it.
+func TestSofortBesideAnEncode(t *testing.T) {
+	h := newHarness(t)
+	h.pipeline()
+	t.Setenv("FAKE_FRAMES", "1000")
+	t.Setenv("FAKE_FRAME_MS", "10")
+	h.model() // before the worker starts: it reads its models once
+	h.pair("encoder")
+	h.rungJob("old_1.2160-archive", "archive", nil)
+	h.waitFor("old_1.2160-archive encoding", 30*time.Second, func() bool {
+		p := h.job("old_1.2160-archive").Progress
+		return p != nil && p.Phase == "encoding"
+	})
+	h.whisperJobAt("one_529.whisper", "now")
+	w := h.waitState("one_529.whisper", "done", 30*time.Second)
+	if len(w.Attempts) != 1 || w.Attempts[0].Worker.Name != "encoder" {
+		t.Fatalf("the Sofort job's attempts: %+v", w.Attempts)
+	}
+	// The encode ran on all the while: still its first attempt, nothing preempted.
+	o := h.job("old_1.2160-archive")
+	if o.State != "leased" || len(o.Attempts) != 1 || o.Attempts[0].State != "active" {
+		t.Fatalf("the archive job beside it: %s %+v", o.State, o.Attempts)
+	}
+}
+
 func TestPreemptionOverTheTunnel(t *testing.T) {
 	h := newHarness(t)
 	h.pipeline()
@@ -483,7 +515,13 @@ func TestPreemptionOverTheTunnel(t *testing.T) {
 	t.Setenv("FAKE_FRAME_MS", "10")
 	h.pair("encoder")
 	h.rungJob("old_1.2160-archive", "archive", nil)
-	h.waitState("old_1.2160-archive", "leased", 30*time.Second)
+	// The fake encode reads FAKE_FRAMES when it starts, and "leased" comes before that (the
+	// source is still downloading): wait for its first frames, so the archive encode is the long
+	// one for certain and cannot finish before stage 1 preempts it.
+	h.waitFor("old_1.2160-archive encoding", 30*time.Second, func() bool {
+		p := h.job("old_1.2160-archive").Progress
+		return p != nil && p.Phase == "encoding" && p.FramesDone != nil && *p.FramesDone > 0
+	})
 	os.Setenv("FAKE_FRAMES", "5") // the stage 1 job is short
 	h.rungJob("new_2.2160-stage1", "stage1", nil)
 	n := h.waitState("new_2.2160-stage1", "done", 30*time.Second)
