@@ -48,6 +48,8 @@ type AttemptView struct {
 	EndCode   *string        `json:"end_code"`
 	Progress  *Progress      `json:"progress"`
 	Result    *AttemptResult `json:"result"`
+	// ModelSHA256: the whisper model this attempt ran (v0.2.7).
+	ModelSHA256 *string `json:"model_sha256"`
 }
 
 // JobView is a job as pipeline-admin.yaml shows it.
@@ -110,7 +112,7 @@ func (s *Store) workerRef(id, fallback string) WorkerRef {
 
 func (s *Store) attemptView(j *Job, l *Lease) AttemptView {
 	a := AttemptView{Attempt: l.Attempt, LeaseID: l.ID, Worker: s.workerRef(l.WorkerID, l.Worker), State: l.State,
-		StartedAt: l.CreatedAt, EndedAt: l.EndedAt, EndCode: strp(l.EndCode)}
+		StartedAt: l.CreatedAt, EndedAt: l.EndedAt, EndCode: strp(l.EndCode), ModelSHA256: strp(l.Model)}
 	if l.State == LeaseActive {
 		e := l.ExpiresAt
 		a.ExpiresAt = &e
@@ -154,7 +156,10 @@ func (s *Store) jobViewWith(j *Job, fc map[string]time.Time) JobView {
 	if w := j.whisper; w != nil {
 		q := w.Model
 		if q == "" {
-			q = w.ModelSHA256[:12]
+			q = modelLabel(w.acceptable()[0])
+		}
+		if len(w.Models) > 1 {
+			q += fmt.Sprintf(" (+%d)", len(w.Models)-1)
 		}
 		v.Quality = strp(q)
 	}
@@ -250,6 +255,29 @@ type LeaseView struct {
 	Links          map[string]string `json:"links"`
 }
 
+// modelLabel is a model's catalogue name, or its sha256's first 12 characters.
+func modelLabel(sha string) string {
+	if m, ok := catalogue[sha]; ok {
+		return m.Name
+	}
+	if len(sha) >= 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+// modelName is what the worker calls a model it holds ("ggml-medium.bin"), or "".
+func (s *Store) modelName(workerID, sha string) string {
+	if w := s.st.Workers[workerID]; w != nil && w.Caps != nil {
+		for _, m := range w.Caps.Models {
+			if m.SHA256 == sha {
+				return m.Name
+			}
+		}
+	}
+	return ""
+}
+
 func (s *Store) leaseView(l *Lease) LeaseView {
 	j := s.st.Jobs[l.JobID]
 	v := LeaseView{ID: l.ID, Attempt: l.Attempt, State: l.State, CreatedAt: l.CreatedAt, ExpiresAt: l.ExpiresAt,
@@ -270,6 +298,11 @@ func (s *Store) leaseView(l *Lease) LeaseView {
 			v.Job.Inputs[name] = FileRef{URL: "/jobs/" + j.ID + "/inputs/" + name, Bytes: in.Bytes, SHA256: in.SHA256}
 		}
 		v.Params = j.Spec.Params
+		if p := j.whisper; p != nil && l.Model != "" {
+			// The chosen model, alone, so a worker of v0.2.6 or before runs exactly it.
+			q := WhisperParams{ModelSHA256: l.Model, Language: p.Language, Threads: p.Threads, Model: s.modelName(l.WorkerID, l.Model)}
+			v.Params, _ = json.Marshal(q)
+		}
 		v.Result = j.Spec.Result
 	}
 	v.Links = map[string]string{

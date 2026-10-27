@@ -102,6 +102,9 @@ func (s *Store) claimable(w *Worker, req LeaseRequest, ramGate bool) *Job {
 		if ramGate && !s.ramFits(w, j) {
 			continue
 		}
+		if s.betterModelElsewhere(w, j, s.cfg.Now()) {
+			continue
+		}
 		return j
 	}
 	return nil
@@ -153,6 +156,9 @@ func peakBytes(j *Job) int64 {
 	const gb = 1 << 30
 	switch {
 	case j.whisper != nil:
+		if c, ok := catalogue[j.whisper.acceptable()[0]]; ok {
+			return c.PeakBytes
+		}
 		m := strings.ToLower(j.whisper.Model)
 		switch {
 		case strings.Contains(m, "large"):
@@ -186,7 +192,13 @@ func (s *Store) ramFits(w *Worker, j *Job) bool {
 	if total == nil || w.MemoryUsed == nil {
 		return false
 	}
-	return *total-*w.MemoryUsed-headroom >= peakBytes(j)
+	peak := peakBytes(j)
+	if _, m := modelOn(w, j); m != "" {
+		if c, ok := catalogue[m]; ok {
+			peak = c.PeakBytes // the model this worker would run
+		}
+	}
+	return *total-*w.MemoryUsed-headroom >= peak
 }
 
 // Claim leases the next job this worker may run, waiting up to wait for one. It returns nil
@@ -214,6 +226,7 @@ func (s *Store) Claim(ctx context.Context, workerID string, req LeaseRequest, wa
 		if j := s.claimable(w, req, ramGate); j != nil {
 			l := &Lease{ID: newLeaseID(now), JobID: j.ID, WorkerID: w.ID, Worker: w.Name,
 				Attempt: len(j.Attempts) + 1, State: LeaseActive, CreatedAt: now, ExpiresAt: now.Add(s.cfg.Lease), Extra: req.Extra}
+			_, l.Model = modelOn(w, j)
 			s.st.Leases[l.ID] = l
 			j.Attempts = append(j.Attempts, l.ID)
 			j.Pin = nil

@@ -153,10 +153,23 @@ type Captions struct {
 
 // WhisperParams are a whisper run's settings.
 type WhisperParams struct {
-	ModelSHA256 string `json:"model_sha256"`
+	ModelSHA256 string `json:"model_sha256,omitempty"`
 	Model       string `json:"model,omitempty"`
 	Language    string `json:"language"`
 	Threads     int    `json:"threads,omitempty"`
+	// Models: the acceptable models by sha256, best first (v0.2.7; Thorsten, 2026-10-27:
+	// large-v3-turbo where it runs fast enough, medium as the fallback). The queue gives the job
+	// to a worker holding the first one it can, and writes the model it chose into the lease's
+	// model_sha256, so every worker runs exactly that one.
+	Models []string `json:"models,omitempty"`
+}
+
+// acceptable is the job's models, best first: Models, or the one model_sha256.
+func (p *WhisperParams) acceptable() []string {
+	if len(p.Models) > 0 {
+		return p.Models
+	}
+	return []string{p.ModelSHA256}
 }
 
 // FileIn is a file under the source directory.

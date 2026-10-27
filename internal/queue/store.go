@@ -124,6 +124,9 @@ type Lease struct {
 	Result    *Result    `json:"result,omitempty"`
 	// Extra: claimed past max_parallel_jobs, in the worker's extra slot (v0.2.5).
 	Extra bool `json:"extra,omitempty"`
+	// Model: the whisper model the queue chose for this attempt (v0.2.7), the best of the job's
+	// models the worker holds; the lease's params carry it as model_sha256.
+	Model string `json:"model,omitempty"`
 }
 
 // Result is what an attempt delivered.
