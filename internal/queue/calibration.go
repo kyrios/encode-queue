@@ -97,7 +97,9 @@ func calibratedFPS(w *Worker, class string) (fps float64, clip string) {
 }
 
 // calibratedRelative is the worker's calibrated fps on a class over the reference's on the same
-// clip, or nil.
+// clip, or nil; at most trustCalibrated (v0.2.9): the worker reports its calibration itself, so
+// until measured results confirm more, it counts as at most four times the reference (security
+// review M2, 2026-10-27: a rogue reporting 1e12 fps won every job). The Mac Studio is about 3×.
 func (s *Store) calibratedRelative(w *Worker, class string) *float64 {
 	ref := s.referenceWorker()
 	if ref == nil {
@@ -108,9 +110,12 @@ func (s *Store) calibratedRelative(w *Worker, class string) *float64 {
 	if f <= 0 || rf <= 0 || clip != rclip {
 		return nil
 	}
-	r := f / rf
+	r := math.Min(f/rf, trustCalibrated)
 	return &r
 }
+
+// trustCalibrated is the most a calibrated speed counts, relative to the reference.
+const trustCalibrated = 4.0
 
 // calibratedClasses are the classes a worker has calibrated, sorted.
 func calibratedClasses(w *Worker) []string {

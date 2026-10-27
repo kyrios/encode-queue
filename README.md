@@ -92,6 +92,15 @@ All three are OpenAPI 3.1.
   threads the worker's own tools kept busy since its last presence.
   Each job has `eta_s` and `finish_at`; `GET /v1/jobs/{id}/candidates` estimates the job on
   every worker for the move menu, and `DELETE /v1/jobs/{id}/assign` ends a pin.
+- **One worker cannot hold the queue** (v0.2.9; the security review, 2026-10-27, M2): a worker
+  sets its own `max_parallel_jobs` and reports its own calibration, so the queue caps both.
+  Regular slots are at most `EQ_MAX_PARALLEL_JOBS` (2; the Sofort slot comes on top). A
+  calibrated speed counts as at most four times the reference's until measured results show
+  more, and a measured sample is never faster than the frames over the time the queue saw the
+  lease held. A lease may be renewed up to `hold_until`: `EQ_HOLD_FACTOR` (3) times its
+  expected completion time, at least `EQ_HOLD_MIN_S` (30 min), and `EQ_HOLD_MAX_S` (12 h)
+  when the queue expects nothing. After it the renewal answers `410 overdue`, the job goes back
+  to the queue, and that worker gets it no more, as after a rejection; the job counts no failure.
 - **Cut, remux and check** (v0.2.8; ADR-0007: every encode and decode on a worker): the queue
   takes `cut`, `remux` and `check` jobs with strict params, matches `cut` on the reference's
   ffmpeg and libx264 and the others on its ffmpeg, and gives them, a rung's `check` step and
@@ -130,6 +139,8 @@ Every address, port, subnet and path comes from the environment; the image has n
 | `EQ_WHISPER_MIN_SPEED_PCT` | how fast a worker must transcribe with a model, in per cent of real time, for the queue to want it there; default 100 |
 | `EQ_MIN_APP_VERSION` | workers below it get `426` |
 | `EQ_MAX_FAILURES` | default 3 |
+| `EQ_MAX_PARALLEL_JOBS` | the most regular slots any worker gets, whatever it asks for; default 2 (v0.2.9) |
+| `EQ_HOLD_FACTOR`, `EQ_HOLD_MIN_S`, `EQ_HOLD_MAX_S` | how long a lease may be held: the factor times its expected completion time, between the two; defaults 3, 1800 and 43200 (v0.2.9) |
 | `EQ_EXCLUDE_BACKOFF_S` | default 600: how long a job that every able worker is excluded from waits before the reference worker gets it again |
 | `EQ_RESULT_RESERVE_BYTES` | default 2 GiB |
 | `EQ_LEASE_S`, `EQ_RENEW_EVERY_S`, `EQ_LONG_POLL_S`, `EQ_PRESENCE_EVERY_S`, `EQ_PAUSE_GIVE_BACK_S` | the timings, defaults 120, 30, 25, 30 and 60 |

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue helper API
-  version: 1.3.0
+  version: 1.4.0
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
@@ -543,7 +543,8 @@ components:
     LeaseGone:
       description: |
         The lease ended without this worker (`lease_expired`, `lease_cancelled`, `job_done`,
-        `preempted`). Stop the job and delete its files. `preempted`: a job of higher priority
+        `preempted`, `overdue`). `overdue` (1.4.0): held past its `hold_until`; the job goes back
+        and this worker gets it no more. Stop the job and delete its files. `preempted`: a job of higher priority
         found no free worker, and this lease had the lowest priority; the job goes back to the
         queue.
       content:
@@ -589,7 +590,7 @@ components:
         detail: { type: string }
         code:
           type: string
-          enum: [unknown_peer, not_your_lease, not_found, lease_expired, lease_cancelled, job_done, preempted,
+          enum: [unknown_peer, not_your_lease, not_found, lease_expired, lease_cancelled, job_done, preempted, overdue,
                  paused, limit_reached, no_capabilities, offset_mismatch, result_exists, invalid,
                  checksum_mismatch, upload_incomplete, too_large, app_too_old, draining]
 
@@ -612,7 +613,7 @@ components:
       properties:
         cpu_threads: { type: [integer, 'null'], minimum: 1, description: "x265's thread pool (`pools=N`) and whisper.cpp's threads. Null: the tool's own default." }
         gpu: { type: boolean, description: whisper.cpp may use the GPU (Metal on a Mac). }
-        max_parallel_jobs: { type: integer, minimum: 1, default: 1 }
+        max_parallel_jobs: { type: integer, minimum: 1, default: 1, description: 'What the worker asks for; the queue gives at most EQ_MAX_PARALLEL_JOBS (2) regular slots (1.4.0).' }
     Me:
       type: object
       required: [worker_id, name, state]
@@ -1081,6 +1082,7 @@ components:
         state: { $ref: '#/components/schemas/LeaseState' }
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
+        hold_until: { type: string, format: date-time, description: 'The latest a renewal reaches (1.4.0): then `410 overdue`.' }
         renew_every_s: { type: integer, examples: [30] }
         pause_give_back_s: { type: integer, examples: [60], description: How long a pause may hold this lease before the worker gives it back. }
         paused_until: { type: [string, 'null'], format: date-time, description: "The worker's current pause." }

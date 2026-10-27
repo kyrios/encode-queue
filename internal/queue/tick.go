@@ -35,6 +35,9 @@ func (s *Store) Tick() {
 		case now.After(l.ExpiresAt):
 			s.endLease(l, LeaseExpired, "lease_expired")
 			changed = true
+		case s.overdue(l, now):
+			s.takeOverdue(l)
+			changed = true
 		case w == nil:
 			s.endLease(l, LeaseCancelled, "worker_removed")
 			changed = true

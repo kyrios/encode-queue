@@ -34,6 +34,18 @@ type Config struct {
 	ResultReserve  int64         // bytes the result directory keeps free beyond every lease's max_bytes
 
 	ReferenceWorker string // the worker whose tools jobs require by default; "" requires none
+
+	// **A rogue worker cannot hold everything** (v0.2.9; security review M2, 2026-10-27): a
+	// worker sets its own max_parallel_jobs and reports its own calibrated speed, and a lease
+	// renewed every 30 s never ran out. MaxParallelJobs caps the regular slots of every worker
+	// (2; the Sofort slot comes on top). A lease may be held HoldFactor times its expected
+	// completion time (3), at least HoldMin (30 min), and HoldMax (12 h) when nothing is expected;
+	// then the queue takes the job back and keeps it from that worker. A calibrated speed counts
+	// at most as the reference's until measured results confirm it (calibration.go).
+	MaxParallelJobs int
+	HoldFactor      float64
+	HoldMin         time.Duration
+	HoldMax         time.Duration
 	// WhisperMinSpeed: how many times real time a worker must transcribe with a model for the
 	// queue to want it there (wantedModels); 0 is 1.
 	WhisperMinSpeed float64
@@ -67,6 +79,14 @@ func (c *Config) Defaults() {
 	set(&c.PauseGrace, 30*time.Second)
 	set(&c.DoneKeep, 7*24*time.Hour)
 	set(&c.ExcludeBackoff, 10*time.Minute)
+	set(&c.HoldMin, 30*time.Minute)
+	set(&c.HoldMax, 12*time.Hour)
+	if c.MaxParallelJobs == 0 {
+		c.MaxParallelJobs = 2
+	}
+	if c.HoldFactor == 0 {
+		c.HoldFactor = 3
+	}
 	if c.MaxFailures == 0 {
 		c.MaxFailures = 3
 	}
@@ -116,14 +136,17 @@ type Job struct {
 
 // Lease is one attempt at a job.
 type Lease struct {
-	ID        string     `json:"id"`
-	JobID     string     `json:"job_id"`
-	WorkerID  string     `json:"worker_id"`
-	Worker    string     `json:"worker"` // the name when it was made, for a worker since removed
-	Attempt   int        `json:"attempt"`
-	State     string     `json:"state"`
-	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt time.Time  `json:"expires_at"`
+	ID        string    `json:"id"`
+	JobID     string    `json:"job_id"`
+	WorkerID  string    `json:"worker_id"`
+	Worker    string    `json:"worker"` // the name when it was made, for a worker since removed
+	Attempt   int       `json:"attempt"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	// HoldUntil: the latest a renewal reaches (v0.2.9); zero for a lease from before it, which
+	// gets HoldMax from its start.
+	HoldUntil time.Time  `json:"hold_until,omitempty"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 	EndCode   string     `json:"end_code,omitempty"`
 	Progress  *Progress  `json:"progress,omitempty"`
