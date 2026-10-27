@@ -591,6 +591,31 @@ func TestAWorkerClaimsWhileItCalibrates(t *testing.T) {
 	}
 }
 
+// Thorsten's live session, 2026-10-27: encode-worker in Slipstream (Events set, --control
+// stdio) panicked 0.1 s after "paired" at every start. A calibration's run has no lease, and its
+// first stderr line went to run.log, which emitted "log" with r.l.ID. The 4K clip and the whisper
+// timing both write stderr here; the worker must live through both and report them.
+func TestACalibrationThatWritesStderrDoesNotKillTheWorker(t *testing.T) {
+	h := newHarness(t)
+	h.calibrate = true
+	h.model() // the whisper part times it
+	t.Setenv("FAKE_STDERR", "1")
+	t.Setenv("FAKE_FRAMES", "3")
+	mac := h.pair("mac")
+	var rep queue.CapabilityReport
+	h.waitFor("the clip calibrated and the model timed", 30*time.Second, func() bool {
+		rep, _ = h.store.GetCapabilities(mac.id)
+		c := rep.Capabilities.Calibration
+		return c != nil && len(c.Classes) == 8 && len(c.Whisper) == 1
+	})
+	// And it still takes work afterwards.
+	h.pipeline()
+	h.rungJob("go3x1fpzj30k.1080-stage2", "stage2", nil)
+	if j := h.waitState("go3x1fpzj30k.1080-stage2", "done", 20*time.Second); j.Attempts[0].Worker.Name != "mac" {
+		t.Fatalf("attempts: %+v", j.Attempts)
+	}
+}
+
 // "Sofort" in the extra slot (v0.2.5): a worker limited to one job at a time encodes a long archive
 // rung, and captions someone waits for run beside it, over the tunnel, without preempting it.
 func TestSofortBesideAnEncode(t *testing.T) {

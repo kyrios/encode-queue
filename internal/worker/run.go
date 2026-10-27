@@ -102,7 +102,9 @@ func (r *run) log(level, source, msg string) {
 	if len(r.tail) > 50 {
 		r.tail = r.tail[len(r.tail)-50:]
 	}
-	if r.w.cfg.Events != nil {
+	// Only a lease's lines go to the app. A calibration's run has none (v0.2.12: with Events set,
+	// in Slipstream, its first stderr line was a nil dereference, at every start).
+	if r.w.cfg.Events != nil && r.l != nil {
 		go r.w.emit("log", map[string]any{"lease_id": r.l.ID, "line": msg})
 	}
 }
