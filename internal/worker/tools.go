@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -193,10 +194,25 @@ func toolchainVersion(binary, name string) string {
 	return ""
 }
 
-// hasAss is whether ffmpeg was built with libass, which burnt-in captions need.
+var (
+	assMu   sync.Mutex
+	assSeen = map[string]bool{}
+)
+
+// hasAss is whether ffmpeg was built with libass, which burnt-in captions need; asked once per
+// ffmpeg (DetectTools and DetectCapabilities both want it).
 func hasAss(ctx context.Context, ffmpeg string) bool {
+	assMu.Lock()
+	defer assMu.Unlock()
+	if v, ok := assSeen[ffmpeg]; ok {
+		return v
+	}
 	out, err := runOut(ctx, ffmpeg, "-hide_banner", "-filters")
-	return err == nil && regexp.MustCompile(`(?m)^\s*\S+\s+ass\s`).Match(out)
+	v := err == nil && regexp.MustCompile(`(?m)^\s*\S+\s+ass\s`).Match(out)
+	if ctx.Err() == nil {
+		assSeen[ffmpeg] = v
+	}
+	return v
 }
 
 type modelCacheEntry struct {

@@ -18,6 +18,9 @@ import (
 func fakeTool(args []string) int {
 	argv := strings.Join(args, " ")
 	switch {
+	case strings.HasSuffix(argv, "-filters"): // the filter list: no ass in this ffmpeg
+		fmt.Println(" ... null              V->V       Pass the source unchanged to the output.")
+		return 0
 	case len(args) == 1 && args[0] == "-version":
 		fmt.Println("ffmpeg version 7.1.2-fake Copyright (c) 2000-2025 the FFmpeg developers")
 		return 0

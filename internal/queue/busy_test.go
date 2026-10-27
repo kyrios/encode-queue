@@ -31,6 +31,15 @@ func TestThreadsBusy(t *testing.T) {
 	if _, err := e.s.PutPresence(w, Presence{State: "working", ThreadsBusy: &busy}); err == nil {
 		t.Fatal("took a negative threads_busy")
 	}
+	other := 1.5
+	e.s.PutPresence(w, Presence{State: "working", OtherLoad: &other})
+	if v := must(e.s.GetWorker(w)); v.System.OtherLoad == nil || *v.System.OtherLoad != 1.5 {
+		t.Fatalf("other_load %v", v.System.OtherLoad)
+	}
+	other = -2
+	if _, err := e.s.PutPresence(w, Presence{State: "working", OtherLoad: &other}); err == nil {
+		t.Fatal("took a negative other_load")
+	}
 	e.s.PutPresence(w, Presence{State: "idle"})
 	if v := must(e.s.GetWorker(w)); v.System.ThreadsBusy != nil {
 		t.Fatalf("kept an old threads_busy: %d", *v.System.ThreadsBusy)

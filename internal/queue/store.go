@@ -130,6 +130,11 @@ type Lease struct {
 	// Model: the whisper model the queue chose for this attempt (v0.2.7), the best of the job's
 	// models the worker holds; the lease's params carry it as model_sha256.
 	Model string `json:"model,omitempty"`
+	// The scoring at the claim (v0.2.7): this worker's expected completion time and the best
+	// other worker's, and the compute time it expected, to learn from the result.
+	ECT      *ECT    `json:"ect,omitempty"`
+	RunnerUp *ECT    `json:"runner_up,omitempty"`
+	EstRunS  float64 `json:"est_run_s,omitempty"`
 }
 
 // Result is what an attempt delivered.
@@ -173,6 +178,10 @@ type Worker struct {
 	Speeds      []*SpeedHist  `json:"speeds,omitempty"` // most recent first
 	MemoryUsed  *int64        `json:"memory_used_bytes,omitempty"`
 	ThreadsBusy *int          `json:"threads_busy,omitempty"`
+	// OtherLoad: threads other programs keep busy, from the last presence (v0.2.7).
+	OtherLoad *float64 `json:"other_load,omitempty"`
+	// Corrections: actual over estimated compute time by job kind, learned (v0.2.7, ect.go).
+	Corrections map[string]float64 `json:"corrections,omitempty"`
 
 	tunnelSince *time.Time // when the tunnel last came up; not kept over a restart
 }

@@ -193,6 +193,9 @@ type SourceIn struct {
 type ResultSpec struct {
 	Name     string `json:"name"`
 	MaxBytes int64  `json:"max_bytes"`
+	// ExpectedBytes: what the result is likely to weigh, for the time to deliver it (v0.2.7,
+	// optional; the scoring counts 0 without it).
+	ExpectedBytes int64 `json:"expected_bytes,omitempty"`
 }
 
 // JobSubmit is a job as the pipeline puts it.

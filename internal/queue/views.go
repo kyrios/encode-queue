@@ -50,6 +50,10 @@ type AttemptView struct {
 	Result    *AttemptResult `json:"result"`
 	// ModelSHA256: the whisper model this attempt ran (v0.2.7).
 	ModelSHA256 *string `json:"model_sha256"`
+	// ECTS and RunnerUp: the scoring at the claim (v0.2.7, ect.go): this worker's expected
+	// completion time in seconds, and the best other worker's.
+	ECTS     *float64 `json:"ect_s"`
+	RunnerUp *ECT     `json:"runner_up"`
 }
 
 // JobView is a job as pipeline-admin.yaml shows it.
@@ -112,7 +116,11 @@ func (s *Store) workerRef(id, fallback string) WorkerRef {
 
 func (s *Store) attemptView(j *Job, l *Lease) AttemptView {
 	a := AttemptView{Attempt: l.Attempt, LeaseID: l.ID, Worker: s.workerRef(l.WorkerID, l.Worker), State: l.State,
-		StartedAt: l.CreatedAt, EndedAt: l.EndedAt, EndCode: strp(l.EndCode), ModelSHA256: strp(l.Model)}
+		StartedAt: l.CreatedAt, EndedAt: l.EndedAt, EndCode: strp(l.EndCode), ModelSHA256: strp(l.Model), RunnerUp: l.RunnerUp}
+	if l.ECT != nil {
+		v := l.ECT.S
+		a.ECTS = &v
+	}
 	if l.State == LeaseActive {
 		e := l.ExpiresAt
 		a.ExpiresAt = &e
@@ -424,8 +432,11 @@ type WorkerView struct {
 	// clip until there are some (v0.2.5); null without a relative speed.
 	RelativeSpeedSource *string        `json:"relative_speed_source"`
 	SpeedEstimate       *SpeedEstimate `json:"speed_estimate"`
-	SpeedClasses        []SpeedClass   `json:"speed_classes"`
-	FreeAt              *time.Time     `json:"free_at"`
+	// Corrections: actual over estimated compute time by job kind, learned from its results
+	// (v0.2.7); 1 is as estimated.
+	Corrections  map[string]float64 `json:"corrections"`
+	SpeedClasses []SpeedClass       `json:"speed_classes"`
+	FreeAt       *time.Time         `json:"free_at"`
 }
 
 // WorkerSystem is the worker's machine, from its capabilities' hardware.
@@ -435,12 +446,14 @@ type WorkerSystem struct {
 	CPUThreads   *int    `json:"cpu_threads"`
 	ThreadsInUse *int    `json:"threads_in_use"`
 	ThreadsBusy  *int    `json:"threads_busy"`
-	MemoryBytes  *int64  `json:"memory_bytes"`
-	MemoryUsed   *int64  `json:"memory_used_bytes"`
-	OSName       *string `json:"os_name"`
-	OSVersion    *string `json:"os_version"`
-	Arch         *string `json:"arch"`
-	Kernel       *string `json:"kernel"`
+	// OtherLoad: threads other programs keep busy, from the last presence (v0.2.7).
+	OtherLoad   *float64 `json:"other_load"`
+	MemoryBytes *int64   `json:"memory_bytes"`
+	MemoryUsed  *int64   `json:"memory_used_bytes"`
+	OSName      *string  `json:"os_name"`
+	OSVersion   *string  `json:"os_version"`
+	Arch        *string  `json:"arch"`
+	Kernel      *string  `json:"kernel"`
 }
 
 // hardware is what a worker's capabilities may say about its machine (helper.yaml).
@@ -479,6 +492,7 @@ func (s *Store) system(w *Worker) WorkerSystem {
 		v.MemoryBytes = &m
 	}
 	v.MemoryUsed = w.MemoryUsed
+	v.OtherLoad = w.OtherLoad
 	if b := w.ThreadsBusy; b != nil {
 		n := *b
 		if v.CPUThreads != nil && n > *v.CPUThreads {
@@ -640,6 +654,10 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 		}
 	}
 	v.FreeAt = s.freeAt(w, now, "")
+	v.Corrections = map[string]float64{}
+	for k, c := range w.Corrections {
+		v.Corrections[k] = c
+	}
 	acc, ref := s.kinds(w)
 	v.AcceptedKinds = acc
 	v.Refused = append(v.Refused, ref...)

@@ -143,7 +143,8 @@ type Worker struct {
 	pauseCh     chan struct{} // closed and replaced when the pause changes
 	quit        chan struct{}
 	quitOnce    sync.Once
-	busy        *busySampler // used by the presence loop only
+	busy        *busySampler    // used by the presence loop only
+	machine     *machineSampler // likewise
 }
 
 // New is a worker that talks to the queue through api.
@@ -153,7 +154,7 @@ func New(cfg Config, api *Client) (*Worker, error) {
 		return nil, err
 	}
 	return &Worker{cfg: cfg, api: api, runs: map[string]*run{}, pauseCh: make(chan struct{}), quit: make(chan struct{}),
-		jobLimit: cfg.MaxParallel, limitCh: make(chan struct{}), busy: newBusySampler()}, nil
+		jobLimit: cfg.MaxParallel, limitCh: make(chan struct{}), busy: newBusySampler(), machine: newMachineSampler()}, nil
 }
 
 // emit sends an event to cfg.Events.
@@ -540,7 +541,8 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 		if unix.Statfs(w.cfg.WorkDir, &st) == nil {
 			free = int64(st.Bavail) * int64(st.Bsize)
 		}
-		ack, err := w.api.PutPresence(ctx, state, free, memoryUsed(), w.busy.sample(w.toolGroups(), time.Now()))
+		own := w.busy.sample(w.toolGroups(), time.Now())
+		ack, err := w.api.PutPresence(ctx, state, free, memoryUsed(), own, otherLoad(w.machine.sample(), own))
 		w.contact(err)
 		if err == nil {
 			w.setPause(ack.PausedUntil, true)

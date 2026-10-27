@@ -3,6 +3,7 @@ package queue
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"net/netip"
 	"sort"
 	"strings"
@@ -434,6 +435,8 @@ type Presence struct {
 	// ThreadsBusy: how many threads the worker's own tools kept busy since its last presence
 	// (v0.2.5).
 	ThreadsBusy *int `json:"threads_busy,omitempty"`
+	// OtherLoad: threads other programs on the machine keep busy (v0.2.7), for the scoring.
+	OtherLoad *float64 `json:"other_load,omitempty"`
 }
 
 // PresenceAck answers a heartbeat.
@@ -465,6 +468,10 @@ func (s *Store) PutPresence(id string, p Presence) (PresenceAck, error) {
 		return PresenceAck{}, errf(422, "invalid", "threads_busy is 0 or more")
 	}
 	w.ThreadsBusy = p.ThreadsBusy
+	if p.OtherLoad != nil && (*p.OtherLoad < 0 || math.IsNaN(*p.OtherLoad) || math.IsInf(*p.OtherLoad, 0)) {
+		return PresenceAck{}, errf(422, "invalid", "other_load is 0 or more")
+	}
+	w.OtherLoad = p.OtherLoad
 	s.touch(false)
 	now := s.cfg.Now()
 	ack := PresenceAck{ServerTime: now.UTC(), PresenceEveryS: int(s.cfg.PresenceEvery / time.Second), Draining: s.draining}

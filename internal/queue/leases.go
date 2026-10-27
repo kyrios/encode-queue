@@ -64,9 +64,10 @@ func (s *Store) room() int64 {
 	return free - s.cfg.ResultReserve
 }
 
-// claimable is the first queued job this worker may run now, or nil. `ramGate`: the claim is the
-// extra slot's beside other work, so the job's peak must fit the worker's free RAM.
-func (s *Store) claimable(w *Worker, req LeaseRequest, ramGate bool) *Job {
+// claimable is the first queued job this worker may run now, or nil, with the scoring that gave
+// it (ect.go). `ramGate`: the claim is the extra slot's beside other work, so the job's peak must
+// fit the worker's free RAM. A job sent to this worker by hand skips the scoring.
+func (s *Store) claimable(w *Worker, req LeaseRequest, ramGate bool) (*Job, *ECT, *ECT) {
 	accepted, _ := s.kinds(w)
 	room := s.room()
 	// The jobs the Encoder page sent to this worker first, then the rest; a job sent to
@@ -80,7 +81,8 @@ func (s *Store) claimable(w *Worker, req LeaseRequest, ramGate bool) *Job {
 			mine = append(mine, j)
 		}
 	}
-	for _, j := range append(mine, rest...) {
+	now := s.cfg.Now()
+	for i, j := range append(mine, rest...) {
 		if !contains(accepted, j.Spec.Kind) {
 			continue
 		}
@@ -102,12 +104,20 @@ func (s *Store) claimable(w *Worker, req LeaseRequest, ramGate bool) *Job {
 		if ramGate && !s.ramFits(w, j) {
 			continue
 		}
-		if s.betterModelElsewhere(w, j, s.cfg.Now()) {
+		if i < len(mine) {
+			e, _ := s.ect(w, j, true, now)
+			return j, &e, nil
+		}
+		if s.betterModelElsewhere(w, j, now) {
 			continue
 		}
-		return j
+		take, e, runnerUp := s.verdict(w, j, now)
+		if !take {
+			continue // another worker would clearly finish it sooner
+		}
+		return j, e, runnerUp
 	}
-	return nil
+	return nil, nil, nil
 }
 
 // canClaim says why the worker may not claim now. Its regular slots count against
@@ -223,10 +233,14 @@ func (s *Store) Claim(ctx context.Context, workerID string, req LeaseRequest, wa
 			return nil, err
 		}
 		ramGate := req.Extra && len(s.activeLeases(w.ID)) > 0
-		if j := s.claimable(w, req, ramGate); j != nil {
+		if j, e, runnerUp := s.claimable(w, req, ramGate); j != nil {
 			l := &Lease{ID: newLeaseID(now), JobID: j.ID, WorkerID: w.ID, Worker: w.Name,
 				Attempt: len(j.Attempts) + 1, State: LeaseActive, CreatedAt: now, ExpiresAt: now.Add(s.cfg.Lease), Extra: req.Extra}
 			_, l.Model = modelOn(w, j)
+			l.ECT, l.RunnerUp = e, runnerUp
+			if e != nil {
+				l.EstRunS = e.RunS
+			}
 			s.st.Leases[l.ID] = l
 			j.Attempts = append(j.Attempts, l.ID)
 			j.Pin = nil
@@ -747,6 +761,7 @@ func (s *Store) Deliver(workerID, leaseID string, in ResultIn) (ResultView, erro
 	}
 	l.Result = &Result{Outcome: "file", Verdict: VerdictChecking, SHA256: sum, Bytes: u.Length, Frames: in.Frames,
 		EncodeS: in.EncodeS, Tools: in.Tools, Path: rel, DeliveredAt: s.cfg.Now()}
+	s.learn(w, j, l, in.EncodeS)
 	s.noteResult(w, j, l, in.Frames, in.EncodeS)
 	s.bump(j)
 	s.touch(true)
