@@ -3,6 +3,8 @@
 //
 //	encode-worker pubkey        print this worker's public key (made on first use), for pairing
 //	encode-worker versions      print what this worker runs, as the queue will see it
+//	encode-worker selftest      encode, cut and remux a short clip with this machine's ffmpeg and
+//	                            check each result; exit 1 with the problems
 //	encode-worker healthcheck   exit 0 if the queue answered within the last two minutes
 //	encode-worker [run]         take jobs
 //
@@ -175,6 +177,16 @@ func run(cmd string, f flags, env *config.Env) error {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(caps)
+	case "selftest":
+		res, problems := worker.SelfTest(context.Background(), cfg)
+		res["problems"] = problems
+		if err := json.NewEncoder(os.Stdout).Encode(res); err != nil {
+			return err
+		}
+		if len(problems) > 0 {
+			return fmt.Errorf("selftest: %d problems", len(problems))
+		}
+		return nil
 	case "", "run":
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
