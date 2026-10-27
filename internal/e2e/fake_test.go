@@ -17,6 +17,11 @@ import (
 // FAKE_FRAME_MS apart, and FAKE_FAIL=1 for a failing encode. whisper-cli writes a JSON.
 func fakeTool(args []string) int {
 	argv := strings.Join(args, " ")
+	// FAKE_STDERR: every call writes a line to stderr first, as a real ffmpeg or whisper-cli
+	// warning does (v0.2.12: a calibration's stderr line crashed the worker in Slipstream).
+	if os.Getenv("FAKE_STDERR") == "1" {
+		fmt.Fprintln(os.Stderr, "[warning] fake stderr line")
+	}
 	switch {
 	case strings.HasSuffix(argv, "-filters"): // the filter list: no ass in this ffmpeg
 		fmt.Println(" ... null              V->V       Pass the source unchanged to the output.")
