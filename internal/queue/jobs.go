@@ -130,8 +130,19 @@ func (s *Store) requires(j *Job) (req Requires, onlyReference bool) {
 	if j.whisper != nil && !contains(req.Models, j.whisper.ModelSHA256) {
 		req.Models = append(append([]string(nil), req.Models...), j.whisper.ModelSHA256)
 	}
-	if j.rung != nil && j.rung.Captions != nil && !contains(req.Fonts, j.rung.Captions.Font) {
-		req.Fonts = append(append([]string(nil), req.Fonts...), j.rung.Captions.Font)
+	if j.rung != nil && j.rung.Captions != nil {
+		if !contains(req.Fonts, j.rung.Captions.Font) {
+			req.Fonts = append(append([]string(nil), req.Fonts...), j.rung.Captions.Font)
+		}
+		// Burnt-in captions need the reference's libass exactly, so every worker that takes one
+		// renders the same subtitles (v0.2.7; toolchain 3 builds it on both platforms).
+		if j.Spec.Requires == nil {
+			if ref := s.referenceWorker(); ref != nil && ref.Caps != nil {
+				if v, ok := ref.Caps.tool("libass"); ok {
+					req.Tools = append(append([]Tool(nil), req.Tools...), Tool{Name: "libass", Version: v})
+				}
+			}
+		}
 	}
 	return req, onlyReference
 }

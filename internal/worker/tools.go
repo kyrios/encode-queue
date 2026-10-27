@@ -107,6 +107,16 @@ func DetectTools(ctx context.Context, cfg Config) ([]Tool, []string) {
 		} else {
 			problems = append(problems, "libx265: "+err.Error())
 		}
+		// libass, for burnt-in captions (toolchain 3: built from source on both platforms, its
+		// version in versions.txt). A caption job asks for the reference's version exactly, so
+		// every worker that may take one renders the same subtitles.
+		if hasAss(ctx, cfg.FFmpeg) {
+			if v := toolchainVersion(cfg.FFmpeg, "libass"); v != "" {
+				tools = append(tools, Tool{"libass", v})
+			} else {
+				problems = append(problems, "libass: no version in a versions.txt beside ffmpeg")
+			}
+		}
 		if s, err := oneFrame(ctx, cfg.FFmpeg, "libx264", "h264"); err == nil {
 			if m := x264VersionRe.FindSubmatch(s); m != nil {
 				tools = append(tools, Tool{"libx264", string(m[1])})
@@ -133,6 +143,36 @@ func DetectTools(ctx context.Context, cfg Config) ([]Tool, []string) {
 		}
 	}
 	return tools, problems
+}
+
+// toolchainFonts makes the toolchain's fonts the only ones its tools see, and returns the fc-list
+// to list them with. Toolchain 3 ships fc-list beside ffmpeg and PREFIX/fonts with Inter and a
+// fonts.conf that sees only them; FONTCONFIG_FILE points libass there, so it picks the same font
+// on every machine. A FONTCONFIG_FILE already set (the image's) stays; without the toolchain's
+// fonts, the system's fc-list and fonts count.
+func toolchainFonts(ffmpeg string) string {
+	bin := ffmpeg
+	if p, err := exec.LookPath(ffmpeg); err == nil {
+		bin = p
+	}
+	if p, err := filepath.EvalSymlinks(bin); err == nil {
+		bin = p
+	}
+	dir := filepath.Dir(bin)
+	if conf := filepath.Join(dir, "..", "fonts", "fonts.conf"); os.Getenv("FONTCONFIG_FILE") == "" {
+		if _, err := os.Stat(conf); err == nil {
+			os.Setenv("FONTCONFIG_FILE", filepath.Clean(conf)) // the tools started later inherit it
+		}
+	}
+	if fc := filepath.Join(dir, "fc-list"); fileExists(fc) {
+		return fc
+	}
+	return "fc-list"
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
 }
 
 // toolchainVersion reads a tool's version from the toolchain's versions.txt beside a binary
@@ -212,7 +252,7 @@ func DetectModels(dir, cacheFile string) ([]Model, error) {
 }
 
 // DetectFonts lists the font families fontconfig knows, plus extra.
-func DetectFonts(ctx context.Context, extra []string) []string {
+func DetectFonts(ctx context.Context, fcList string, extra []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(f string) {
@@ -225,7 +265,7 @@ func DetectFonts(ctx context.Context, extra []string) []string {
 	for _, f := range extra {
 		add(f)
 	}
-	if data, err := runOut(ctx, "fc-list", ":", "family"); err == nil {
+	if data, err := runOut(ctx, fcList, ":", "family"); err == nil {
 		sc := bufio.NewScanner(bytes.NewReader(data))
 		for sc.Scan() {
 			for _, f := range strings.Split(sc.Text(), ",") {
@@ -447,7 +487,7 @@ func DetectCapabilities(ctx context.Context, cfg Config) (Capabilities, []string
 	}
 	var fonts []string
 	if hasAss(ctx, cfg.FFmpeg) {
-		fonts = DetectFonts(ctx, cfg.Fonts)
+		fonts = DetectFonts(ctx, toolchainFonts(cfg.FFmpeg), cfg.Fonts)
 	} else {
 		problems = append(problems, "ffmpeg has no libass: no jobs with burnt-in captions")
 	}
