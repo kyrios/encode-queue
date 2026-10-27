@@ -22,15 +22,16 @@ type Config struct {
 	SourceDir string
 	ResultDir string
 
-	Lease         time.Duration // 120 s
-	RenewEvery    time.Duration // 30 s
-	LongPoll      time.Duration // 25 s, the most a long poll waits
-	PresenceEvery time.Duration // 30 s; three missed and a worker is offline
-	PauseGiveBack time.Duration // 60 s
-	PauseGrace    time.Duration // 30 s more before the queue takes a paused lease back itself
-	DoneKeep      time.Duration // 7 days
-	MaxFailures   int           // 3
-	ResultReserve int64         // bytes the result directory keeps free beyond every lease's max_bytes
+	Lease          time.Duration // 120 s
+	RenewEvery     time.Duration // 30 s
+	LongPoll       time.Duration // 25 s, the most a long poll waits
+	PresenceEvery  time.Duration // 30 s; three missed and a worker is offline
+	PauseGiveBack  time.Duration // 60 s
+	PauseGrace     time.Duration // 30 s more before the queue takes a paused lease back itself
+	DoneKeep       time.Duration // 7 days
+	MaxFailures    int           // 3
+	ExcludeBackoff time.Duration // 10 min: then a job no worker may run lets the reference worker back
+	ResultReserve  int64         // bytes the result directory keeps free beyond every lease's max_bytes
 
 	ReferenceWorker string // the worker whose tools jobs require by default; "" requires none
 	MinAppVersion   string
@@ -62,6 +63,7 @@ func (c *Config) Defaults() {
 	set(&c.PauseGiveBack, 60*time.Second)
 	set(&c.PauseGrace, 30*time.Second)
 	set(&c.DoneKeep, 7*24*time.Hour)
+	set(&c.ExcludeBackoff, 10*time.Minute)
 	if c.MaxFailures == 0 {
 		c.MaxFailures = 3
 	}
@@ -84,19 +86,22 @@ func (c *Config) Defaults() {
 
 // Job is a job as the queue keeps it.
 type Job struct {
-	ID         string     `json:"id"`
-	Spec       JobSubmit  `json:"spec"`
-	SpecHash   string     `json:"spec_hash"`
-	Priority   string     `json:"priority"` // the spec's, until the Encoder page moves the job
-	Final      string     `json:"final,omitempty"`
-	Rank       float64    `json:"rank"`
-	Failures   int        `json:"failures"`
-	Excluded   []string   `json:"excluded,omitempty"`
-	Attempts   []string   `json:"attempts,omitempty"`
-	Accepted   int        `json:"accepted,omitempty"`
-	QueuedAt   time.Time  `json:"queued_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
-	Revision   int64      `json:"revision"`
+	ID         string         `json:"id"`
+	Spec       JobSubmit      `json:"spec"`
+	SpecHash   string         `json:"spec_hash"`
+	Priority   string         `json:"priority"` // the spec's, until the Encoder page moves the job
+	Final      string         `json:"final,omitempty"`
+	Rank       float64        `json:"rank"`
+	Failures   int            `json:"failures"`
+	Excluded   []string       `json:"excluded,omitempty"`
+	Attempts   []string       `json:"attempts,omitempty"`
+	Accepted   int            `json:"accepted,omitempty"`
+	QueuedAt   time.Time      `json:"queued_at"`
+	FinishedAt *time.Time     `json:"finished_at,omitempty"`
+	Revision   int64          `json:"revision"`
+	Pin        *Pin           `json:"pin,omitempty"`
+	Killed     map[string]int `json:"killed,omitempty"`    // tool kills per worker, which exclude only the second time
+	FailedAt   *time.Time     `json:"failed_at,omitempty"` // the last failure or rejection
 
 	rung    *RungParams
 	whisper *WhisperParams
@@ -130,6 +135,9 @@ type Result struct {
 	Path        string     `json:"path,omitempty"` // relative to the result directory, while the file exists
 	FailureCode string     `json:"failure_code,omitempty"`
 	Message     string     `json:"message,omitempty"`
+	Signal      string     `json:"signal,omitempty"`
+	ExitCode    *int       `json:"exit_code,omitempty"`
+	MemoryAvail *int64     `json:"memory_available_bytes,omitempty"`
 	Checks      []Check    `json:"checks,omitempty"`
 	DeliveredAt time.Time  `json:"delivered_at"`
 	DecidedAt   *time.Time `json:"decided_at,omitempty"`
@@ -151,6 +159,16 @@ type Worker struct {
 	Presence    string        `json:"presence,omitempty"`
 	DiskFree    *int64        `json:"disk_free_bytes,omitempty"`
 	Counts      Counts        `json:"counts"`
+	Download    TransferStats `json:"download"`
+	Upload      TransferStats `json:"upload"`
+	Speeds      []*SpeedHist  `json:"speeds,omitempty"` // most recent first
+	MemoryUsed  *int64        `json:"memory_used_bytes,omitempty"`
+}
+
+// Pin is the worker the Encoder page sent a job to.
+type Pin struct {
+	WorkerID string    `json:"worker_id"`
+	At       time.Time `json:"at"`
 }
 
 // Upload is a tus upload of a result.
@@ -193,6 +211,15 @@ type Store struct {
 
 	// OnPeers is called, with the lock held, whenever the peer list changes.
 	OnPeers func(peers []PeerInfo)
+	// PeerStatus is what WireGuard knows of each peer, by public key (base64); it is called
+	// with the lock held. Nil: nothing is known.
+	PeerStatus func() map[string]PeerStatus
+}
+
+// PeerStatus is a peer as WireGuard sees it.
+type PeerStatus struct {
+	Endpoint      string    // IP:port of the peer's last packet; "" before one
+	LastHandshake time.Time // zero before the first
 }
 
 // PeerInfo is one worker's WireGuard peer.

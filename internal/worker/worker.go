@@ -506,7 +506,7 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 		if unix.Statfs(w.cfg.WorkDir, &st) == nil {
 			free = int64(st.Bavail) * int64(st.Bsize)
 		}
-		ack, err := w.api.PutPresence(ctx, state, free)
+		ack, err := w.api.PutPresence(ctx, state, free, memoryUsed())
 		w.contact(err)
 		if err == nil {
 			w.setPause(ack.PausedUntil, true)

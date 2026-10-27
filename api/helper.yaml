@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue helper API
-  version: 1.0.0
+  version: 1.1.0
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
@@ -690,6 +690,12 @@ components:
             efficiency_cores: { type: integer }
             gpu_cores: { type: integer }
             memory_bytes: { type: integer }
+            cpu_cores: { type: integer, description: Physical cores. }
+            cpu_threads: { type: integer, description: Logical CPUs the worker can use. }
+            os_name: { type: string, examples: [macOS, 'Debian GNU/Linux'] }
+            os_version: { type: string, examples: ['15.6', '13'] }
+            arch: { type: string, examples: [arm64, amd64] }
+            kernel: { type: string, description: 'The kernel release (`uname -r`); in a container, the host''s.', examples: ['6.12.48+deb13-amd64', '24.6.0'] }
     CapabilityReport:
       type: object
       required: [capabilities, accepted, min_app_version]
@@ -713,6 +719,7 @@ components:
         state: { type: string, enum: [idle, working, paused] }
         disk_free_bytes: { type: integer }
         on_battery: { type: boolean }
+        memory_used_bytes: { type: integer, description: 'RAM in use: macOS active, wired and compressed pages; Linux MemTotal less MemAvailable.' }
     PresenceAck:
       type: object
       required: [server_time, presence_every_s, paused_until]
@@ -913,8 +920,16 @@ components:
             code:
               type: string
               enum: [source_checksum, decode_failed, encode_failed, tool_missing, model_missing, out_of_memory,
-                     local_check_failed, file_not_found, other]
+                     local_check_failed, file_not_found, killed, other]
+              description: |
+                `killed`: the tool ended by a signal (the kernel's OOM killer sends SIGKILL). It and
+                `out_of_memory` blame the machine, not the tools: the queue counts the failure but
+                gives the job to the same worker again; only the second such failure of the job on
+                one worker excludes it.
             message: { type: string, description: One line for a person. }
+            signal: { type: string, description: 'For `killed`: the signal''s name.', examples: [SIGKILL] }
+            exit_code: { type: integer, description: 'For `encode_failed`: the tool''s exit status.' }
+            memory_available_bytes: { type: integer, description: 'For `killed`: the memory a new process could get right after, as the worker reads it.' }
       discriminator: { propertyName: outcome }
     Check:
       type: object

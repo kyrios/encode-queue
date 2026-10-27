@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.0.0
+  version: 1.1.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -32,7 +32,11 @@ info:
     4. **`accepted`**: the job is `done`; any other attempt still running is stopped
        (`410 job_done`), any other result waiting is `superseded`. **`rejected`**: the job goes
        back to `queued` and is never again offered to the worker that made it; after
-       `max_failures` rejections and failures together it is `failed`.
+       `max_failures` rejections and failures together it is `failed`. A failure with code
+       `killed` or `out_of_memory` (the machine, not the tools) counts too, but excludes the
+       worker only the second time on that job. When every worker able to run a job is
+       excluded, the job says so in `waiting`, and after `EQ_EXCLUDE_BACKOFF_S` (600 s) since
+       its last failure the reference worker (without one: every worker) gets it again.
     5. A lease that runs out, a worker that goes offline, a pause held past 60 s, a removed
        worker, a job of higher priority that needs the worker (`preempted`): the attempt ends
        and the job is `queued` again, the next attempt with the next number. A result that
@@ -46,6 +50,21 @@ info:
     to a job of another priority takes that priority. When a `stage1` or `stage2` job is queued
     and no free worker may run it, the queue preempts the active lease with the lowest priority
     whose worker may run it.
+
+    **Moving a job to a worker.** The Encoder page can send a `queued` or `leased` job to one
+    worker (`POST /jobs/{id}/assign`). A leased job is preempted on its old worker. The job is
+    then pinned to the target: no other worker gets it, and the target takes it before its other
+    queued jobs, until the target leases it. The pin shows in the job's `pinned_to`;
+    `DELETE /jobs/{id}/assign` ends it ("Automatisch"). `GET /jobs/{id}/candidates` says, for
+    every worker, whether it may take the job, when it is free and when the job would finish
+    there: the move menu.
+
+    **Estimates.** The queue estimates from what it measured, and says null when it has
+    nothing to go on; a page shows an estimate as one (`≈`). A worker's speed on a rung class
+    (codec, output size, preset) is the median fps of its last 5 accepted or delivered results
+    on that class. A job's encode time on a worker is its frames divided by that worker's fps
+    on the class, or, without one, by the reference worker's fps times the worker's
+    `relative_speed`. Transfers, the pipeline's checks and preemption are not in the estimates.
 
     **Rules every call follows** are helper.yaml's: problem+json errors with a stable `code`,
     JSON Merge Patch, `Prefer: wait=N` long polls (at most 25 s), UTC times, sizes in bytes.
@@ -224,6 +243,92 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/Invalid' }
+
+  /jobs/{job_id}/assign:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    post:
+      tags: [Jobs]
+      operationId: assignJob
+      summary: Send a job to one worker (the Encoder page's "Move to")
+      description: |
+        Takes either token, as `move` does. The job must be `queued` or `leased`
+        (`409 not_movable`).
+
+        - A **leased** job's active attempt on another worker ends as `preempted`: that worker
+          gets `410 preempted` at its next call, and the attempt counts in its `preempted`. A job
+          that the target holds already answers `200` unchanged.
+        - The job is then **pinned** to the target (`pinned_to`). No other worker gets it, and
+          the target takes it before its other queued jobs. A target that is busy takes it when
+          it has a free slot. Nothing is preempted on the target.
+        - The pin ends when the target leases the job, and also when the target is removed,
+          goes offline or is paused, or when the job is cancelled. The job is then an ordinary
+          queued job again.
+
+        The target is refused with `409` when it is offline (`worker_offline`), paused
+        (`worker_paused`), or may not run the job (`worker_mismatch`): its tools differ from
+        the reference's for the job's kind, a model or font is missing, or its result for this
+        job failed or was rejected already. The problem's `detail` says which. Every worker in
+        `GET /workers` whose `state` is `idle` or `working` and whose `accepted_kinds` holds the
+        job's kind is a target the page can offer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Assign' }
+      responses:
+        '200':
+          description: The job, pinned to the target.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Invalid' }
+
+    delete:
+      tags: [Jobs]
+      operationId: unassignJob
+      summary: End a job's pin (the move menu's "Automatisch")
+      description: The job is an ordinary job again; any worker may take it. A job without a pin answers `200` unchanged. An attempt already running stays where it is.
+      responses:
+        '200':
+          description: The job, without a pin.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /jobs/{job_id}/candidates:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [Jobs]
+      operationId: jobCandidates
+      summary: Every worker as a target for this job (the move menu)
+      description: |
+        One item per worker, by name. `available` is whether `POST /jobs/{id}/assign` would
+        take it; when not, `reason_code` and `reason` say why (the page greys the item and shows
+        the reason). `current` marks the worker that runs the job now: its `finish_at` is the
+        running attempt's. For every other worker the job starts over there ("Neu starten
+        auf …" for a running job): `free_at` is when it has a free slot (now, or when its
+        earliest attempt finishes encoding), and `finish_at` is `free_at` plus `encode_s`.
+        Any of the three is null when the queue cannot estimate it.
+      responses:
+        '200':
+          description: The candidates.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [server_time, items]
+                properties:
+                  server_time: { type: string, format: date-time }
+                  items: { type: array, items: { $ref: '#/components/schemas/Candidate' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /jobs/{job_id}/cancel:
     parameters:
@@ -550,7 +655,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     Conflict:
-      description: The state forbids this (`job_exists`, `not_queued`, `finished`, `not_finished`, `not_checking`, `job_done`, `key_exists`, `name_exists`, `subnet_full`).
+      description: The state forbids this (`job_exists`, `not_queued`, `finished`, `not_finished`, `not_checking`, `job_done`, `key_exists`, `name_exists`, `subnet_full`, `not_movable`, `worker_offline`, `worker_paused`, `worker_mismatch`).
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -573,7 +678,8 @@ components:
         code:
           type: string
           enum: [unauthorized, forbidden, not_found, job_exists, not_queued, finished, not_finished, not_checking,
-                 job_done, key_exists, name_exists, subnet_full, invalid, source_missing, source_size]
+                 job_done, key_exists, name_exists, subnet_full, invalid, source_missing, source_size,
+                 not_movable, worker_offline, worker_paused, worker_mismatch]
 
     JobId:
       type: string
@@ -698,7 +804,7 @@ components:
         started_at: { type: string, format: date-time }
         expires_at: { type: [string, 'null'], format: date-time, description: While `active`. }
         ended_at: { type: [string, 'null'], format: date-time }
-        end_code: { type: [string, 'null'], description: 'Why it ended without a result: the release reason, or `lease_expired`, `offline`, `preempted`, `paused`, `worker_removed`, `job_cancelled`, `job_done`.' }
+        end_code: { type: [string, 'null'], description: 'Why it ended without a result: the release reason, or `lease_expired`, `offline`, `preempted`, `assigned` (the Encoder page sent the job to another worker), `paused`, `worker_removed`, `job_cancelled`, `job_done`.' }
         progress: { oneOf: [{ $ref: '#/components/schemas/Progress' }, { type: 'null' }] }
         result:
           type: [object, 'null']
@@ -713,8 +819,11 @@ components:
             tools: { type: array, items: { $ref: '#/components/schemas/Tool' } }
             path: { type: [string, 'null'], description: 'The file, relative to `EQ_RESULT_DIR`, while it exists.', examples: ['one_528.2160-stage2/1/2160.mp4'] }
             file_url: { type: [string, 'null'], description: '`/jobs/{id}/attempts/{n}/file`, while the file exists.' }
-            failure_code: { type: [string, 'null'] }
+            failure_code: { type: [string, 'null'], description: 'helper.yaml''s failure codes, `killed` among them.' }
             message: { type: [string, 'null'], description: 'A failure''s line, or the reason of a rejection.' }
+            signal: { type: [string, 'null'], description: 'The signal that ended the tool, for `killed`.', examples: [SIGKILL] }
+            exit_code: { type: [integer, 'null'], description: 'The tool''s exit status, for `encode_failed`.' }
+            memory_available_bytes: { type: [integer, 'null'], description: 'The worker''s available memory right after a `killed`.' }
             checks: { type: array, items: { $ref: '#/components/schemas/Check' } }
             delivered_at: { type: string, format: date-time }
             decided_at: { type: [string, 'null'], format: date-time }
@@ -753,6 +862,31 @@ components:
         started_at: { type: [string, 'null'], format: date-time, description: When the active or accepted attempt started. }
         finished_at: { type: [string, 'null'], format: date-time }
         elapsed_s: { type: [number, 'null'], description: '"Zeit": since `started_at`, or how long the accepted attempt took.' }
+        eta_s:
+          type: [integer, 'null']
+          minimum: 0
+          description: |
+            Seconds until the active attempt finishes encoding: frames left divided by the
+            current fps, rounded up. Frames left is `frames_total` less `frames_done` from the
+            last progress report (`frames_total` falls back to the source's `frames`). Null
+            until the attempt reports `encoding` with both numbers and an fps above 0, and for
+            every job without an active attempt.
+          examples: [1260]
+        finish_at:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            "Fertig". A finished job: `finished_at`. An active attempt: now plus `eta_s`. A queued
+            job: the queue's forecast, which hands the queued jobs in order to the worker that
+            would finish each first, each worker starting when its current attempts finish
+            (see **Estimates**). Null when unknown, for example for whisper jobs and before
+            any worker has a speed on the job's class.
+        waiting:
+          oneOf: [{ $ref: '#/components/schemas/Waiting' }, { type: 'null' }]
+          description: 'For a `queued` job that no worker could take now, why; null when one could and the job waits only for its turn or a free slot, and for every job not queued.'
+        pinned_to:
+          oneOf: [{ $ref: '#/components/schemas/Pin' }, { type: 'null' }]
+          description: 'The worker the Encoder page sent the job to (`POST /jobs/{id}/assign`), until that worker leases it; null otherwise.'
         revision: { type: integer, description: "The queue's revision of this job's last change." }
     JobList:
       type: object
@@ -793,6 +927,31 @@ components:
         after: { $ref: '#/components/schemas/JobId' }
         to: { type: string, enum: [top, bottom] }
         priority: { $ref: '#/components/schemas/Priority' }
+    Assign:
+      type: object
+      required: [worker_id]
+      properties:
+        worker_id: { $ref: '#/components/schemas/WorkerId' }
+    Waiting:
+      type: object
+      required: [code, detail, retry_at]
+      properties:
+        code:
+          type: string
+          enum: [no_eligible_worker, all_excluded, no_worker_available]
+          description: |
+            `no_eligible_worker`: no paired worker runs the tools, model and fonts it needs.
+            `all_excluded`: every worker that does failed it or had its result rejected.
+            `no_worker_available`: those that may run it are all offline or paused.
+        detail: { type: string, description: One line for a person. }
+        retry_at: { type: [string, 'null'], format: date-time, description: 'For `all_excluded`: when the reference worker gets the job again; null when none will (the reference is not among the excluded).' }
+    Pin:
+      type: object
+      required: [worker_id, name, pinned_at]
+      properties:
+        worker_id: { $ref: '#/components/schemas/WorkerId' }
+        name: { type: string }
+        pinned_at: { type: string, format: date-time }
     Verdict:
       type: object
       required: [verdict]
@@ -852,6 +1011,105 @@ components:
         last_seen: { type: [string, 'null'], format: date-time, description: '"Zuletzt".' }
         added_at: { type: string, format: date-time }
         counts: { $ref: '#/components/schemas/WorkerCounts' }
+        endpoint:
+          type: [string, 'null']
+          description: |
+            The worker's public address and UDP port as the queue's WireGuard sees it: where
+            the last packet of the worker's peer came from, `IP:port` (IPv6 in brackets). Behind
+            NAT this is the router's address. Null until a handshake.
+          examples: ['203.0.113.7:51820', '[2001:db8::7]:61234']
+        last_handshake: { type: [string, 'null'], format: date-time, description: 'The peer''s last WireGuard handshake; null before the first.' }
+        tunnel_state:
+          type: [string, 'null']
+          enum: [up, down, null]
+          description: '"Tunnel": `up` while the last handshake is at most 180 s old (WireGuard renews it every 120 s while packets flow), `down` after; null before the first.'
+        system: { $ref: '#/components/schemas/WorkerSystem' }
+        transfer:
+          type: object
+          required: [download, upload]
+          description: |
+            "Netz": how fast the worker moves files through the tunnel: source downloads
+            (`GET /jobs/{id}/source` and inputs) and result uploads (tus `PATCH /files/{id}`).
+          properties:
+            download: { $ref: '#/components/schemas/TransferRate' }
+            upload: { $ref: '#/components/schemas/TransferRate' }
+        relative_speed:
+          type: [number, 'null']
+          description: |
+            "Tempo": how fast the worker encodes against the reference worker
+            (`EQ_REFERENCE_WORKER`, `encoder`); 1.0 is as fast, 1.8 is 1.8 times as fast. The
+            median of the `relative_speed` of its `speed_classes` that have one. The reference
+            worker itself is 1.0 once it has a class. Null while no class has both sides.
+          examples: [1.8]
+        speed_classes:
+          type: array
+          description: Its speed per rung class, the most recently measured first; at most 16.
+          items: { $ref: '#/components/schemas/SpeedClass' }
+        free_at:
+          type: [string, 'null']
+          format: date-time
+          description: 'When it has a free slot for a job: now when it has one, else when its earliest active attempt finishes encoding; null when that is unknown or the worker is offline or paused.'
+    WorkerSystem:
+      type: object
+      description: |
+        What the worker said about its machine in its capabilities (helper.yaml's `hardware`),
+        and how many threads it lets the encoder use. Each field is null when the worker did not
+        say (an older worker).
+      properties:
+        cpu_model: { type: [string, 'null'], examples: ['Apple M2 Max', 'AMD Ryzen 9 7950X 16-Core Processor'] }
+        cpu_cores: { type: [integer, 'null'], description: Physical cores. }
+        cpu_threads: { type: [integer, 'null'], description: Logical CPUs the worker can use. }
+        threads_in_use: { type: [integer, 'null'], description: 'The encoder''s thread limit: `limits.cpu_threads`, or `cpu_threads` when there is no limit.' }
+        memory_bytes: { type: [integer, 'null'], description: RAM in all. }
+        memory_used_bytes: { type: [integer, 'null'], description: 'RAM in use, from the worker''s last presence (in a container: the host''s).' }
+        os_name: { type: [string, 'null'], examples: [macOS, 'Debian GNU/Linux'] }
+        os_version: { type: [string, 'null'], examples: ['15.6', '13'] }
+        arch: { type: [string, 'null'], examples: [arm64, amd64] }
+        kernel: { type: [string, 'null'], description: 'In a container, the host''s kernel; `os_name` and `os_version` are the image''s.' }
+    TransferRate:
+      type: object
+      required: [current_bps, samples]
+      properties:
+        current_bps:
+          type: number
+          description: |
+            Now, bytes per second: while an attempt of the worker is in phase `downloading` or
+            `uploading`, from its last two progress reports; else the latest sample if it ended
+            in the last 60 s; else 0.
+        last_bps: { type: [number, 'null'], description: 'The latest sample: one request that moved at least 1 MiB, its bytes over its time.' }
+        avg_bps: { type: [number, 'null'], description: 'Moving average of the samples (exponential, weight 0.25 for the newest).' }
+        last_at: { type: [string, 'null'], format: date-time, description: When the latest sample ended. }
+        samples: { type: integer }
+    SpeedClass:
+      type: object
+      required: [class, codec, width, height, preset, fps, samples, updated_at]
+      properties:
+        class: { type: string, description: 'Codec, output size and preset, one string.', examples: ['libx265 1920x1080 veryfast'] }
+        codec: { type: string, examples: [libx265] }
+        width: { type: integer }
+        height: { type: integer }
+        preset: { type: string }
+        fps: { type: number, description: The median fps of its last results on this class. }
+        samples: { type: integer, minimum: 1, maximum: 5, description: How many results the median is of. }
+        reference_fps: { type: [number, 'null'], description: The reference worker's median on this class; null until it has one. }
+        relative_speed: { type: [number, 'null'], description: '`fps` / `reference_fps`.' }
+        updated_at: { type: string, format: date-time }
+    Candidate:
+      type: object
+      required: [worker, state, available, current]
+      properties:
+        worker: { $ref: '#/components/schemas/WorkerRef' }
+        state: { type: string, enum: [idle, working, paused, offline] }
+        available: { type: boolean }
+        reason_code: { type: [string, 'null'], enum: [worker_offline, worker_paused, worker_mismatch, null] }
+        reason: { type: [string, 'null'], examples: ['libx265 differs: worker 4.0, reference 4.3+1-e9b8812'] }
+        current: { type: boolean, description: It runs the job now. }
+        pinned: { type: boolean, description: The job is pinned to it. }
+        free_at: { type: [string, 'null'], format: date-time }
+        relative_speed: { type: [number, 'null'], description: "Its relative speed on the job's class, or its overall one." }
+        encode_s: { type: [number, 'null'], description: "The job's encode time there." }
+        finish_at: { type: [string, 'null'], format: date-time }
+
     WorkerCreate:
       type: object
       required: [name, public_key]

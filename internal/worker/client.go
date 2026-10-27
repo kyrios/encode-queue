@@ -222,11 +222,14 @@ func (c *Client) PutCapabilities(ctx context.Context, caps Capabilities) (Capabi
 	return r, err
 }
 
-func (c *Client) PutPresence(ctx context.Context, state string, diskFree int64) (PresenceAck, error) {
+func (c *Client) PutPresence(ctx context.Context, state string, diskFree, memUsed int64) (PresenceAck, error) {
 	var a PresenceAck
 	body := map[string]any{"state": state}
 	if diskFree > 0 {
 		body["disk_free_bytes"] = diskFree
+	}
+	if memUsed > 0 {
+		body["memory_used_bytes"] = memUsed
 	}
 	_, err := c.jsonCall(ctx, "PUT", "/me/presence", "", body, &a)
 	return a, err

@@ -88,6 +88,7 @@ func run(cmd string) error {
 		PauseGiveBack:   env.Seconds("EQ_PAUSE_GIVE_BACK_S"),
 		DoneKeep:        env.Seconds("EQ_DONE_KEEP_S"),
 		MaxFailures:     env.Int("EQ_MAX_FAILURES", 0),
+		ExcludeBackoff:  env.Seconds("EQ_EXCLUDE_BACKOFF_S"),
 		ResultReserve:   env.Int64("EQ_RESULT_RESERVE_BYTES", 2<<30),
 		ReferenceWorker: env.String("EQ_REFERENCE_WORKER", ""),
 		MinAppVersion:   env.String("EQ_MIN_APP_VERSION", ""),
@@ -160,6 +161,13 @@ func run(cmd string) error {
 	}
 	setPeers(store.Peers())
 	store.OnPeers = setPeers
+	store.PeerStatus = func() map[string]queue.PeerStatus {
+		out := map[string]queue.PeerStatus{}
+		for k, p := range door.PeerStatus() {
+			out[k.String()] = queue.PeerStatus{Endpoint: p.Endpoint, LastHandshake: p.LastHandshake}
+		}
+		return out
+	}
 
 	helperL, err := door.Listen(tunnelAPIPort)
 	if err != nil {

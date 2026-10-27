@@ -95,6 +95,13 @@ func newHarness(t *testing.T) *harness {
 			t.Errorf("peers: %v", err)
 		}
 	}
+	store.PeerStatus = func() map[string]queue.PeerStatus {
+		out := map[string]queue.PeerStatus{}
+		for k, p := range door.PeerStatus() {
+			out[k.String()] = queue.PeerStatus{Endpoint: p.Endpoint, LastHandshake: p.LastHandshake}
+		}
+		return out
+	}
 	srv := &server.Server{Store: store, Version: "test", PipelineToken: pipelineToken, AdminToken: adminToken, Log: log}
 	l, err := door.Listen(8090)
 	if err != nil {
@@ -374,6 +381,11 @@ func TestEndToEnd(t *testing.T) {
 	if len(ws.Items) != 1 || ws.Items[0].Counts.Accepted != 2 || len(ws.Items[0].Tools) != 4 || ws.Items[0].State == "offline" {
 		t.Fatalf("workers %+v", ws.Items)
 	}
+	if wv := ws.Items[0]; wv.Endpoint == nil || !strings.HasPrefix(*wv.Endpoint, "127.0.0.1:") || wv.LastHandshake == nil ||
+		wv.TunnelState == nil || *wv.TunnelState != "up" || wv.System.MemoryUsed == nil ||
+		wv.System.CPUThreads == nil || wv.System.Arch == nil || wv.System.ThreadsInUse == nil {
+		t.Fatalf("the worker's endpoint and system: %v %v %+v", wv.Endpoint, wv.LastHandshake, wv.System)
+	}
 	m := h.metrics()
 	for _, want := range []string{
 		fmt.Sprintf(`encode_queue_worker_attempts_total{worker_id="%s",worker="encoder",outcome="accepted"} 2`, tw.id),
@@ -459,6 +471,46 @@ func TestPreemptionOverTheTunnel(t *testing.T) {
 	o := h.waitState("old_1.2160-archive", "done", 30*time.Second)
 	if len(o.Attempts) != 2 || o.Attempts[0].State != "preempted" || o.Attempts[1].Result.Verdict != "accepted" {
 		t.Fatalf("the archive job's attempts: %+v", o.Attempts)
+	}
+}
+
+func TestAssignOverTheTunnel(t *testing.T) {
+	h := newHarness(t)
+	h.pipeline()
+	t.Setenv("FAKE_FRAMES", "1000")
+	t.Setenv("FAKE_FRAME_MS", "10")
+	enc := h.pair("encoder")
+	h.rungJob("old_1.2160-archive", "archive", nil)
+	j := h.waitState("old_1.2160-archive", "leased", 30*time.Second)
+	if j.Worker == nil || j.Worker.Name != "encoder" {
+		t.Fatalf("leased by %+v", j.Worker)
+	}
+	os.Setenv("FAKE_FRAMES", "5")
+	mac := h.pair("mac")
+	h.waitFor("the mac idle", 30*time.Second, func() bool {
+		var w queue.WorkerView
+		h.call("GET", "/v1/workers/"+mac.id, adminToken, nil, &w)
+		return w.State == "idle" && len(w.AcceptedKinds) > 0
+	})
+	var c queue.Candidates
+	if code := h.call("GET", "/v1/jobs/"+j.ID+"/candidates", adminToken, nil, &c); code != 200 || len(c.Items) != 2 ||
+		!c.Items[0].Current || !c.Items[1].Available || c.Items[1].Current {
+		t.Fatalf("candidates %d %+v", code, c.Items)
+	}
+	var v queue.JobView
+	if code := h.call("POST", "/v1/jobs/"+j.ID+"/assign", adminToken, map[string]string{"worker_id": mac.id}, &v); code != 200 {
+		t.Fatalf("assign: %d", code)
+	}
+	if v.PinnedTo == nil || v.PinnedTo.WorkerID != mac.id {
+		t.Fatalf("pinned to %+v", v.PinnedTo)
+	}
+	if code := h.call("POST", "/v1/jobs/"+j.ID+"/assign", adminToken, map[string]string{"worker_id": "wk_zzzzzzzz"}, nil); code != 404 {
+		t.Fatalf("an unknown worker: %d", code)
+	}
+	d := h.waitState(j.ID, "done", 30*time.Second)
+	if len(d.Attempts) != 2 || d.Attempts[0].Worker.ID != enc.id || d.Attempts[0].State != "preempted" ||
+		d.Attempts[0].EndCode == nil || *d.Attempts[0].EndCode != "assigned" || d.Attempts[1].Worker.ID != mac.id || d.PinnedTo != nil {
+		t.Fatalf("the attempts: %+v", d.Attempts)
 	}
 }
 

@@ -113,6 +113,60 @@ func (d *Door) Port() int {
 	return 0
 }
 
+// PeerStatus is a peer as WireGuard sees it.
+type PeerStatus struct {
+	Endpoint      string // IP:port of the peer's last packet; "" before one
+	LastHandshake time.Time
+}
+
+// PeerStatus is every peer's endpoint and last handshake.
+func (d *Door) PeerStatus() map[Key]PeerStatus {
+	conf, err := d.dev.IpcGet()
+	if err != nil {
+		return nil
+	}
+	return parsePeerStatus(conf)
+}
+
+func parsePeerStatus(conf string) map[Key]PeerStatus {
+	out := map[Key]PeerStatus{}
+	var cur *Key
+	var st PeerStatus
+	var sec, nsec int64
+	flush := func() {
+		if cur != nil {
+			if sec != 0 || nsec != 0 {
+				st.LastHandshake = time.Unix(sec, nsec)
+			}
+			out[*cur] = st
+		}
+	}
+	for _, line := range strings.Split(conf, "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "public_key":
+			flush()
+			key, err := parseHexKey(v)
+			if err != nil {
+				cur = nil
+				continue
+			}
+			cur, st, sec, nsec = &key, PeerStatus{}, 0, 0
+		case "endpoint":
+			st.Endpoint = v
+		case "last_handshake_time_sec":
+			sec, _ = strconv.ParseInt(v, 10, 64)
+		case "last_handshake_time_nsec":
+			nsec, _ = strconv.ParseInt(v, 10, 64)
+		}
+	}
+	flush()
+	return out
+}
+
 // Close takes the door down.
 func (d *Door) Close() { d.dev.Close() }
 

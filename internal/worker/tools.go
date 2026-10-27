@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Tool is a tool and its exact version string (helper.yaml, Tool).
@@ -244,33 +246,187 @@ func osName() string {
 }
 
 func hardware() json.RawMessage {
-	hw := map[string]any{"cpus": runtime.NumCPU()}
+	hw := map[string]any{"cpus": runtime.NumCPU(), "cpu_threads": runtime.NumCPU(), "arch": runtime.GOARCH}
+	var u unix.Utsname
+	if unix.Uname(&u) == nil {
+		hw["kernel"] = unix.ByteSliceToString(u.Release[:])
+	}
 	if runtime.GOOS == "darwin" {
+		hw["os_name"] = "macOS"
+		if out, err := exec.Command("sw_vers", "-productVersion").Output(); err == nil {
+			hw["os_version"] = strings.TrimSpace(string(out))
+		}
 		if out, err := exec.Command("sysctl", "-n", "machdep.cpu.brand_string").Output(); err == nil {
 			hw["chip"] = strings.TrimSpace(string(out))
 		}
-		for key, name := range map[string]string{"hw.perflevel0.physicalcpu": "performance_cores", "hw.perflevel1.physicalcpu": "efficiency_cores", "hw.memsize": "memory_bytes"} {
+		for key, name := range map[string]string{"hw.perflevel0.physicalcpu": "performance_cores", "hw.perflevel1.physicalcpu": "efficiency_cores",
+			"hw.memsize": "memory_bytes", "hw.physicalcpu": "cpu_cores"} {
 			if out, err := exec.Command("sysctl", "-n", key).Output(); err == nil {
 				var n int64
 				fmt.Sscan(strings.TrimSpace(string(out)), &n)
 				hw[name] = n
 			}
 		}
-	} else if data, err := os.ReadFile("/proc/meminfo"); err == nil {
+		data, _ := json.Marshal(hw)
+		return data
+	}
+	if data, err := os.ReadFile("/etc/os-release"); err == nil {
+		name, version := osRelease(string(data))
+		if name != "" {
+			hw["os_name"] = name
+		}
+		if version != "" {
+			hw["os_version"] = version
+		}
+	}
+	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
 		var kb int64
 		fmt.Sscanf(string(data), "MemTotal: %d kB", &kb)
 		hw["memory_bytes"] = kb * 1024
-		if c, err := os.ReadFile("/proc/cpuinfo"); err == nil {
-			for _, line := range strings.Split(string(c), "\n") {
-				if v, ok := strings.CutPrefix(line, "model name"); ok {
-					hw["chip"] = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), ":"))
-					break
-				}
-			}
+	}
+	if c, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		chip, cores := cpuInfo(string(c))
+		if chip != "" {
+			hw["chip"] = chip
+		}
+		if cores > 0 {
+			hw["cpu_cores"] = cores
 		}
 	}
 	data, _ := json.Marshal(hw)
 	return data
+}
+
+// memoryUsed is the RAM in use: on macOS active, wired and compressed pages (what Activity
+// Monitor calls used, less the app cache), on Linux MemTotal less MemAvailable; 0 unknown.
+func memoryUsed() int64 {
+	if runtime.GOOS == "darwin" {
+		out, err := exec.Command("vm_stat").Output()
+		if err != nil {
+			return 0
+		}
+		return vmStatUsed(string(out))
+	}
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	return meminfoUsed(string(data))
+}
+
+// memoryAvailable is the RAM a new process could get: Linux MemAvailable, macOS the memory
+// less what is in use; 0 unknown.
+func memoryAvailable() int64 {
+	if runtime.GOOS == "darwin" {
+		out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+		if err != nil {
+			return 0
+		}
+		var total int64
+		fmt.Sscan(strings.TrimSpace(string(out)), &total)
+		if used := memoryUsed(); used > 0 && used < total {
+			return total - used
+		}
+		return 0
+	}
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	return meminfoField(string(data), "MemAvailable")
+}
+
+func meminfoField(data, field string) int64 {
+	for _, line := range strings.Split(data, "\n") {
+		if k, v, ok := strings.Cut(line, ":"); ok && k == field {
+			var n int64
+			fmt.Sscan(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), "kB")), &n)
+			return n * 1024
+		}
+	}
+	return 0
+}
+
+func vmStatUsed(out string) int64 {
+	page := int64(4096)
+	var used int64
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "page size of") {
+			fmt.Sscanf(line[strings.Index(line, "page size of"):], "page size of %d bytes", &page)
+			continue
+		}
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(k) {
+		case "Pages active", "Pages wired down", "Pages occupied by compressor":
+			var n int64
+			fmt.Sscan(strings.TrimSuffix(strings.TrimSpace(v), "."), &n)
+			used += n
+		}
+	}
+	return used * page
+}
+
+func meminfoUsed(data string) int64 {
+	var total, avail int64
+	for _, line := range strings.Split(data, "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		var n int64
+		fmt.Sscan(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), "kB")), &n)
+		switch k {
+		case "MemTotal":
+			total = n
+		case "MemAvailable":
+			avail = n
+		}
+	}
+	if total == 0 || avail == 0 {
+		return 0
+	}
+	return (total - avail) * 1024
+}
+
+// osRelease is NAME and VERSION_ID of /etc/os-release.
+func osRelease(data string) (name, version string) {
+	for _, line := range strings.Split(data, "\n") {
+		if v, ok := strings.CutPrefix(line, "NAME="); ok {
+			name = strings.Trim(v, `"`)
+		}
+		if v, ok := strings.CutPrefix(line, "VERSION_ID="); ok {
+			version = strings.Trim(v, `"`)
+		}
+	}
+	return name, version
+}
+
+// cpuInfo is the first model name in /proc/cpuinfo and the physical cores: distinct pairs of
+// physical id and core id (0 when the file has none, as on some ARM boards).
+func cpuInfo(data string) (model string, cores int) {
+	seen := map[string]bool{}
+	phys := ""
+	for _, line := range strings.Split(data, "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		switch k {
+		case "model name":
+			if model == "" {
+				model = v
+			}
+		case "physical id":
+			phys = v
+		case "core id":
+			seen[phys+"/"+v] = true
+		}
+	}
+	return model, len(seen)
 }
 
 // DetectCapabilities is everything this worker says it runs.

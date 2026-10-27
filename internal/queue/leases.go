@@ -59,7 +59,18 @@ func (s *Store) room() int64 {
 func (s *Store) claimable(w *Worker, req LeaseRequest) *Job {
 	accepted, _ := s.kinds(w)
 	room := s.room()
+	// The jobs the Encoder page sent to this worker first, then the rest; a job sent to
+	// another worker is that worker's.
+	var mine, rest []*Job
 	for _, j := range s.queued() {
+		switch {
+		case j.Pin == nil:
+			rest = append(rest, j)
+		case j.Pin.WorkerID == w.ID:
+			mine = append(mine, j)
+		}
+	}
+	for _, j := range append(mine, rest...) {
 		if !contains(accepted, j.Spec.Kind) {
 			continue
 		}
@@ -126,6 +137,7 @@ func (s *Store) Claim(ctx context.Context, workerID string, req LeaseRequest, wa
 				Attempt: len(j.Attempts) + 1, State: LeaseActive, CreatedAt: now, ExpiresAt: now.Add(s.cfg.Lease)}
 			s.st.Leases[l.ID] = l
 			j.Attempts = append(j.Attempts, l.ID)
+			j.Pin = nil
 			s.bump(j)
 			s.touch(true)
 			v := s.leaseView(l)
@@ -225,6 +237,7 @@ func (s *Store) Renew(workerID, leaseID string, p Progress) (LeaseView, error) {
 		return LeaseView{}, errf(422, "invalid", "phase %q unknown", p.Phase)
 	}
 	now := s.cfg.Now()
+	s.noteLive(w, l.Progress, l.ExpiresAt.Add(-s.cfg.Lease), p)
 	l.Progress = &p
 	l.ExpiresAt = now.Add(s.cfg.Lease)
 	if j := s.st.Jobs[l.JobID]; j != nil {
@@ -474,6 +487,7 @@ func (s *Store) AppendUpload(workerID, id string, offset int64, body io.Reader) 
 	path := s.uploadPath(id)
 	s.mu.Unlock()
 
+	start := time.Now()
 	f, ferr := os.OpenFile(path, os.O_WRONLY, 0)
 	var n int64
 	if ferr == nil {
@@ -495,6 +509,7 @@ func (s *Store) AppendUpload(workerID, id string, offset int64, body io.Reader) 
 	}
 	u.Offset += n
 	u.LastWrite = s.cfg.Now()
+	s.noteTransfer(workerID, DirUpload, n, time.Since(start))
 	s.touch(false)
 	if ferr != nil && n == 0 {
 		return u.Offset, ferr
@@ -528,6 +543,10 @@ type ResultIn struct {
 	Tools   []Tool  `json:"tools,omitempty"`
 	Code    string  `json:"code,omitempty"`
 	Message string  `json:"message,omitempty"`
+	// How the tool ended, for a failure.
+	Signal      string `json:"signal,omitempty"`
+	ExitCode    *int   `json:"exit_code,omitempty"`
+	MemoryAvail *int64 `json:"memory_available_bytes,omitempty"`
 }
 
 // Deliver takes a lease's result. A file's sha256 is checked outside the lock.
@@ -557,12 +576,23 @@ func (s *Store) Deliver(workerID, leaseID string, in ResultIn) (ResultView, erro
 		// Only a lease the worker still held counts as its failure: one that ran out or was
 		// preempted failed for that reason, not for the worker's tools.
 		wasActive := l.State == LeaseActive
-		l.Result = &Result{Outcome: "failed", Verdict: VerdictFailed, FailureCode: in.Code, Message: oneLine(in.Message, 500), DeliveredAt: now, DecidedAt: ptrTime(now)}
+		l.Result = &Result{Outcome: "failed", Verdict: VerdictFailed, FailureCode: in.Code, Message: oneLine(in.Message, 500),
+			Signal: oneLine(in.Signal, 16), ExitCode: in.ExitCode, MemoryAvail: in.MemoryAvail, DeliveredAt: now, DecidedAt: ptrTime(now)}
 		if wasActive {
 			l.State = LeaseFailed
 			l.EndedAt = ptrTime(now)
 			w.Counts.Failed++
-			s.countFailure(j, w.ID)
+			// A tool the system killed (the OOM killer, mostly) says nothing about the worker's
+			// results: it counts as a failure, but excludes the worker only the second time.
+			exclude := true
+			if infraFailure(in.Code) {
+				if j.Killed == nil {
+					j.Killed = map[string]int{}
+				}
+				j.Killed[w.ID]++
+				exclude = j.Killed[w.ID] > 1
+			}
+			s.countFailure(j, w.ID, exclude)
 		}
 		s.bump(j)
 		s.touch(true)
@@ -625,6 +655,7 @@ func (s *Store) Deliver(workerID, leaseID string, in ResultIn) (ResultView, erro
 	}
 	l.Result = &Result{Outcome: "file", Verdict: VerdictChecking, SHA256: sum, Bytes: u.Length, Frames: in.Frames,
 		EncodeS: in.EncodeS, Tools: in.Tools, Path: rel, DeliveredAt: s.cfg.Now()}
+	s.noteResult(w, j, l, in.Frames, in.EncodeS)
 	s.bump(j)
 	s.touch(true)
 	return s.resultView(l), nil
