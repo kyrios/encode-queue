@@ -452,6 +452,16 @@ func TestTokensAreKeptApart(t *testing.T) {
 	if code := h.call("POST", "/v1/workers", pipelineToken, map[string]any{"name": "x", "public_key": "x"}, nil); code != 403 {
 		t.Fatalf("the pipeline pairing: %d", code)
 	}
+	if code := h.call("POST", "/v1/jobs/cleanup", pipelineToken, map[string]any{"states": []string{"done"}}, nil); code != 403 {
+		t.Fatalf("the pipeline cleaning up: %d", code)
+	}
+	var r queue.CleanupResult
+	if code := h.call("POST", "/v1/jobs/cleanup", adminToken, map[string]any{"states": []string{"cancelled"}}, &r); code != 200 || r.Removed != 0 {
+		t.Fatalf("the admin cleaning up: %d %+v", code, r)
+	}
+	if code := h.call("POST", "/v1/jobs/cleanup", adminToken, map[string]any{"states": []string{"queued"}}, nil); code != 422 {
+		t.Fatalf("cleaning up queued jobs: %d", code)
+	}
 }
 
 func TestPreemptionOverTheTunnel(t *testing.T) {

@@ -81,7 +81,8 @@ Every address, port, subnet and path comes from the environment; the image has n
 | `EQ_MAX_FAILURES` | default 3 |
 | `EQ_EXCLUDE_BACKOFF_S` | default 600: how long a job that every able worker is excluded from waits before the reference worker gets it again |
 | `EQ_RESULT_RESERVE_BYTES` | default 2 GiB |
-| `EQ_LEASE_S`, `EQ_RENEW_EVERY_S`, `EQ_LONG_POLL_S`, `EQ_PRESENCE_EVERY_S`, `EQ_PAUSE_GIVE_BACK_S`, `EQ_DONE_KEEP_S` | the timings, defaults 120, 30, 25, 30, 60 and 7 days |
+| `EQ_LEASE_S`, `EQ_RENEW_EVERY_S`, `EQ_LONG_POLL_S`, `EQ_PRESENCE_EVERY_S`, `EQ_PAUSE_GIVE_BACK_S` | the timings, defaults 120, 30, 25, 30 and 60 |
+| `EQ_JOB_RETENTION` | how long done, cancelled and failed jobs stay, with their result files: seconds, `7d` or `36h`; default 7 days. `EQ_DONE_KEEP_S`, its older name, still works |
 | `EQ_LOG_LEVEL` | `debug`, `info` (default), `warn`, `error` |
 
 `encode-queue pubkey` prints the queue's public key (making the key if there is none).

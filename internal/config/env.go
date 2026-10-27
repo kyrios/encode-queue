@@ -77,6 +77,28 @@ func (e *Env) Seconds(k string) time.Duration {
 	return time.Duration(e.Int(k, 0)) * time.Second
 }
 
+// Duration is a span: whole seconds, days (`7d`) or Go's notation (`36h`, `90m`); 0 (the
+// caller's default) when unset.
+func (e *Env) Duration(k string) time.Duration {
+	v, ok := e.get(k)
+	if !ok || v == "" {
+		return 0
+	}
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+		return time.Duration(n) * time.Second
+	}
+	if d, ok := strings.CutSuffix(v, "d"); ok {
+		if n, err := strconv.ParseInt(d, 10, 64); err == nil && n >= 0 {
+			return time.Duration(n) * 24 * time.Hour
+		}
+	}
+	if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+		return d
+	}
+	e.Problems = append(e.Problems, fmt.Sprintf("%s=%q is not a duration (seconds, 7d or 36h)", k, v))
+	return 0
+}
+
 // Bool is true for 1, true, yes.
 func (e *Env) Bool(k string, def bool) bool {
 	v, ok := e.get(k)

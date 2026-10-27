@@ -86,7 +86,7 @@ func run(cmd string) error {
 		LongPoll:        env.Seconds("EQ_LONG_POLL_S"),
 		PresenceEvery:   env.Seconds("EQ_PRESENCE_EVERY_S"),
 		PauseGiveBack:   env.Seconds("EQ_PAUSE_GIVE_BACK_S"),
-		DoneKeep:        env.Seconds("EQ_DONE_KEEP_S"),
+		DoneKeep:        retention(env),
 		MaxFailures:     env.Int("EQ_MAX_FAILURES", 0),
 		ExcludeBackoff:  env.Seconds("EQ_EXCLUDE_BACKOFF_S"),
 		ResultReserve:   env.Int64("EQ_RESULT_RESERVE_BYTES", 2<<30),
@@ -250,4 +250,12 @@ func healthcheck(listen string, env *config.Env) error {
 		return fmt.Errorf("/healthz answered %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// retention is EQ_JOB_RETENTION, or the older EQ_DONE_KEEP_S; 0 is the queue's default.
+func retention(env *config.Env) time.Duration {
+	if d := env.Duration("EQ_JOB_RETENTION"); d > 0 {
+		return d
+	}
+	return env.Seconds("EQ_DONE_KEEP_S")
 }
