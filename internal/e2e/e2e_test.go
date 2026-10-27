@@ -59,9 +59,12 @@ type harness struct {
 	evMu    sync.Mutex
 	events  []map[string]any
 	verdict func(job queue.JobView, attempt queue.AttemptView, file []byte) (string, string)
+	// calibrate: the workers paired from now on encode the calibration clip first.
+	calibrate bool
 }
 
-func newHarness(t *testing.T) *harness {
+// newHarness starts a queue; `opts` change its configuration (a reference worker).
+func newHarness(t *testing.T, opts ...func(*queue.Config)) *harness {
 	t.Helper()
 	dir := t.TempDir()
 	log := slog.New(slog.NewTextHandler(logWriter{t}, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -80,6 +83,9 @@ func newHarness(t *testing.T) *harness {
 		PauseGiveBack: 2 * time.Second, PauseGrace: 2 * time.Second,
 		Subnet: netip.MustParsePrefix("10.99.0.0/24"), TunnelAddress: addr, ServerPublicKey: key.Public().String(),
 		Endpoint: fmt.Sprintf("127.0.0.1:%d", door.Port()), API: "http://10.99.0.1:8090/v1", Log: log}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	os.MkdirAll(cfg.SourceDir, 0o755)
 	store, err := queue.Open(cfg)
 	if err != nil {
@@ -184,7 +190,7 @@ func (h *harness) pair(name string) *testWorker {
 	}
 	self, _ := os.Executable()
 	w, err := worker.New(worker.Config{Version: "0.1.0", StateDir: h.t.TempDir(), FFmpeg: self, WhisperCLI: self,
-		WhisperVersion: "v1.9.5", ModelsDir: h.models, MaxParallel: 1, ChunkBytes: 1 << 10,
+		WhisperVersion: "v1.9.5", ModelsDir: h.models, MaxParallel: 1, ChunkBytes: 1 << 10, Calibrate: h.calibrate,
 		LongPoll: time.Second, LogEvery: 200 * time.Millisecond, RetryAfter: 200 * time.Millisecond,
 		Log: h.log.With("worker", name), Events: func(ev map[string]any) {
 			h.evMu.Lock()
@@ -479,6 +485,38 @@ func TestTokensAreKeptApart(t *testing.T) {
 	if code := h.call("POST", "/v1/jobs/one_2.2160-archive/cancel", pipelineToken, nil, &v); code != 200 ||
 		v.Cancelled == nil || v.Cancelled.By != "pipeline" || v.Cancelled.Reason != nil {
 		t.Fatalf("cancel without a body: %d %+v", code, v.Cancelled)
+	}
+}
+
+// "Calibration clip" (v0.2.5): both workers encode the clip once per rung class at pairing, and
+// the second has a calibrated tempo against the reference before it ran a single job.
+func TestCalibrationAtPairing(t *testing.T) {
+	h := newHarness(t, func(c *queue.Config) { c.ReferenceWorker = "encoder" })
+	h.calibrate = true
+	t.Setenv("FAKE_FRAMES", "3")
+	enc := h.pair("encoder")
+	mac := h.pair("mac")
+	worker := func(id string) queue.WorkerView {
+		var v queue.WorkerView
+		h.call("GET", "/v1/workers/"+id, adminToken, nil, &v)
+		return v
+	}
+	h.waitFor("both calibrated", 60*time.Second, func() bool {
+		v := worker(mac.id)
+		return worker(enc.id).RelativeSpeedSource != nil && v.RelativeSpeedSource != nil
+	})
+	v := worker(mac.id)
+	if *v.RelativeSpeedSource != "calibrated" || v.RelativeSpeed == nil || *v.RelativeSpeed <= 0 {
+		t.Fatalf("mac: %v %v", v.RelativeSpeed, v.RelativeSpeedSource)
+	}
+	n := 0
+	for _, c := range v.SpeedClasses {
+		if c.Source == "calibrated" && c.ReferenceFPS != nil {
+			n++
+		}
+	}
+	if n != 8 {
+		t.Fatalf("calibrated classes against the reference: %d of %+v", n, v.SpeedClasses)
 	}
 }
 

@@ -49,6 +49,8 @@ type Capabilities struct {
 	Models     []Model         `json:"models,omitempty"`
 	Fonts      []string        `json:"fonts,omitempty"`
 	Hardware   json.RawMessage `json:"hardware,omitempty"`
+	// Calibration: this worker's fps on the calibration clip per rung class (v0.2.5).
+	Calibration *Calibration `json:"calibration,omitempty"`
 }
 
 var (

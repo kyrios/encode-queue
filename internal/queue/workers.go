@@ -394,6 +394,7 @@ func (s *Store) PutCapabilities(id string, c Capabilities) (CapabilityReport, er
 			c.HostApp = nil
 		}
 	}
+	checkCalibration(&c)
 	w.Caps = &c
 	s.touch(true)
 	return s.report(w), nil

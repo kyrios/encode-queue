@@ -202,17 +202,39 @@ func (s *Store) classRelative(w *Worker, class string) *float64 {
 
 // relativeSpeed is the median of the worker's class ratios against the reference.
 func (s *Store) relativeSpeed(w *Worker) *float64 {
+	r, _ := s.relativeSpeedSource(w)
+	return r
+}
+
+// Where a relative speed comes from (v0.2.5).
+const (
+	SpeedMeasured   = "measured"
+	SpeedCalibrated = "calibrated"
+)
+
+// relativeSpeedSource is the median of the measured class ratios when there are any, else of
+// the calibrated ones, and which it is; nil and "" without either.
+func (s *Store) relativeSpeedSource(w *Worker) (*float64, string) {
 	var rs []float64
 	for _, h := range w.Speeds {
 		if r := s.classRelative(w, h.Class); r != nil {
 			rs = append(rs, *r)
 		}
 	}
+	if len(rs) > 0 {
+		m := median(rs)
+		return &m, SpeedMeasured
+	}
+	for _, c := range calibratedClasses(w) {
+		if r := s.calibratedRelative(w, c); r != nil {
+			rs = append(rs, *r)
+		}
+	}
 	if len(rs) == 0 {
-		return nil
+		return nil, ""
 	}
 	m := median(rs)
-	return &m
+	return &m, SpeedCalibrated
 }
 
 // fpsOn is the worker's expected fps on a class: its own median, or the reference's times
@@ -220,6 +242,10 @@ func (s *Store) relativeSpeed(w *Worker) *float64 {
 func (s *Store) fpsOn(w *Worker, class string) float64 {
 	if h := w.speed(class); h != nil {
 		return h.median()
+	}
+	if ref := s.referenceWorker(); ref != nil && s.calibratedRelative(w, class) != nil {
+		f, _ := calibratedFPS(w, class) // its own fps on the class, on the reference's clip
+		return f
 	}
 	ref := s.referenceWorker()
 	if ref == nil || ref == w {

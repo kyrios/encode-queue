@@ -30,6 +30,7 @@ type Config struct {
 	CPUThreads     int // 0: the tools' own
 	GPU            bool
 	MaxParallel    int
+	Calibrate      bool // the calibration clip at pairing and on a tools change (calibrate.go)
 	ChunkBytes     int64
 	Log            *slog.Logger
 
@@ -410,6 +411,18 @@ func (w *Worker) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() { defer wg.Done(); w.presenceLoop(ctx) }()
+	// The calibration before the first job: it should not share the CPU with one. A failure
+	// leaves the worker uncalibrated, never unusable.
+	if w.cfg.Calibrate {
+		if c, err := w.calibrate(ctx); err != nil {
+			w.cfg.Log.Warn("calibration failed", "err", err)
+		} else {
+			w.caps.Calibration = c
+			if _, err := w.api.PutCapabilities(ctx, w.caps); err != nil {
+				w.cfg.Log.Warn("calibration not sent", "err", err)
+			}
+		}
+	}
 	for i := 0; i < maxSlots; i++ {
 		wg.Add(1)
 		go func(slot int) { defer wg.Done(); w.claimLoop(ctx, slot) }(i)

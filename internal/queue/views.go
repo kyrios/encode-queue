@@ -387,9 +387,12 @@ type WorkerView struct {
 	System        WorkerSystem    `json:"system"`
 	Transfer      Transfer        `json:"transfer"`
 	RelativeSpeed *float64        `json:"relative_speed"`
-	SpeedEstimate *SpeedEstimate  `json:"speed_estimate"`
-	SpeedClasses  []SpeedClass    `json:"speed_classes"`
-	FreeAt        *time.Time      `json:"free_at"`
+	// RelativeSpeedSource: "measured" from delivered jobs, "calibrated" from the calibration
+	// clip until there are some (v0.2.5); null without a relative speed.
+	RelativeSpeedSource *string        `json:"relative_speed_source"`
+	SpeedEstimate       *SpeedEstimate `json:"speed_estimate"`
+	SpeedClasses        []SpeedClass   `json:"speed_classes"`
+	FreeAt              *time.Time     `json:"free_at"`
 }
 
 // WorkerSystem is the worker's machine, from its capabilities' hardware.
@@ -506,6 +509,8 @@ type SpeedClass struct {
 	ReferenceFPS  *float64  `json:"reference_fps"`
 	RelativeSpeed *float64  `json:"relative_speed"`
 	UpdatedAt     time.Time `json:"updated_at"`
+	// Source: "measured" (delivered jobs, Samples of them) or "calibrated" (the clip, v0.2.5).
+	Source string `json:"source"`
 }
 
 func (s *Store) peerStatus() map[string]PeerStatus {
@@ -556,16 +561,26 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 	}
 	v.System = s.system(w)
 	v.Transfer = Transfer{Download: s.rate(w.Download, now), Upload: s.rate(w.Upload, now)}
-	v.RelativeSpeed = s.relativeSpeed(w)
-	if refW := s.referenceWorker(); refW == w && len(w.Speeds) > 0 {
-		one := 1.0
-		v.RelativeSpeed = &one
+	rel, src := s.relativeSpeedSource(w)
+	v.RelativeSpeed = rel
+	if refW := s.referenceWorker(); refW == w {
+		v.RelativeSpeed, src = nil, ""
+		if len(w.Speeds) > 0 || len(calibratedClasses(w)) > 0 {
+			one := 1.0
+			v.RelativeSpeed, src = &one, SpeedCalibrated
+			if len(w.Speeds) > 0 {
+				src = SpeedMeasured
+			}
+		}
+	}
+	if src != "" {
+		v.RelativeSpeedSource = &src
 	}
 	v.SpeedClasses = []SpeedClass{}
 	refW := s.referenceWorker()
 	for _, h := range w.Speeds {
 		sc := SpeedClass{Class: h.Class, Codec: h.Codec, Width: h.Width, Height: h.Height, Preset: h.Preset,
-			FPS: h.median(), Samples: len(h.FPS), UpdatedAt: h.UpdatedAt, RelativeSpeed: s.classRelative(w, h.Class)}
+			FPS: h.median(), Samples: len(h.FPS), UpdatedAt: h.UpdatedAt, RelativeSpeed: s.classRelative(w, h.Class), Source: SpeedMeasured}
 		if refW != nil {
 			if rh := refW.speed(h.Class); rh != nil {
 				f := rh.median()
@@ -573,6 +588,23 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 			}
 		}
 		v.SpeedClasses = append(v.SpeedClasses, sc)
+	}
+	// The calibrated classes it has no measured result on yet.
+	if w.Caps != nil && w.Caps.Calibration != nil {
+		for _, cc := range w.Caps.Calibration.Classes {
+			if w.speed(cc.Class) != nil {
+				continue
+			}
+			codec, width, height, preset := parseClass(cc.Class)
+			sc := SpeedClass{Class: cc.Class, Codec: codec, Width: width, Height: height, Preset: preset,
+				FPS: cc.FPS, UpdatedAt: w.Caps.Calibration.At, RelativeSpeed: s.calibratedRelative(w, cc.Class), Source: SpeedCalibrated}
+			if refW != nil {
+				if f, clip := calibratedFPS(refW, cc.Class); f > 0 && clip == w.Caps.Calibration.ClipSHA256 {
+					sc.ReferenceFPS = &f
+				}
+			}
+			v.SpeedClasses = append(v.SpeedClasses, sc)
+		}
 	}
 	v.FreeAt = s.freeAt(w, now, "")
 	acc, ref := s.kinds(w)

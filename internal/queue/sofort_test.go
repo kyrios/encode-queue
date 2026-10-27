@@ -91,7 +91,11 @@ func TestExtraSlotBesideAnEncode(t *testing.T) {
 		t.Fatal("the lease is not marked extra")
 	}
 	v := must(e.s.GetWorker(w))
-	if len(v.Jobs) != 2 || v.Jobs[0].Extra || !v.Jobs[1].Extra {
+	extra := map[string]bool{}
+	for _, j := range v.Jobs {
+		extra[j.JobID] = j.Extra
+	}
+	if len(v.Jobs) != 2 || extra["old.2160-archive"] || !extra["k3v9x2m1q7pz.whisper"] {
 		t.Fatalf("the worker's jobs: %+v", v.Jobs)
 	}
 	// One extra lease at a time.
