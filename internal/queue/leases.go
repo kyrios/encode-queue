@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -177,6 +178,10 @@ func peakBytes(j *Job) int64 {
 			return 1 * gb
 		}
 		return 5 * gb / 2
+	case j.check != nil:
+		return 3 * gb / 2 // a 4K compare peaks at 0.7 GB, 1.1 GB with libvmaf (helper.yaml)
+	case j.remux != nil:
+		return gb / 2
 	case j.rung != nil:
 		h := min(j.rung.Width, j.rung.Height)
 		slow := j.rung.Preset == "slower" || j.rung.Preset == "veryslow" || j.rung.Preset == "slow"
@@ -338,7 +343,7 @@ func (s *Store) Renew(workerID, leaseID string, p Progress) (LeaseView, error) {
 		return LeaseView{}, s.goneErr(l)
 	}
 	switch p.Phase {
-	case "downloading", "encoding", "uploading", "paused":
+	case "downloading", "encoding", "checking", "uploading", "paused":
 	default:
 		return LeaseView{}, errf(422, "invalid", "phase %q unknown", p.Phase)
 	}
@@ -653,6 +658,8 @@ type ResultIn struct {
 	Signal      string `json:"signal,omitempty"`
 	ExitCode    *int   `json:"exit_code,omitempty"`
 	MemoryAvail *int64 `json:"memory_available_bytes,omitempty"`
+	// Check: the figures of the check step (v0.2.8), with a file or, for a check job, alone.
+	Check json.RawMessage `json:"check,omitempty"`
 }
 
 // Deliver takes a lease's result. A file's sha256 is checked outside the lock.
@@ -706,9 +713,37 @@ func (s *Store) Deliver(workerID, leaseID string, in ResultIn) (ResultView, erro
 		s.mu.Unlock()
 		return v, nil
 	}
+	figures, ferr := checkFigures(in.Check)
+	if ferr != nil {
+		s.mu.Unlock()
+		return ResultView{}, errf(422, "invalid", "%v", ferr)
+	}
+	if in.Outcome == "figures" {
+		// A check job's result (v0.2.8): the figures, no file. The pipeline judges them as it
+		// judges a file.
+		if j.check == nil || figures == nil {
+			s.mu.Unlock()
+			return ResultView{}, errf(422, "invalid", "only a check job delivers figures alone, and with check")
+		}
+		if l.State == LeaseActive {
+			l.EndedAt = ptrTime(now)
+		}
+		l.State = LeaseDelivered
+		l.Result = &Result{Outcome: "figures", Verdict: VerdictChecking, Figures: figures, EncodeS: in.EncodeS, Tools: in.Tools, DeliveredAt: now}
+		s.learn(w, j, l, in.EncodeS)
+		s.bump(j)
+		s.touch(true)
+		v := s.resultView(l)
+		s.mu.Unlock()
+		return v, nil
+	}
 	if in.Outcome != "file" {
 		s.mu.Unlock()
-		return ResultView{}, errf(422, "invalid", "outcome is file or failed")
+		return ResultView{}, errf(422, "invalid", "outcome is file, figures or failed")
+	}
+	if j.check != nil {
+		s.mu.Unlock()
+		return ResultView{}, errf(422, "invalid", "a check job delivers figures, not a file")
 	}
 	fid := in.File[strings.LastIndex(in.File, "/")+1:]
 	u, ul, err := s.upload(workerID, fid)
@@ -760,7 +795,7 @@ func (s *Store) Deliver(workerID, leaseID string, in ResultIn) (ResultView, erro
 		l.State = LeaseDelivered
 	}
 	l.Result = &Result{Outcome: "file", Verdict: VerdictChecking, SHA256: sum, Bytes: u.Length, Frames: in.Frames,
-		EncodeS: in.EncodeS, Tools: in.Tools, Path: rel, DeliveredAt: s.cfg.Now()}
+		EncodeS: in.EncodeS, Tools: in.Tools, Path: rel, Figures: figures, DeliveredAt: s.cfg.Now()}
 	s.learn(w, j, l, in.EncodeS)
 	s.noteResult(w, j, l, in.Frames, in.EncodeS)
 	s.bump(j)

@@ -109,6 +109,9 @@ type Job struct {
 
 	rung    *RungParams
 	whisper *WhisperParams
+	cut     *CutParams   // v0.2.8
+	remux   *RemuxParams // v0.2.8
+	check   *CheckParams // v0.2.8
 }
 
 // Lease is one attempt at a job.
@@ -139,22 +142,25 @@ type Lease struct {
 
 // Result is what an attempt delivered.
 type Result struct {
-	Outcome     string     `json:"outcome"`
-	Verdict     string     `json:"verdict"`
-	SHA256      string     `json:"sha256,omitempty"`
-	Bytes       int64      `json:"bytes,omitempty"`
-	Frames      int64      `json:"frames,omitempty"`
-	EncodeS     float64    `json:"encode_s,omitempty"`
-	Tools       []Tool     `json:"tools,omitempty"`
-	Path        string     `json:"path,omitempty"` // relative to the result directory, while the file exists
-	FailureCode string     `json:"failure_code,omitempty"`
-	Message     string     `json:"message,omitempty"`
-	Signal      string     `json:"signal,omitempty"`
-	ExitCode    *int       `json:"exit_code,omitempty"`
-	MemoryAvail *int64     `json:"memory_available_bytes,omitempty"`
-	Checks      []Check    `json:"checks,omitempty"`
-	DeliveredAt time.Time  `json:"delivered_at"`
-	DecidedAt   *time.Time `json:"decided_at,omitempty"`
+	Outcome     string  `json:"outcome"`
+	Verdict     string  `json:"verdict"`
+	SHA256      string  `json:"sha256,omitempty"`
+	Bytes       int64   `json:"bytes,omitempty"`
+	Frames      int64   `json:"frames,omitempty"`
+	EncodeS     float64 `json:"encode_s,omitempty"`
+	Tools       []Tool  `json:"tools,omitempty"`
+	Path        string  `json:"path,omitempty"` // relative to the result directory, while the file exists
+	FailureCode string  `json:"failure_code,omitempty"`
+	Message     string  `json:"message,omitempty"`
+	Signal      string  `json:"signal,omitempty"`
+	ExitCode    *int    `json:"exit_code,omitempty"`
+	MemoryAvail *int64  `json:"memory_available_bytes,omitempty"`
+	Checks      []Check `json:"checks,omitempty"`
+	// Figures: what the worker's check found (v0.2.8), as the worker wrote it; the pipeline
+	// judges them.
+	Figures     json.RawMessage `json:"figures,omitempty"`
+	DeliveredAt time.Time       `json:"delivered_at"`
+	DecidedAt   *time.Time      `json:"decided_at,omitempty"`
 }
 
 // Worker is a paired worker.
@@ -503,8 +509,26 @@ func hashSpec(spec JobSubmit) string {
 func ptrTime(t time.Time) *time.Time { return &t }
 
 func (j *Job) parse() error {
-	j.rung, j.whisper = nil, nil
+	j.rung, j.whisper, j.cut, j.remux, j.check = nil, nil, nil, nil, nil
 	switch j.Spec.Kind {
+	case KindCut:
+		var p CutParams
+		if err := strictUnmarshal(j.Spec.Params, &p); err != nil {
+			return err
+		}
+		j.cut = &p
+	case KindRemux:
+		var p RemuxParams
+		if err := strictUnmarshal(j.Spec.Params, &p); err != nil {
+			return err
+		}
+		j.remux = &p
+	case KindCheck:
+		var p CheckParams
+		if err := strictUnmarshal(j.Spec.Params, &p); err != nil {
+			return err
+		}
+		j.check = &p
 	case KindRung:
 		var p RungParams
 		if err := strictUnmarshal(j.Spec.Params, &p); err != nil {

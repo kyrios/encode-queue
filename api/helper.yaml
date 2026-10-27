@@ -1109,7 +1109,7 @@ components:
       type: object
       required: [phase]
       properties:
-        phase: { type: string, enum: [downloading, encoding, uploading, paused] }
+        phase: { type: string, enum: [downloading, encoding, checking, uploading, paused], description: "`checking` (v0.2.8): the check step after the encode; a worker may also go on saying `encoding`." }
         fraction: { type: number, minimum: 0, maximum: 1 }
         frames_done: { type: integer }
         frames_total: { type: integer }

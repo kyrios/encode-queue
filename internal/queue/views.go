@@ -17,23 +17,25 @@ type WorkerRef struct {
 
 // AttemptResult is what an attempt delivered, as the pipeline sees it.
 type AttemptResult struct {
-	Outcome     string     `json:"outcome"`
-	Verdict     string     `json:"verdict"`
-	SHA256      string     `json:"sha256,omitempty"`
-	Bytes       int64      `json:"bytes,omitempty"`
-	Frames      int64      `json:"frames,omitempty"`
-	EncodeS     float64    `json:"encode_s,omitempty"`
-	Tools       []Tool     `json:"tools,omitempty"`
-	Path        *string    `json:"path"`
-	FileURL     *string    `json:"file_url"`
-	FailureCode *string    `json:"failure_code"`
-	Message     *string    `json:"message"`
-	Signal      *string    `json:"signal"`
-	ExitCode    *int       `json:"exit_code"`
-	MemoryAvail *int64     `json:"memory_available_bytes"`
-	Checks      []Check    `json:"checks,omitempty"`
-	DeliveredAt time.Time  `json:"delivered_at"`
-	DecidedAt   *time.Time `json:"decided_at"`
+	Outcome     string  `json:"outcome"`
+	Verdict     string  `json:"verdict"`
+	SHA256      string  `json:"sha256,omitempty"`
+	Bytes       int64   `json:"bytes,omitempty"`
+	Frames      int64   `json:"frames,omitempty"`
+	EncodeS     float64 `json:"encode_s,omitempty"`
+	Tools       []Tool  `json:"tools,omitempty"`
+	Path        *string `json:"path"`
+	FileURL     *string `json:"file_url"`
+	FailureCode *string `json:"failure_code"`
+	Message     *string `json:"message"`
+	Signal      *string `json:"signal"`
+	ExitCode    *int    `json:"exit_code"`
+	MemoryAvail *int64  `json:"memory_available_bytes"`
+	Checks      []Check `json:"checks,omitempty"`
+	// Check: the figures the worker's check found (v0.2.8), for the pipeline's floors.
+	Check       json.RawMessage `json:"check,omitempty"`
+	DeliveredAt time.Time       `json:"delivered_at"`
+	DecidedAt   *time.Time      `json:"decided_at"`
 }
 
 // AttemptView is one attempt.
@@ -130,7 +132,7 @@ func (s *Store) attemptView(j *Job, l *Lease) AttemptView {
 		ar := &AttemptResult{Outcome: r.Outcome, Verdict: r.Verdict, SHA256: r.SHA256, Bytes: r.Bytes, Frames: r.Frames,
 			EncodeS: r.EncodeS, Tools: r.Tools, FailureCode: strp(r.FailureCode), Message: strp(r.Message),
 			Signal: strp(r.Signal), ExitCode: r.ExitCode, MemoryAvail: r.MemoryAvail,
-			Checks: r.Checks, DeliveredAt: r.DeliveredAt, DecidedAt: r.DecidedAt}
+			Checks: r.Checks, Check: r.Figures, DeliveredAt: r.DeliveredAt, DecidedAt: r.DecidedAt}
 		if r.Path != "" {
 			p := r.Path
 			u := fmt.Sprintf("/v1/jobs/%s/attempts/%d/file", j.ID, l.Attempt)

@@ -158,6 +158,9 @@ func (s *Store) mismatchTools(w *Worker, j *Job) string {
 	if w.Caps == nil {
 		return "no capabilities"
 	}
+	if needsV028(j) && versionLess(w.Caps.AppVersion, "0.2.8") {
+		return "worker " + w.Caps.AppVersion + " runs no cut, remux or check jobs and no check step (0.2.8)"
+	}
 	req, onlyRef := s.requires(j)
 	if onlyRef && w.Name != s.cfg.ReferenceWorker {
 		return "the reference worker has not said what it runs yet"
@@ -279,6 +282,9 @@ func (s *Store) validate(id string, spec *JobSubmit) error {
 				return errf(422, "invalid", "captions.font is empty")
 			}
 		}
+	}
+	if err := validateKind(j, spec); err != nil {
+		return errf(422, "invalid", "params: %v", err)
 	}
 	if p := j.whisper; p != nil {
 		if p.Language == "" || (p.ModelSHA256 == "" && len(p.Models) == 0) {

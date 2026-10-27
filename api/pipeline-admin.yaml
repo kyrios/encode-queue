@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.5.0
+  version: 1.6.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -738,8 +738,12 @@ components:
       type: string
       pattern: '^wk_[a-z0-9]{8}$'
     JobKind:
-      type: string
-      enum: [rung, whisper]
+      description: |
+        helper.yaml's: `cut`, `remux` and `check` from v0.2.8. They, a rung's `check` step and
+        `audio.mono: measure` go only to workers of 0.2.8 or later; an older worker does not
+        offer the new kinds. `cut` matches on the reference's ffmpeg and libx264, `remux` and
+        `check` on its ffmpeg.
+      $ref: 'helper.yaml#/components/schemas/JobKind'
     JobState:
       type: string
       enum: [queued, leased, checking, done, failed, cancelled]
@@ -784,6 +788,15 @@ components:
     WhisperParams:
       description: helper.yaml's `WhisperParams`, unchanged.
       $ref: 'helper.yaml#/components/schemas/WhisperParams'
+    CutParams:
+      $ref: 'helper.yaml#/components/schemas/CutParams'
+    RemuxParams:
+      $ref: 'helper.yaml#/components/schemas/RemuxParams'
+    CheckParams:
+      description: helper.yaml's; the queue checks that `candidate` is among the job's inputs and that a `compare` names the candidate's width and height.
+      $ref: 'helper.yaml#/components/schemas/CheckParams'
+    CheckFigures:
+      $ref: 'helper.yaml#/components/schemas/CheckFigures'
 
     FileIn:
       type: object
@@ -815,7 +828,10 @@ components:
           oneOf:
             - $ref: '#/components/schemas/RungParams'
             - $ref: '#/components/schemas/WhisperParams'
-          description: '`RungParams` for `rung`, `WhisperParams` for `whisper`.'
+            - $ref: '#/components/schemas/CutParams'
+            - $ref: '#/components/schemas/RemuxParams'
+            - $ref: '#/components/schemas/CheckParams'
+          description: 'The params of its kind: `RungParams`, `WhisperParams`, `CutParams`, `RemuxParams` or `CheckParams`; unknown fields are refused.'
         source: { $ref: '#/components/schemas/SourceIn' }
         inputs:
           type: object
@@ -876,8 +892,8 @@ components:
           type: [object, 'null']
           description: What it delivered.
           properties:
-            outcome: { type: string, enum: [file, failed] }
-            verdict: { type: string, enum: [checking, accepted, rejected, superseded, failed] }
+            outcome: { type: string, enum: [file, figures, failed], description: '`figures`: a `check` job''s result, the figures and no file (v0.2.8).' }
+            verdict: { type: string, enum: [checking, accepted, rejected, superseded, failed], description: 'A result with figures waits as `checking` for the pipeline''s verdict like a file.' }
             sha256: { type: string }
             bytes: { type: integer }
             frames: { type: integer }
@@ -891,6 +907,9 @@ components:
             exit_code: { type: [integer, 'null'], description: 'The tool''s exit status, for `encode_failed`.' }
             memory_available_bytes: { type: [integer, 'null'], description: 'The worker''s available memory right after a `killed`.' }
             checks: { type: array, items: { $ref: '#/components/schemas/Check' } }
+            check:
+              description: What the worker's check found (v0.2.8), as it wrote it, at most 64 KiB; the pipeline compares the figures with its floors.
+              oneOf: [{ $ref: '#/components/schemas/CheckFigures' }, { type: 'null' }]
             delivered_at: { type: string, format: date-time }
             decided_at: { type: [string, 'null'], format: date-time }
     Job:

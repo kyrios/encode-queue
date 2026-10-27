@@ -89,6 +89,13 @@ All three are OpenAPI 3.1.
   threads the worker's own tools kept busy since its last presence.
   Each job has `eta_s` and `finish_at`; `GET /v1/jobs/{id}/candidates` estimates the job on
   every worker for the move menu, and `DELETE /v1/jobs/{id}/assign` ends a pin.
+- **Cut, remux and check** (v0.2.8; ADR-0007: every encode and decode on a worker): the queue
+  takes `cut`, `remux` and `check` jobs with strict params, matches `cut` on the reference's
+  ffmpeg and libx264 and the others on its ffmpeg, and gives them, a rung's `check` step and
+  `audio.mono: measure` only to workers of 0.2.8 or later. A worker's check figures arrive with
+  its file (`result.check`), or alone from a `check` job (`outcome: figures`, no file); they wait
+  as `checking` for the pipeline's verdict like a file, and the job's attempts show them. A
+  worker may report the phase `checking` while it checks.
 - **Late results** are taken and judged while the job is not done; the first accepted wins,
   later ones are `superseded`. A rejected or failed result excludes its worker from that job;
   after `max_failures` (3) the job is `failed`.
