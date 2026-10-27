@@ -182,7 +182,9 @@ is the file `encoder` made before the split.
 - Each release `vX.Y.Z` carries `encode-worker-darwin-arm64` and the toolchain's
   `encode-toolchain-darwin-arm64.tar.gz`, with `SHA256SUMS`, for Slipstream to embed and sign.
 
-Images are tagged with the release (`v0.1.0`) and pinned by Ansible.
+Images are tagged with the release (`v0.1.0`) and pinned by Ansible. From v0.2.4 on, the
+worker image and the release's toolchain tarball are toolchain 2, with every licence in
+`licenses/`.
 
 ## Metrics
 

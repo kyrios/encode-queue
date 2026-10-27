@@ -2,7 +2,9 @@
 # libmp3lame and libass, and whisper-cli, at toolchain/versions, the same build video-pipeline's
 # image uses. The models are not in the image: mount them at EQ_WHISPER_MODELS_DIR. The image
 # holds no address, port or secret.
-ARG TOOLCHAIN=ghcr.io/kyrios/encode-toolchain:1
+# Toolchain 2: the same build as 1, with each component's licence in
+# /opt/encode-toolchain/licenses (ffmpeg here is GPLv3; its source is on the toolchain-2 release).
+ARG TOOLCHAIN=ghcr.io/kyrios/encode-toolchain:2@sha256:51fcf6c0d16c9ad75fdda6e96c2a8d7821e62c126af8cff16159cf039590ec53
 
 FROM golang:1.27.1-trixie AS build
 WORKDIR /src
