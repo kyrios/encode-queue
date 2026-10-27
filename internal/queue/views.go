@@ -82,6 +82,7 @@ type JobView struct {
 	ETAS            *int64            `json:"eta_s"`
 	FinishAt        *time.Time        `json:"finish_at"`
 	Waiting         *Waiting          `json:"waiting"`
+	Cancelled       *Cancelled        `json:"cancelled"`
 	PinnedTo        *PinView          `json:"pinned_to"`
 	Revision        int64             `json:"revision"`
 }
@@ -158,6 +159,7 @@ func (s *Store) jobViewWith(j *Job, fc map[string]time.Time) JobView {
 		v.Quality = strp(q)
 	}
 	v.Waiting = s.waiting(j, s.cfg.Now())
+	v.Cancelled = j.Cancelled
 	if j.Final != "" {
 		v.FinishAt = j.FinishedAt
 	} else if t, ok := fc[j.ID]; ok {
@@ -379,6 +381,7 @@ type WorkerView struct {
 	Endpoint      *string         `json:"endpoint"`
 	LastHandshake *time.Time      `json:"last_handshake"`
 	TunnelState   *string         `json:"tunnel_state"`
+	TunnelSince   *time.Time      `json:"tunnel_since"`
 	System        WorkerSystem    `json:"system"`
 	Transfer      Transfer        `json:"transfer"`
 	RelativeSpeed *float64        `json:"relative_speed"`
@@ -521,6 +524,12 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 			ts := "up"
 			if now.Sub(t) > tunnelUp {
 				ts = "down"
+			} else {
+				since := t // before the next tick has seen it come up
+				if w.tunnelSince != nil {
+					since = w.tunnelSince.UTC()
+				}
+				v.TunnelSince = &since
 			}
 			v.TunnelState = &ts
 		}

@@ -4,6 +4,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -658,7 +659,27 @@ func (s *Server) AdminHandler(withMetrics bool) http.Handler {
 		return nil
 	})
 	h("POST /v1/jobs/{job_id}/cancel", callerNone, func(w http.ResponseWriter, r *http.Request) error {
-		v, err := st.CancelJob(r.PathValue("job_id"))
+		// The body is optional: who cancels and why.
+		var c struct {
+			By     string `json:"by"`
+			Reason string `json:"reason"`
+		}
+		data, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 4<<10))
+		if err != nil {
+			return &queue.Error{Status: 413, Code: "too_large", Detail: "at most 4096 bytes"}
+		}
+		if len(bytes.TrimSpace(data)) > 0 {
+			if err := json.Unmarshal(data, &c); err != nil {
+				return invalid("the body is not the JSON this wants: %v", err)
+			}
+		}
+		if strings.TrimSpace(c.By) == "" {
+			c.By = "admin"
+			if s.caller(r) == callerPipeline {
+				c.By = "pipeline"
+			}
+		}
+		v, err := st.CancelJobBy(r.PathValue("job_id"), c.By, c.Reason)
 		if err != nil {
 			return err
 		}

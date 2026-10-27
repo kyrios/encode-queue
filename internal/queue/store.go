@@ -100,6 +100,7 @@ type Job struct {
 	FinishedAt *time.Time     `json:"finished_at,omitempty"`
 	Revision   int64          `json:"revision"`
 	Pin        *Pin           `json:"pin,omitempty"`
+	Cancelled  *Cancelled     `json:"cancelled,omitempty"`
 	Killed     map[string]int `json:"killed,omitempty"`    // tool kills per worker, which exclude only the second time
 	FailedAt   *time.Time     `json:"failed_at,omitempty"` // the last failure or rejection
 
@@ -163,6 +164,8 @@ type Worker struct {
 	Upload      TransferStats `json:"upload"`
 	Speeds      []*SpeedHist  `json:"speeds,omitempty"` // most recent first
 	MemoryUsed  *int64        `json:"memory_used_bytes,omitempty"`
+
+	tunnelSince *time.Time // when the tunnel last came up; not kept over a restart
 }
 
 // Pin is the worker the Encoder page sent a job to.

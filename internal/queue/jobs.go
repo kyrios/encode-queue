@@ -655,7 +655,17 @@ func (s *Store) removeResultFile(l *Lease) {
 }
 
 // CancelJob cancels a job that is not finished.
-func (s *Store) CancelJob(id string) (JobView, error) {
+func (s *Store) CancelJob(id string) (JobView, error) { return s.CancelJobBy(id, "admin", "") }
+
+// Cancelled is who cancelled a job, why and when.
+type Cancelled struct {
+	By     string    `json:"by"`
+	Reason *string   `json:"reason"`
+	At     time.Time `json:"at"`
+}
+
+// CancelJobBy cancels a job that is not finished and notes who did and why.
+func (s *Store) CancelJobBy(id, by, reason string) (JobView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	j := s.st.Jobs[id]
@@ -680,6 +690,7 @@ func (s *Store) CancelJob(id string) (JobView, error) {
 	j.Final = StateCancelled
 	j.FinishedAt = ptrTime(s.cfg.Now())
 	j.Pin = nil
+	j.Cancelled = &Cancelled{By: oneLine(by, 64), Reason: strp(oneLine(reason, 200)), At: s.cfg.Now().UTC()}
 	s.bump(j)
 	s.touch(true)
 	return s.jobView(j), nil
@@ -698,6 +709,7 @@ func (s *Store) RetryJob(id string) (JobView, error) {
 	}
 	j.Final = ""
 	j.FinishedAt = nil
+	j.Cancelled = nil
 	j.Failures = 0
 	j.Excluded = nil
 	j.Killed = nil
