@@ -2,7 +2,9 @@
 # Builds the toolchain of toolchain/versions into PREFIX/bin: ffmpeg and ffprobe (libx265 with
 # 8, 10 and 12 bits, libx264, libvmaf, libmp3lame, and libass on Linux), whisper-cli (Metal on
 # macOS), and versions.txt and versions.json with each tool's version string as the worker
-# reads it.
+# reads it. PREFIX/licenses gets each component's licence from its source and SOURCES.md:
+# ffmpeg, built with --enable-gpl --enable-version3, is GPLv3, and whoever ships it ships these
+# and points to the source (the toolchain release attaches the tarballs).
 #
 #   toolchain/build.sh PREFIX [WORKDIR]
 #
@@ -136,6 +138,53 @@ fi
 cmake -B build "${wargs[@]}" >/dev/null
 cmake --build build -j"$jobs" --target whisper-cli >/dev/null
 install -m 0755 build/bin/whisper-cli "$prefix/bin/"
+
+echo "== licences"
+lic=$prefix/licenses
+rm -rf "$lic" && mkdir -p "$lic"
+cp "$work/ffmpeg/COPYING.GPLv3" "$lic/ffmpeg-COPYING.GPLv3"
+cp "$work/ffmpeg/LICENSE.md" "$lic/ffmpeg-LICENSE.md"
+cp "$work/x265/COPYING" "$lic/x265-COPYING"
+cp "$work/x264/COPYING" "$lic/x264-COPYING"
+cp "$work/vmaf/LICENSE" "$lic/libvmaf-LICENSE"
+cp "$work/lame/COPYING" "$lic/lame-COPYING"
+cp "$work/lame/LICENSE" "$lic/lame-LICENSE"
+# whisper.cpp's licence covers ggml, which it carries.
+cp "$work/whisper/LICENSE" "$lic/whisper.cpp-LICENSE"
+config=$("$prefix/bin/ffmpeg" -hide_banner -buildconf 2>/dev/null | sed -n 's/^ *\(--.*\)/\1/p' | tr '\n' ' ')
+if [ "$os" = Darwin ]; then
+  system="zlib and the C++ runtime are macOS's own; nothing else is linked."
+else
+  system="libass, fontconfig, freetype, fribidi, harfbuzz, zlib and libgomp are Debian 13's packages, linked from the image; their copyright files are in /usr/share/doc/<package>/copyright there."
+fi
+cat > "$lic/SOURCES.md" <<S
+# encode-toolchain $TOOLCHAIN: what is in it and where its source is
+
+ffmpeg and ffprobe are built with \`--enable-gpl --enable-version3\` and are therefore under
+the **GNU GPL version 3** (ffmpeg-COPYING.GPLv3, ffmpeg-LICENSE.md); the libraries linked into
+them keep their own licences, in this folder. whisper-cli is MIT.
+
+**The Corresponding Source** is attached to the release \`toolchain-$TOOLCHAIN\` of
+https://github.com/kyrios/encode-queue: the six tarballs below, byte for byte, and the build
+script \`toolchain/build.sh\` with \`toolchain/versions\` at that tag.
+
+| component | version | licence | file here | source | sha256 |
+|---|---|---|---|---|---|
+| ffmpeg, ffprobe | $FFMPEG_VERSION | GPL-3.0-or-later (as built) | ffmpeg-COPYING.GPLv3, ffmpeg-LICENSE.md | $FFMPEG_URL | $FFMPEG_SHA256 |
+| x265 | $X265_VERSION | GPL-2.0-or-later | x265-COPYING | $X265_URL | $X265_SHA256 |
+| x264 | r$X264_REV ($X264_COMMIT) | GPL-2.0-or-later | x264-COPYING | $X264_URL | $X264_SHA256 |
+| libvmaf | $VMAF_VERSION | BSD-2-Clause-Patent | libvmaf-LICENSE | $VMAF_URL | $VMAF_SHA256 |
+| LAME (libmp3lame) | $LAME_VERSION | LGPL-2.0-or-later | lame-COPYING, lame-LICENSE | $LAME_URL | $LAME_SHA256 |
+| whisper.cpp (with ggml) | $WHISPER_VERSION | MIT | whisper.cpp-LICENSE | $WHISPER_URL | $WHISPER_SHA256 |
+
+System libraries: $system
+
+ffmpeg's configuration, as \`ffmpeg -buildconf\` prints it:
+
+\`\`\`
+$config
+\`\`\`
+S
 
 echo "== versions"
 cd "$prefix/bin"

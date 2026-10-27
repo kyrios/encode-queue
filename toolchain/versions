@@ -3,7 +3,9 @@
 # so a helper's file is the file `encoder` makes (infra docs/work/encode-helpers.md §1.8).
 # Each source is checked by its sha256 before it is built. TOOLCHAIN names the set: raise it
 # with every change here, and tag the commit toolchain-<TOOLCHAIN>.
-TOOLCHAIN=1
+# 2: the same sources and build as 1, with each component's licence and SOURCES.md in
+# PREFIX/licenses, and the source tarballs on the release (ffmpeg here is GPLv3).
+TOOLCHAIN=2
 
 FFMPEG_VERSION=9.0.2
 FFMPEG_URL=https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
