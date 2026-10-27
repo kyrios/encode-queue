@@ -17,15 +17,45 @@ type RungParams struct {
 	Crop       *struct{ Width, Height, X, Y int } `json:"crop"`
 	VBVMaxrate *int                               `json:"vbv_maxrate_kbps"`
 	VBVBufsize *int                               `json:"vbv_bufsize_kbit"`
-	Audio      *struct {
-		Mode        string `json:"mode"`
-		BitrateKbps int    `json:"bitrate_kbps"`
-		Mono        bool   `json:"mono"`
-	} `json:"audio"`
-	Captions *struct {
+	Audio      *AudioParams                       `json:"audio"`
+	Captions   *struct {
 		Input string `json:"input"`
 		Font  string `json:"font"`
 	} `json:"captions"`
+	Check *CheckSettings `json:"check"`
+}
+
+// AudioParams is what happens to a rung's sound.
+type AudioParams struct {
+	Mode            string   `json:"mode"`
+	BitrateKbps     int      `json:"bitrate_kbps"`
+	Mono            Mono     `json:"mono"`
+	MonoSideBelowDB *float64 `json:"mono_side_below_db"`
+}
+
+// Mono is `mono`: true, false, or "measure" (v0.2.8), which the worker turns into true or false
+// before it builds the command.
+type Mono struct{ On, Measure bool }
+
+func (m *Mono) UnmarshalJSON(b []byte) error {
+	switch string(b) {
+	case "true":
+		*m = Mono{On: true}
+	case "false", "null":
+		*m = Mono{}
+	case `"measure"`:
+		*m = Mono{Measure: true}
+	default:
+		return fmt.Errorf("mono %s: true, false or \"measure\"", b)
+	}
+	return nil
+}
+
+func (m Mono) MarshalJSON() ([]byte, error) {
+	if m.Measure {
+		return []byte(`"measure"`), nil
+	}
+	return []byte(strconv.FormatBool(m.On)), nil
 }
 
 // WhisperParams are a whisper run's settings.
@@ -123,7 +153,7 @@ func rungArgs(ffmpeg string, p RungParams, src string, srcW, srcH int, ass, out 
 	case "copy":
 		a = append(a, "-c:a", "copy")
 	case "aac":
-		if p.Audio.Mono {
+		if p.Audio.Mono.On {
 			a = append(a, "-af", monoPan)
 		}
 		if p.Audio.BitrateKbps < 1 {

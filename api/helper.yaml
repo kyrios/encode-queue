@@ -819,10 +819,11 @@ components:
               default: false
               description: |
                 Downmix two channels that carry one signal: `-af pan=mono|c0=0.5*c0+0.5*c1`.
-                `measure` (v0.2.8): the worker measures first (`-map 0:a:0 -af
-                pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0-0.5*c1,astats=measure_overall=RMS_level:measure_perchannel=RMS_level
-                -f null`, channel 1 the mid, 2 the side) and downmixes when the side is silent or
-                at least `mono_side_below_db` below the mid; `CheckFigures.audio_levels` says what it found.
+                `measure` (v0.2.8), for a source with two channels: the worker measures first
+                (`-map 0:a:0 -af pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0-0.5*c1,astats=measure_perchannel=RMS_level:measure_overall=none
+                -f null -`, channel 1 the mid, 2 the side) and downmixes when the side is silent or
+                at least `mono_side_below_db` below the mid. A level it cannot read counts as
+                stereo. `CheckFigures.audio_levels` says what it found.
             mono_side_below_db: { type: number, default: 40 }
         check: { $ref: '#/components/schemas/CheckSettings' }
         captions:
@@ -868,8 +869,9 @@ components:
       title: remux
       description: |
         The source's streams in a new MP4, untouched (v0.2.8; the top rung when the source is
-        already what that rung would be): `-i SRC -map 0:v:0 [-map 0:a:0] -c copy [-tag:v hvc1]
-        -movflags +faststart OUT`.
+        already what that rung would be): `-i SRC -map 0:v:0 -map 0:a:0? -c copy [-tag:v hvc1]
+        -movflags +faststart OUT`. `framemd5` compares the video and, when there is one, the
+        first sound stream.
       properties:
         hvc1_tag: { type: boolean, default: false, description: For an HEVC source. }
         check: { $ref: '#/components/schemas/CheckSettings' }
@@ -886,6 +888,9 @@ components:
       required: [check]
       properties:
         candidate: { type: string, default: candidate, description: The job input holding the file to check. }
+        width: { type: integer, description: 'The candidate''s width, from the pipeline''s header check: `compare` scales the reference to it.' }
+        height: { type: integer }
+        audio: { type: boolean, default: true, description: 'Whether `framemd5` lists the sound too.' }
         check: { $ref: '#/components/schemas/CheckSettings' }
     CheckSettings:
       type: object

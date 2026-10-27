@@ -31,11 +31,7 @@ func TestRealFFmpeg(t *testing.T) {
 		{Rung: "360", Codec: "libx265", Preset: "ultrafast", CRF: 28, Width: 320, Height: 180},
 		{Rung: "h264", Codec: "libx264", Preset: "veryfast", CRF: 23, Width: 640, Height: 360},
 	} {
-		p.Audio = &struct {
-			Mode        string `json:"mode"`
-			BitrateKbps int    `json:"bitrate_kbps"`
-			Mono        bool   `json:"mono"`
-		}{Mode: "aac", BitrateKbps: 64, Mono: true}
+		p.Audio = &AudioParams{Mode: "aac", BitrateKbps: 64, Mono: Mono{On: true}}
 		out := filepath.Join(dir, p.Rung+".mp4")
 		args, err := rungArgs(ff, p, src, 640, 360, "", out, 2)
 		if err != nil {

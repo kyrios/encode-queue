@@ -12,9 +12,14 @@ Linux server or Mac. **Slipstream** is the encoder helper's name on every machin
   The peer list is the queue's state.
 - **The worker** (`encode-worker`) pairs by its public key, long-polls for a job, fetches the
   source with range requests, runs ffmpeg (libx265, libx264) or whisper.cpp at `nice 19`, reports
-  progress and log lines, and uploads the result over tus.
-- **The pipeline judges.** The queue never checks quality: the pipeline accepts or rejects every
-  result against ADR-0005's floors. The first accepted result wins.
+  progress and log lines, and uploads the result over tus. Jobs are rungs, whisper runs, and
+  from v0.2.8 cuts, remuxes and checks: every encode and every decode runs on a worker.
+- **The worker measures, the pipeline judges** (v0.2.8). After a rung, a cut or a remux the
+  same lease checks the result: a full decode, its frames and length, SSIM, PSNR-Y and XPSNR
+  (and VMAF when asked) against the source, the packets of a remux. The figures go with the
+  file; the pipeline, which reads headers only, accepts or rejects them against ADR-0005's
+  floors, which never reach a worker. The queue never judges quality. The first accepted
+  result wins. A `check` job checks a file no worker encoded, as it streams from the queue.
 
 ## The APIs
 
@@ -171,10 +176,16 @@ nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name �
 
 Without `--control stdio`, `--control <path>` serves [worker-control.yaml](api/worker-control.yaml)
 on a Unix socket instead.
+`encode-worker selftest` encodes, cuts and remuxes a three-second clip with the machine's own
+ffmpeg, checks each result and prints the figures; it exits 1 with the problems. A lease works
+in its own folder below `EQ_WORK_DIR`, deleted however the lease ends; at start the worker
+deletes any lease folder a crash left.
+
 `encode-worker versions` prints what the worker runs, exactly as the queue will compare it. The
 worker builds ffmpeg's arguments itself from the job's structured settings, in the order
 infra's `video-encode` did (a test compares them with `video-encode`'s own), so a worker's file
-is the file `encoder` made before the split.
+is the file `encoder` made before the split. The cut and the check run the commands
+video-pipeline ran itself before v0.2.8 (testdata/pipeline-v028-args.json).
 
 ### The images
 

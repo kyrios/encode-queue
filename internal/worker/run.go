@@ -350,6 +350,9 @@ func (r *run) signal(sig syscall.Signal) {
 
 func (r *run) work(ctx context.Context) error {
 	l := r.l
+	if l.Job.Kind == "check" {
+		return r.workCheck(ctx)
+	}
 	wait := r.w.waitUnpaused
 	src := filepath.Join(r.dir, "source")
 	total := l.Job.Source.Bytes
@@ -382,6 +385,11 @@ func (r *run) work(ctx context.Context) error {
 
 	out := filepath.Join(r.dir, "out", l.Result.Name)
 	var tools []Tool
+	// The check after the encode (v0.2.8), and what it needs to know of the result.
+	var check *CheckSettings
+	var levels *AudioLevels
+	w, h := l.Job.Source.Width, l.Job.Source.Height
+	sameFrames := false // the result has the source's frames: a rung's frame count is the source's
 	r.mu.Lock()
 	r.prog = Progress{Phase: "encoding"}
 	r.encodeStart = time.Now()
@@ -399,6 +407,13 @@ func (r *run) work(ctx context.Context) error {
 				return fail("file_not_found", "input %s", p.Captions.Input)
 			}
 		}
+		if p.Audio != nil && p.Audio.Mono.Measure {
+			var err error
+			if levels, err = r.measureMono(ctx, src, p.Audio); err != nil {
+				return err
+			}
+		}
+		check, w, h, sameFrames = p.Check, p.Width, p.Height, true
 		args, err := rungArgs(r.w.cfg.FFmpeg, p, src, l.Job.Source.Width, l.Job.Source.Height, ass, out, r.w.cfg.CPUThreads)
 		if err != nil {
 			return fail("other", "%v", err)
@@ -408,6 +423,33 @@ func (r *run) work(ctx context.Context) error {
 			return err
 		}
 		tools = r.w.toolsNamed("ffmpeg", "libx265", "libx264")
+	case "cut":
+		var p CutParams
+		if err := json.Unmarshal(l.Params, &p); err != nil {
+			return fail("other", "params: %v", err)
+		}
+		args, err := cutArgs(r.w.cfg.FFmpeg, p, src, out)
+		if err != nil {
+			return fail("other", "%v", err)
+		}
+		check = p.Check
+		r.log("info", "worker", strings.Join(args, " "))
+		if err := r.runTool(ctx, args, "ffmpeg", r.ffmpegProgress()); err != nil {
+			return err
+		}
+		tools = r.w.toolsNamed("ffmpeg", "libx264")
+	case "remux":
+		var p RemuxParams
+		if err := json.Unmarshal(l.Params, &p); err != nil {
+			return fail("other", "params: %v", err)
+		}
+		check, sameFrames = p.Check, true
+		args := remuxArgs(r.w.cfg.FFmpeg, p, src, out)
+		r.log("info", "worker", strings.Join(args, " "))
+		if err := r.runTool(ctx, args, "ffmpeg", r.ffmpegProgress()); err != nil {
+			return err
+		}
+		tools = r.w.toolsNamed("ffmpeg")
 	case "whisper":
 		var p WhisperParams
 		if err := json.Unmarshal(l.Params, &p); err != nil {
@@ -467,6 +509,23 @@ func (r *run) work(ctx context.Context) error {
 	}
 	r.log("info", "worker", fmt.Sprintf("made %s, %d bytes in %.1f s", l.Result.Name, fi.Size(), r.encodeTime.Seconds()))
 
+	var figures *CheckFigures
+	if check != nil {
+		var srcFrames *int64
+		if sameFrames && frames > 0 {
+			srcFrames = &frames
+		}
+		if figures, err = r.checkResult(ctx, check, out, src, w, h, sameFrames, srcFrames, true); err != nil {
+			return err
+		}
+	}
+	if levels != nil {
+		if figures == nil {
+			figures = &CheckFigures{}
+		}
+		figures.AudioLevels = levels
+	}
+
 	size := fi.Size()
 	r.setPhase("uploading")
 	loc, sum, err := r.w.api.Upload(ctx, l.ID, out, r.w.cfg.ChunkBytes, func(n int64) {
@@ -482,6 +541,9 @@ func (r *run) work(ctx context.Context) error {
 	body := map[string]any{"outcome": "file", "file": loc, "sha256": sum, "encode_s": round1(r.encodeTime.Seconds()), "tools": tools}
 	if frames > 0 {
 		body["frames"] = frames
+	}
+	if figures != nil {
+		body["check"] = figures
 	}
 	res, err := r.w.api.PutResult(ctx, l.ID, body)
 	if err != nil {
@@ -580,6 +642,13 @@ func (r *run) ffmpegProgress() func(map[string]string) {
 // runTool runs a tool in its own process group, stdout as -progress blocks when onBlock is
 // set, stderr as log lines. A cancelled ctx kills the group.
 func (r *run) runTool(ctx context.Context, args []string, source string, onBlock func(map[string]string)) error {
+	return r.runToolTo(ctx, args, source, onBlock, nil, nil)
+}
+
+// runToolTo is runTool with stdout's lines to outLine instead of the log (when there is no
+// onBlock), and every stderr line to errLine as well as the log.
+func (r *run) runToolTo(ctx context.Context, args []string, source string, onBlock func(map[string]string),
+	outLine, errLine func(string)) error {
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = r.dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -627,7 +696,10 @@ func (r *run) runTool(ctx context.Context, args []string, source string, onBlock
 		for sc.Scan() {
 			line := strings.TrimSpace(sc.Text())
 			if onBlock == nil {
-				if line != "" {
+				switch {
+				case outLine != nil:
+					outLine(line)
+				case line != "":
 					r.log("info", source, line)
 				}
 				continue
@@ -650,6 +722,9 @@ func (r *run) runTool(ctx context.Context, args []string, source string, onBlock
 			line := strings.TrimSpace(sc.Text())
 			if line == "" {
 				continue
+			}
+			if errLine != nil {
+				errLine(line)
 			}
 			if source == "whisper" {
 				if m := whisperProgressRe.FindStringSubmatch(line); m != nil {
