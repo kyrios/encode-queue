@@ -121,6 +121,7 @@ docker run --rm -p 8090:8090 -p 51821:51821/udp -v /srv/eq:/data \
 | `EQ_WHISPER_VERSION` | the whisper.cpp release, when there is no `versions.txt` beside `whisper-cli` (the toolchain has one) |
 | `EQ_WHISPER_MODELS_DIR` | the `*.bin` models, found by sha256 (`/models` in the image) |
 | `EQ_FONTS` | font families to announce besides fontconfig's, comma-separated |
+| `EQ_HOST_APP_NAME`, `EQ_HOST_APP_VERSION` | the app the worker runs inside (Slipstream and its version), shown on the Encoder page; never compared with the queue's minimum |
 | `EQ_CPU_THREADS` | x265's pool (`pools=N`) and whisper.cpp's threads; default the tools' own |
 | `EQ_GPU` | whisper.cpp may use the GPU; default false |
 | `EQ_MAX_PARALLEL_JOBS` | default 1 |
@@ -198,7 +199,7 @@ otherwise). Per-worker series carry `worker_id` and
 | `encode_queue_worker_speed` | gauge | Times real time the worker reported last, summed over its active leases; 0 when idle. |
 | `encode_queue_worker_last_seen_timestamp_seconds` | gauge | When the worker last called, in Unix seconds. |
 | `encode_queue_worker_tool_info` | gauge | The tool versions the worker runs, as labels; always 1. |
-| `encode_queue_worker_info` | gauge | The worker's version, OS, CPU model and architecture, as labels; always 1. |
+| `encode_queue_worker_info` | gauge | The worker's version, OS, CPU model, architecture and the app it runs inside (host_app, host_app_version), as labels; always 1. |
 | `encode_queue_worker_cpu_threads` | gauge | Logical CPUs the worker can use. |
 | `encode_queue_worker_cpu_threads_in_use` | gauge | The encoder's thread limit: the worker's cpu_threads limit, or all its CPUs. |
 | `encode_queue_worker_memory_bytes` | gauge | The worker's memory. |

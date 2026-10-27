@@ -388,6 +388,12 @@ func (s *Store) PutCapabilities(id string, c Capabilities) (CapabilityReport, er
 	if s.cfg.MinAppVersion != "" && versionLess(c.AppVersion, s.cfg.MinAppVersion) {
 		return CapabilityReport{}, errf(426, "app_too_old", "%s is below %s", c.AppVersion, s.cfg.MinAppVersion)
 	}
+	if h := c.HostApp; h != nil {
+		h.Name, h.Version = oneLine(h.Name, 64), oneLine(h.Version, 64)
+		if h.Name == "" {
+			c.HostApp = nil
+		}
+	}
 	w.Caps = &c
 	s.touch(true)
 	return s.report(w), nil

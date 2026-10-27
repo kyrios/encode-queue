@@ -563,6 +563,8 @@ func (s *Store) JobCandidates(id string) (Candidates, error) {
 	}
 	sort.Slice(ws, func(a, b int) bool { return ws[a].Name < ws[b].Name })
 	active := s.activeLease(j)
+	st := s.jobState(j)
+	movable := st == StateQueued || st == StateLeased
 	ut := func(t time.Time) *time.Time {
 		t = t.UTC().Truncate(time.Second)
 		return &t
@@ -585,12 +587,19 @@ func (s *Store) JobCandidates(id string) (Candidates, error) {
 			out.Items = append(out.Items, c)
 			continue
 		}
+		// Every candidate that is not available says why.
+		if !movable {
+			code, why := "not_movable", fmt.Sprintf("%s is %s; only queued or leased jobs move to a worker", j.ID, st)
+			c.ReasonCode, c.Reason = &code, &why
+			out.Items = append(out.Items, c)
+			continue
+		}
 		if err := s.refusal(w, j, now); err != nil {
 			c.ReasonCode, c.Reason = &err.Code, &err.Detail
 			out.Items = append(out.Items, c)
 			continue
 		}
-		c.Available = j.Final == ""
+		c.Available = true
 		if f := s.freeAt(w, now, j.ID); f != nil {
 			c.FreeAt = ut(*f)
 			if d := s.encodeSeconds(w, j); d > 0 {

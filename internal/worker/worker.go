@@ -18,6 +18,8 @@ import (
 // Config is the worker's settings.
 type Config struct {
 	Version        string
+	HostAppName    string // the app the worker runs inside (Slipstream), with its version
+	HostAppVersion string
 	StateDir       string
 	WorkDir        string
 	FFmpeg         string

@@ -63,6 +63,12 @@ type Tool struct {
 	Version string `json:"version"`
 }
 
+// HostApp is the app a worker runs inside (Slipstream); never compared with a minimum.
+type HostApp struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
 // Model is a whisper model by its sha256.
 type Model struct {
 	Name   string `json:"name"`
@@ -80,6 +86,7 @@ type Limits struct {
 type Capabilities struct {
 	AppVersion string          `json:"app_version"`
 	OS         string          `json:"os"`
+	HostApp    *HostApp        `json:"host_app,omitempty"`
 	Tools      []Tool          `json:"tools"`
 	Models     []Model         `json:"models,omitempty"`
 	Fonts      []string        `json:"fonts,omitempty"`

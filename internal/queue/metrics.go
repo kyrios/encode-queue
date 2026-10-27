@@ -34,7 +34,7 @@ var MetricHelp = []struct{ Name, Type, Help string }{
 	{"encode_queue_worker_speed", "gauge", "Times real time the worker reported last, summed over its active leases; 0 when idle."},
 	{"encode_queue_worker_last_seen_timestamp_seconds", "gauge", "When the worker last called, in Unix seconds."},
 	{"encode_queue_worker_tool_info", "gauge", "The tool versions the worker runs, as labels; always 1."},
-	{"encode_queue_worker_info", "gauge", "The worker's version, OS, CPU model and architecture, as labels; always 1."},
+	{"encode_queue_worker_info", "gauge", "The worker's version, OS, CPU model, architecture and the app it runs inside (host_app, host_app_version), as labels; always 1."},
 	{"encode_queue_worker_cpu_threads", "gauge", "Logical CPUs the worker can use."},
 	{"encode_queue_worker_cpu_threads_in_use", "gauge", "The encoder's thread limit: the worker's cpu_threads limit, or all its CPUs."},
 	{"encode_queue_worker_memory_bytes", "gauge", "The worker's memory."},
@@ -143,8 +143,12 @@ func (s *Store) WriteMetrics(w io.Writer, version string) {
 				}
 				return esc(*p)
 			}
-			add("encode_queue_worker_info", l+fmt.Sprintf(`,app_version="%s",os="%s",cpu_model="%s",arch="%s"`,
-				esc(wk.Caps.AppVersion), esc(wk.Caps.OS), val(sys.CPUModel), val(sys.Arch)), 1)
+			hostName, hostVersion := "", ""
+			if h := wk.Caps.HostApp; h != nil {
+				hostName, hostVersion = esc(h.Name), esc(h.Version)
+			}
+			add("encode_queue_worker_info", l+fmt.Sprintf(`,app_version="%s",os="%s",cpu_model="%s",arch="%s",host_app="%s",host_app_version="%s"`,
+				esc(wk.Caps.AppVersion), esc(wk.Caps.OS), val(sys.CPUModel), val(sys.Arch), hostName, hostVersion), 1)
 		}
 		if sys.CPUThreads != nil {
 			add("encode_queue_worker_cpu_threads", l, float64(*sys.CPUThreads))
