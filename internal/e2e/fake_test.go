@@ -55,6 +55,12 @@ func fakeTool(args []string) int {
 		}
 	}
 	out := args[len(args)-1]
+	// A calibration class's encode (-frames:v, worker/calibrate.go) takes FAKE_CALIBRATE_MS.
+	if strings.Contains(argv, "-frames:v") {
+		if ms, _ := strconv.Atoi(os.Getenv("FAKE_CALIBRATE_MS")); ms > 0 {
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
+	}
 	if os.Getenv("FAKE_FAIL") == "1" {
 		fmt.Fprintln(os.Stderr, "x265 [error]: fake failure")
 		return 1

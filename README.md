@@ -97,6 +97,9 @@ All three are OpenAPI 3.1.
   ffmpeg, libx265 or libx264 change, every worker (the reference too) makes the same 10 s 4K clip
   with its own ffmpeg, bit-exact, and encodes it once per rung class of the ladder with the
   rung's real flags, about a minute; `relative_speed_source` says `calibrated` or `measured`.
+  The worker claims while it calibrates (v0.2.11): a calibration beside a job measures low, and
+  the first measured result overrides it, but a worker that waited for its calibration stood
+  "bereit" claiming nothing, a minute or more after every toolchain change.
   `EQ_CALIBRATE=false` turns it off. Without either, `speed_estimate` gives the live fps of the
   rung job it encodes against the reference's median on that class. `threads_busy` is how many
   threads the worker's own tools kept busy since its last presence.

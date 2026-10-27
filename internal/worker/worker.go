@@ -424,27 +424,13 @@ func (w *Worker) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() { defer wg.Done(); w.presenceLoop(ctx) }()
-	// The calibration before the first job: it should not share the CPU with one. A failure
-	// leaves the worker uncalibrated, never unusable.
+	// The calibration beside the claims, not before them (v0.2.11; Thorsten's live session,
+	// 2026-10-27: both Macs sat "bereit" and claimed nothing while Slipstream 1.3.1's new
+	// toolchain made them calibrate again). A calibration beside a job measures low; the first
+	// measured result overrides it. A failure leaves the worker uncalibrated, never unusable.
 	if w.cfg.Calibrate {
-		if c, err := w.calibrate(ctx); err != nil {
-			w.cfg.Log.Warn("calibration failed", "err", err)
-		} else {
-			if err := w.calibrateWhisper(ctx, c); err != nil {
-				w.cfg.Log.Warn("whisper calibration failed", "err", err)
-			}
-			w.saveCalibration(c)
-			w.caps.Calibration = c
-			rep, err := w.api.PutCapabilities(ctx, w.caps)
-			if err != nil {
-				w.cfg.Log.Warn("calibration not sent", "err", err)
-			} else if len(rep.WantedModels) > 0 {
-				// The models the queue wants, in the background: a 1.6 GB download must not
-				// hold back the jobs this worker can run now.
-				wg.Add(1)
-				go func() { defer wg.Done(); w.modelLoop(ctx, c, rep.WantedModels) }()
-			}
-		}
+		wg.Add(1)
+		go func() { defer wg.Done(); w.calibrateAll(ctx, &wg) }()
 	}
 	for i := 0; i < maxSlots; i++ {
 		wg.Add(1)
@@ -468,7 +454,10 @@ func (w *Worker) hello(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	rep, err := w.api.PutCapabilities(ctx, w.caps)
+	w.mu.Lock()
+	caps := w.caps // the calibration beside it may change it
+	w.mu.Unlock()
+	rep, err := w.api.PutCapabilities(ctx, caps)
 	if err != nil {
 		var ae *APIError
 		if errors.As(err, &ae) && ae.Code == "app_too_old" {
@@ -567,6 +556,35 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 		case <-time.After(every):
 		case <-ch: // a pause or resume reaches the queue at once
 		}
+	}
+}
+
+// calibrateAll makes the calibration, times the held models, sends both, and fetches the models
+// the queue wants then, all while the claim loops run.
+func (w *Worker) calibrateAll(ctx context.Context, wg *sync.WaitGroup) {
+	c, err := w.calibrate(ctx)
+	if err != nil {
+		w.cfg.Log.Warn("calibration failed", "err", err)
+		return
+	}
+	if err := w.calibrateWhisper(ctx, c); err != nil {
+		w.cfg.Log.Warn("whisper calibration failed", "err", err)
+	}
+	w.saveCalibration(c)
+	w.mu.Lock()
+	w.caps.Calibration = c
+	caps := w.caps
+	w.mu.Unlock()
+	rep, err := w.api.PutCapabilities(ctx, caps)
+	if err != nil {
+		w.cfg.Log.Warn("calibration not sent", "err", err)
+		return
+	}
+	if len(rep.WantedModels) > 0 {
+		// The models the queue wants, in the background too: a 1.6 GB download must not hold
+		// back the jobs this worker can run now.
+		wg.Add(1)
+		go func() { defer wg.Done(); w.modelLoop(ctx, c, rep.WantedModels) }()
 	}
 }
 
