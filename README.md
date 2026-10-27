@@ -151,12 +151,16 @@ is the file `encoder` made before the split.
 ### The images
 
 - `ghcr.io/kyrios/encode-queue`: the queue, on distroless.
-- `ghcr.io/kyrios/encode-worker`: the worker on Debian 13 with Debian's ffmpeg, libx265 and
-  libx264, `fonts-inter`, and whisper.cpp built from `v1.9.5` (commit `d1be6fd`, as infra's
-  `encoder_whisper_version` and `encoder_whisper_commit`) for x86-64-v3. Models are not in the
-  image; mount them at `/models`.
-- The macOS arm64 worker is a release asset (`encode-worker-darwin-arm64`), for Slipstream to
-  embed and sign.
+- `ghcr.io/kyrios/encode-toolchain:<N>`: the one toolchain of [`toolchain/versions`](toolchain/versions),
+  built from source: ffmpeg with libx265 (8, 10 and 12 bits), libx264, libvmaf, libmp3lame and
+  libass, and whisper-cli, in `/opt/encode-toolchain/bin` (on `PATH`) with `versions.txt`, on
+  Debian 13. The worker image and video-pipeline's image build FROM it, so every worker and the
+  pipeline run the same build. Tag `toolchain-<N>` releases it, with
+  `encode-toolchain-darwin-arm64.tar.gz` (whisper.cpp with Metal; no libass) for Macs.
+- `ghcr.io/kyrios/encode-worker`: the worker on that toolchain. Models are not in the image;
+  mount them at `/models` or point `EQ_WHISPER_MODELS_DIR` at a read-only mount.
+- Each release `vX.Y.Z` carries `encode-worker-darwin-arm64` and the toolchain's
+  `encode-toolchain-darwin-arm64.tar.gz`, with `SHA256SUMS`, for Slipstream to embed and sign.
 
 Images are tagged with the release (`v0.1.0`) and pinned by Ansible.
 
