@@ -29,7 +29,8 @@ All three are OpenAPI 3.1.
 ## How it behaves
 
 - **Priorities**: `now`, then `stage1`, then `stage2`, then `archive`, and a place within each,
-  which the Encoder page can change. A worker gets the first job it may run. `now` (the Encoder
+  which the Encoder page can change. A worker gets the first job in that order it may run and
+  would finish about as soon as any other (**Which worker gets a job**, below). `now` (the Encoder
   page's "Sofort") is for a job someone in Funkhaus waits for: it never preempts, and a worker
   takes one in its **extra slot** beside other work, on top of `max_parallel_jobs`, while its free
   RAM (memory less the last presence's use less 1 GB) holds the job's expected peak (a 4K
@@ -38,8 +39,28 @@ All three are OpenAPI 3.1.
   exactly, as text. Without `requires` a job requires the tools of the reference worker
   (`EQ_REFERENCE_WORKER`, `encoder`'s own worker container): ffmpeg, libx265 and libx264 for a
   rung, whisper.cpp for whisper (and ffmpeg when the source is not WAV), plus the model by its
-  sha256 and the captions' font. Until the reference worker has said what it runs, only it gets
-  jobs.
+  sha256 and the captions' font. A job with burnt-in captions also requires the reference's
+  libass (v0.2.7; toolchain 3 builds it on both platforms, reported from its versions.txt), and
+  the worker lists fonts with the toolchain's fc-list and points `FONTCONFIG_FILE` at its
+  fonts.conf (Inter only) unless something set it. Until the reference worker has said what it
+  runs, only it gets jobs.
+- **Which worker gets a job** (v0.2.7): when a worker asks, the queue estimates for each eligible
+  worker the expected completion time, ECT = until it has a free slot + the source's bytes over
+  its measured download rate + the compute + the expected result's bytes
+  (`result.expected_bytes`) over its upload rate. The compute is the job's frames over its
+  measured or calibrated fps on the rung class (whisper: audio seconds over its speed with the
+  model it would run), scaled by the threads it may use over those free of other programs
+  (`other_load` in its presence) and its own jobs, times a correction learned from its results.
+  The asking worker takes the job when its ECT is at most 1.25 times the best, or when the job
+  waited longer than 30 s (`now`), 2 min (`stage1`), 15 min (`stage2`) or 1 h (`archive`); else
+  the queue looks at the next job for it. A job sent by hand, or one nobody's speed is known
+  for, goes to whoever asks. Each attempt keeps its ECT and the runner-up's.
+- **Whisper models** (v0.2.7): a job may list `models` best first. A worker holding one may take
+  it unless a connected worker holds a better one; the lease names the one chosen. The queue
+  tells each worker which models to hold (`wanted_models`): small for caption timing and the
+  best one it runs at least `EQ_WHISPER_MIN_SPEED_PCT` per cent of real time by its calibration.
+  The worker fetches those from ggerganov/whisper.cpp at a pinned revision only, checks their
+  sha256 and times them on the calibration's speech clip.
 - **Leases** last 120 s and are renewed every 30 s with the progress; the long poll waits 25 s;
   presence every 30 s, offline after three missed. A lease that runs out, a worker that goes
   offline, a removed worker: the job goes back to `queued`, the next attempt with the next number.
@@ -91,6 +112,7 @@ Every address, port, subnet and path comes from the environment; the image has n
 | `EQ_WG_PRIVATE_KEY_FILE` | the queue's WireGuard private key (base64, as `wg genkey` prints it); default `$EQ_STATE_DIR/wireguard.key`, made on first start when missing |
 | `EQ_WG_KEEPALIVE_S` | the keepalive workers get; default 25 |
 | `EQ_REFERENCE_WORKER` | the name of the worker whose tools jobs require by default |
+| `EQ_WHISPER_MIN_SPEED_PCT` | how fast a worker must transcribe with a model, in per cent of real time, for the queue to want it there; default 100 |
 | `EQ_MIN_APP_VERSION` | workers below it get `426` |
 | `EQ_MAX_FAILURES` | default 3 |
 | `EQ_EXCLUDE_BACKOFF_S` | default 600: how long a job that every able worker is excluded from waits before the reference worker gets it again |
@@ -134,7 +156,8 @@ docker run --rm -p 8090:8090 -p 51821:51821/udp -v /srv/eq:/data \
 | `EQ_WORK_DIR` | where sources and results are while a job runs; default `$EQ_WORKER_STATE_DIR/work` |
 | `EQ_FFMPEG`, `EQ_WHISPER_CLI` | the tools; default `ffmpeg`, `whisper-cli` from `PATH` |
 | `EQ_WHISPER_VERSION` | the whisper.cpp release, when there is no `versions.txt` beside `whisper-cli` (the toolchain has one) |
-| `EQ_WHISPER_MODELS_DIR` | the `*.bin` models, found by sha256 (`/models` in the image) |
+| `EQ_WHISPER_MODELS_DIR` | the `*.bin` models, found by sha256 (`/models` in the image); the models the queue wants are fetched into it, or into `STATE/models` without it (a read-only folder reports each fetch as failed) |
+| `EQ_CALIBRATE` | `false` skips the calibration at pairing (`true` by default) |
 | `EQ_FONTS` | font families to announce besides fontconfig's, comma-separated |
 | `EQ_HOST_APP_NAME`, `EQ_HOST_APP_VERSION` | the app the worker runs inside (Slipstream and its version), shown on the Encoder page; never compared with the queue's minimum |
 | `EQ_CPU_THREADS` | x265's pool (`pools=N`) and whisper.cpp's threads; default the tools' own |
@@ -166,7 +189,10 @@ nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name �
   `idle`, `result` (`lease_id`, `title`, `verdict`: `accepted`, `rejected` or `given_back`,
   `check`), `paused` (`until` or null), `update` (`latest`, when the queue wants a newer app),
   `tools` (`tools: [{name, version}]`), `log` (`lease_id`, `line`), `calibrating` (`classes`,
-  when the calibration clip starts) and `calibrated` (`classes`, when it is done).
+  when the calibration clip starts) and `calibrated` (`classes`, when it is done), and `model`
+  for each whisper model the queue wants (`name`, `sha256`, `state`: `wanted`, `downloading`,
+  `checking`, `calibrating`, `ready` or `failed`; `bytes`, `bytes_done` while downloading,
+  `speed` in times real time once timed, `reason` when it failed).
 - **Standard error** is the log for people.
 
 Without `--control stdio`, `--control <path>` serves [worker-control.yaml](api/worker-control.yaml)
