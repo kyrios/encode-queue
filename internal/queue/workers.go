@@ -321,6 +321,9 @@ type CapabilityReport struct {
 	Accepted      []string     `json:"accepted"`
 	Refused       []Refusal    `json:"refused,omitempty"`
 	MinAppVersion string       `json:"min_app_version"`
+	// WantedModels: the whisper models this worker should hold (v0.2.7); it fetches the ones it
+	// lacks from their pinned URL and checks their sha256.
+	WantedModels []CatalogueModel `json:"wanted_models"`
 }
 
 // Refusal is a kind a worker may not take.
@@ -335,6 +338,7 @@ func (s *Store) report(w *Worker) CapabilityReport {
 	acc, ref := s.kinds(w)
 	r.Accepted = acc
 	r.Refused = ref
+	r.WantedModels = s.wantedModels(w)
 	return r
 }
 

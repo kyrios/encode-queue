@@ -91,6 +91,7 @@ func run(cmd string) error {
 		ExcludeBackoff:  env.Seconds("EQ_EXCLUDE_BACKOFF_S"),
 		ResultReserve:   env.Int64("EQ_RESULT_RESERVE_BYTES", 2<<30),
 		ReferenceWorker: env.String("EQ_REFERENCE_WORKER", ""),
+		WhisperMinSpeed: float64(env.Int("EQ_WHISPER_MIN_SPEED_PCT", 100)) / 100,
 		MinAppVersion:   env.String("EQ_MIN_APP_VERSION", ""),
 		Endpoint:        env.Required("EQ_WG_ENDPOINT"),
 		Keepalive:       env.Int("EQ_WG_KEEPALIVE_S", 25),

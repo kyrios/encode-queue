@@ -90,3 +90,62 @@ func TestWhisperModelsAreChecked(t *testing.T) {
 		t.Fatalf("quality %v", v.Quality)
 	}
 }
+
+// timed gives a worker a calibration with whisper speeds by model and its RAM.
+func (e *env) timed(wid string, memory int64, speeds map[string]float64) {
+	e.t.Helper()
+	hw, _ := json.Marshal(map[string]any{"memory_bytes": memory})
+	cal := &Calibration{ClipSHA256: clipA, Tools: reference[:3], Classes: []CalibratedClass{{Class: hd, Frames: 100, FPS: 100}}}
+	var models []Model
+	for sha, v := range speeds {
+		cal.Whisper = append(cal.Whisper, CalibratedModel{SHA256: sha, Name: catalogue[sha].Name, Whisper: "v1.9.5", AudioS: 21.6, Speed: v})
+		models = append(models, Model{Name: catalogue[sha].Name, SHA256: sha})
+	}
+	if _, err := e.s.PutCapabilities(wid, Capabilities{AppVersion: "0.2.7", OS: "test", Tools: reference, Models: models, Hardware: hw, Calibration: cal}); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+func names(ms []CatalogueModel) []string {
+	var out []string
+	for _, m := range ms {
+		out = append(out, m.Name)
+	}
+	return out
+}
+
+// Thorsten: "Choose the whisper model based on measured performance at first launch." The
+// measurement decides, not the platform.
+func TestWantedModelsFromTheMeasuredSpeed(t *testing.T) {
+	e := newEnv(t, "")
+	w := e.worker("mac", reference)
+	wanted := func() []string { return names(must(e.s.GetCapabilities(w)).WantedModels) }
+	if got := wanted(); len(got) != 1 || got[0] != "ggml-small.bin" {
+		t.Fatalf("before any whisper timing: %v", got)
+	}
+	// The Mac on Metal: small at 12× real time, large-v3-turbo guessed at 6×.
+	e.timed(w, 32<<30, map[string]float64{SHASmall: 12})
+	if got := wanted(); len(got) != 2 || got[1] != "ggml-large-v3-turbo.bin" {
+		t.Fatalf("a fast Mac: %v", got)
+	}
+	rep := must(e.s.GetCapabilities(w))
+	if u := rep.WantedModels[1]; u.Bytes != 1624555275 || u.SHA256 != SHALargeV3Turbo || u.URL != "https://huggingface.co/ggerganov/whisper.cpp/resolve/"+WhisperRevision+"/ggml-large-v3-turbo.bin" {
+		t.Fatalf("the wanted model: %+v", u)
+	}
+	// encoder's CPU: large-v3-turbo measured at 0.8×, so medium (guessed 1.0×) instead.
+	e.timed(w, 8<<30, map[string]float64{SHASmall: 2.5, SHALargeV3Turbo: 0.8})
+	if got := wanted(); len(got) != 2 || got[1] != "ggml-medium.bin" {
+		t.Fatalf("a slow CPU: %v", got)
+	}
+	// Too little RAM for either: small only.
+	e.timed(w, 3<<30, map[string]float64{SHASmall: 12})
+	if got := wanted(); len(got) != 1 {
+		t.Fatalf("3 GB of RAM: %v", got)
+	}
+	// The threshold is EQ_WHISPER_MIN_SPEED_PCT.
+	e.s.cfg.WhisperMinSpeed = 7
+	e.timed(w, 32<<30, map[string]float64{SHASmall: 12})
+	if got := wanted(); len(got) != 1 {
+		t.Fatalf("below 7×: %v", got)
+	}
+}

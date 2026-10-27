@@ -123,8 +123,10 @@ type Me struct {
 
 // CapabilityReport is the queue's verdict on what this worker runs.
 type CapabilityReport struct {
-	Accepted []string `json:"accepted"`
-	Refused  []struct {
+	// WantedModels: the whisper models the queue wants this worker to hold (v0.2.7).
+	WantedModels []WantedModel `json:"wanted_models"`
+	Accepted     []string      `json:"accepted"`
+	Refused      []struct {
 		Kind   string `json:"kind"`
 		Reason string `json:"reason"`
 	} `json:"refused"`

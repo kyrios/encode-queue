@@ -34,6 +34,9 @@ type Config struct {
 	ResultReserve  int64         // bytes the result directory keeps free beyond every lease's max_bytes
 
 	ReferenceWorker string // the worker whose tools jobs require by default; "" requires none
+	// WhisperMinSpeed: how many times real time a worker must transcribe with a model for the
+	// queue to want it there (wantedModels); 0 is 1.
+	WhisperMinSpeed float64
 	MinAppVersion   string
 
 	// The tunnel, for the configurations the queue hands out.

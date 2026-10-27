@@ -481,7 +481,12 @@ func cpuInfo(data string) (model string, cores int) {
 // DetectCapabilities is everything this worker says it runs.
 func DetectCapabilities(ctx context.Context, cfg Config) (Capabilities, []string) {
 	tools, problems := DetectTools(ctx, cfg)
-	models, err := DetectModels(cfg.ModelsDir, filepath.Join(cfg.StateDir, "models-cache.json"))
+	dir := cfg.ModelsDir
+	if dir == "" && cfg.StateDir != "" {
+		dir = filepath.Join(cfg.StateDir, "models") // where fetched models go (fetch.go)
+		os.MkdirAll(dir, 0o755)
+	}
+	models, err := DetectModels(dir, filepath.Join(cfg.StateDir, "models-cache.json"))
 	if err != nil {
 		problems = append(problems, "models: "+err.Error())
 	}
