@@ -64,6 +64,9 @@ All three are OpenAPI 3.1.
   it unless a connected worker holds a better one; the lease names the one chosen. The queue
   tells each worker which models to hold (`wanted_models`): small for caption timing and the
   best one it runs at least `EQ_WHISPER_MIN_SPEED_PCT` per cent of real time by its calibration.
+  A model it has not timed is guessed from small's speed, but not wanted while a model below it
+  measured too slow; when none clears the threshold, the best model it holds stays wanted as its
+  fallback (encoder's medium at 0.96×). The speed never keeps a held model from a job.
   The worker fetches those from ggerganov/whisper.cpp at a pinned revision only, checks their
   sha256 and times them on the calibration's speech clip.
 - **Leases** last 120 s and are renewed every 30 s with the progress; the long poll waits 25 s;

@@ -160,6 +160,12 @@ func whisperSpeed(w *Worker, sha string) (float64, bool) {
 // "Choose the whisper model based on measured performance at first launch"): small for the
 // caption timing, and the best model it runs at least WhisperMinSpeed times real time, by its
 // calibration, that fits its RAM with the headroom. Before small is timed, only small.
+//
+// A model the worker has not timed is guessed from small's speed, and wanted only when no model
+// below it in quality measured too slow there (v0.2.8): on encoder small ran at 2.87×, medium
+// at 0.96×, and the guess for large-v3-turbo said 1.4×, a 1.6 GB download for a model that
+// would run slowly. When no model clears the threshold, the best one it holds stays wanted as
+// its fallback (encoder's medium), whatever its speed.
 func (s *Store) wantedModels(w *Worker) []CatalogueModel {
 	if w.Caps == nil {
 		return nil
@@ -170,7 +176,7 @@ func (s *Store) wantedModels(w *Worker) []CatalogueModel {
 		min = 1
 	}
 	total := s.system(w).MemoryBytes
-	for _, sha := range Quality {
+	for i, sha := range Quality {
 		if sha == SHASmall {
 			break
 		}
@@ -178,10 +184,69 @@ func (s *Store) wantedModels(w *Worker) []CatalogueModel {
 		if total != nil && c.PeakBytes+headroom > *total {
 			continue
 		}
-		if v, ok := whisperSpeed(w, sha); ok && v >= min {
-			out = append(out, c)
+		v, ok := whisperSpeed(w, sha)
+		if !ok || v < min {
+			continue
+		}
+		if !measured(w, sha) && slowerBelow(w, Quality[i+1:], min) {
+			continue // a guess, against a measured model below it that is too slow
+		}
+		out = append(out, c)
+		return out
+	}
+	// Nothing clears the threshold: once small is timed, the best model it holds (but small) is
+	// its fallback.
+	if !measured(w, SHASmall) {
+		return out
+	}
+	for _, sha := range Quality {
+		if sha == SHASmall {
 			break
+		}
+		if holds(w, sha) {
+			return append(out, catalogue[sha])
 		}
 	}
 	return out
+}
+
+// measured says whether the worker's calibration timed the model.
+func measured(w *Worker, sha string) bool {
+	if w.Caps == nil || w.Caps.Calibration == nil {
+		return false
+	}
+	for _, m := range w.Caps.Calibration.Whisper {
+		if m.SHA256 == sha {
+			return true
+		}
+	}
+	return false
+}
+
+// slowerBelow says whether one of these models (below in quality, small left out) measured
+// slower than min on the worker.
+func slowerBelow(w *Worker, below []string, min float64) bool {
+	for _, sha := range below {
+		if sha == SHASmall {
+			continue
+		}
+		if measured(w, sha) {
+			if v, _ := whisperSpeed(w, sha); v < min {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func holds(w *Worker, sha string) bool {
+	if w.Caps == nil {
+		return false
+	}
+	for _, m := range w.Caps.Models {
+		if m.SHA256 == sha {
+			return true
+		}
+	}
+	return false
 }
