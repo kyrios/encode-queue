@@ -80,7 +80,7 @@ func (s *Store) threadShare(w *Worker, asking bool) float64 {
 	}
 	if asking {
 		// Its own running jobs share the machine with the new one.
-		busy += allowed * float64(len(s.activeLeases(w.ID))) / float64(maxJobs(w)+1)
+		busy += allowed * float64(len(s.activeLeases(w.ID))) / float64(s.maxJobs(w)+1)
 	}
 	free := allowed - busy
 	if free < allowed/8 {

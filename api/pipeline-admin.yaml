@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.6.0
+  version: 1.7.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -874,7 +874,7 @@ components:
         started_at: { type: string, format: date-time }
         expires_at: { type: [string, 'null'], format: date-time, description: While `active`. }
         ended_at: { type: [string, 'null'], format: date-time }
-        end_code: { type: [string, 'null'], description: 'Why it ended without a result: the release reason, or `lease_expired`, `offline`, `preempted`, `assigned` (the Encoder page sent the job to another worker), `paused`, `worker_removed`, `job_cancelled`, `job_done`.' }
+        end_code: { type: [string, 'null'], description: 'Why it ended without a result: the release reason, or `lease_expired`, `offline`, `preempted`, `assigned` (the Encoder page sent the job to another worker), `paused`, `worker_removed`, `job_cancelled`, `job_done`, `overdue` (held past its `hold_until`, 1.7.0).' }
         progress: { oneOf: [{ $ref: '#/components/schemas/Progress' }, { type: 'null' }] }
         model_sha256: { type: [string, 'null'], description: 'The whisper model this attempt ran (v0.2.7), the best of the job''s `models` its worker held.' }
         ect_s: { type: [number, 'null'], description: 'Its worker''s expected completion time at the claim, in seconds (v0.2.7; README, "Which worker gets a job").' }

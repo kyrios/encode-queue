@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -144,17 +145,48 @@ func (s *Store) canClaim(w *Worker, now time.Time, extra bool) error {
 	if extra && extras > 0 {
 		return errf(409, "limit_reached", "this worker's extra slot is taken")
 	}
-	if max := maxJobs(w); !extra && regular >= max {
+	if max := s.maxJobs(w); !extra && regular >= max {
 		return errf(409, "limit_reached", "this worker holds %d leases, its limit", regular)
 	}
 	return nil
 }
 
-func maxJobs(w *Worker) int {
-	if w.Limits.MaxParallelJobs < 1 {
-		return 1
+// maxJobs is the worker's regular slots: what it asked for, at least 1 and at most the queue's
+// MaxParallelJobs (v0.2.9), whatever it set through PATCH /me.
+func (s *Store) maxJobs(w *Worker) int {
+	n := w.Limits.MaxParallelJobs
+	if n < 1 {
+		n = 1
 	}
-	return w.Limits.MaxParallelJobs
+	if c := s.cfg.MaxParallelJobs; c > 0 && n > c {
+		n = c
+	}
+	return n
+}
+
+// holdUntil is the latest a lease claimed now may be renewed to: HoldFactor times the expected
+// completion time, between HoldMin and HoldMax; HoldMax when nothing is expected.
+func (s *Store) holdUntil(now time.Time, e *ECT) time.Time {
+	d := s.cfg.HoldMax
+	if e != nil && e.S > 0 && !math.IsInf(e.S, 0) {
+		d = time.Duration(e.S * s.cfg.HoldFactor * float64(time.Second))
+		if d < s.cfg.HoldMin {
+			d = s.cfg.HoldMin
+		}
+		if d > s.cfg.HoldMax || d <= 0 {
+			d = s.cfg.HoldMax
+		}
+	}
+	return now.Add(d)
+}
+
+// overdue says whether a lease was held past its hold time.
+func (s *Store) overdue(l *Lease, now time.Time) bool {
+	until := l.HoldUntil
+	if until.IsZero() {
+		until = l.CreatedAt.Add(s.cfg.HoldMax)
+	}
+	return now.After(until)
 }
 
 // headroom is the RAM the extra slot leaves free beside a job's expected peak.
@@ -243,6 +275,7 @@ func (s *Store) Claim(ctx context.Context, workerID string, req LeaseRequest, wa
 				Attempt: len(j.Attempts) + 1, State: LeaseActive, CreatedAt: now, ExpiresAt: now.Add(s.cfg.Lease), Extra: req.Extra}
 			_, l.Model = modelOn(w, j)
 			l.ECT, l.RunnerUp = e, runnerUp
+			l.HoldUntil = s.holdUntil(now, e)
 			if e != nil {
 				l.EstRunS = e.RunS
 			}
@@ -279,10 +312,22 @@ func (s *Store) lease(workerID, leaseID string) (*Lease, error) {
 	return l, nil
 }
 
+// takeOverdue ends a lease held past its hold time and keeps the job from that worker, by
+// the rules of a rejection (until every worker is excluded and the reference is let back). It is
+// no failure of the job: a slow worker did nothing wrong to it.
+func (s *Store) takeOverdue(l *Lease) {
+	s.endLease(l, LeaseExpired, "overdue")
+	if j := s.st.Jobs[l.JobID]; j != nil && !contains(j.Excluded, l.WorkerID) {
+		j.Excluded = append(j.Excluded, l.WorkerID)
+	}
+}
+
 // goneErr is why an ended lease answers 410.
 func (s *Store) goneErr(l *Lease) *Error {
 	code := "lease_cancelled"
 	switch {
+	case l.EndCode == "overdue":
+		code = "overdue"
 	case l.State == LeaseExpired:
 		code = "lease_expired"
 	case l.State == LeasePreempted:
@@ -348,6 +393,11 @@ func (s *Store) Renew(workerID, leaseID string, p Progress) (LeaseView, error) {
 		return LeaseView{}, errf(422, "invalid", "phase %q unknown", p.Phase)
 	}
 	now := s.cfg.Now()
+	if s.overdue(l, now) {
+		s.takeOverdue(l)
+		s.touch(true)
+		return LeaseView{}, s.goneErr(l)
+	}
 	s.noteLive(w, l.Progress, l.ExpiresAt.Add(-s.cfg.Lease), p)
 	l.Progress = &p
 	l.ExpiresAt = now.Add(s.cfg.Lease)

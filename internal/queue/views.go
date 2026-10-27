@@ -256,6 +256,7 @@ type LeaseView struct {
 	State          string            `json:"state"`
 	CreatedAt      time.Time         `json:"created_at"`
 	ExpiresAt      time.Time         `json:"expires_at"`
+	HoldUntil      *time.Time        `json:"hold_until,omitempty"` // v0.2.9: no renewal past it
 	RenewEveryS    int               `json:"renew_every_s"`
 	PauseGiveBackS int               `json:"pause_give_back_s"`
 	PausedUntil    *time.Time        `json:"paused_until"`
@@ -293,6 +294,9 @@ func (s *Store) leaseView(l *Lease) LeaseView {
 	v := LeaseView{ID: l.ID, Attempt: l.Attempt, State: l.State, CreatedAt: l.CreatedAt, ExpiresAt: l.ExpiresAt,
 		RenewEveryS: int(s.cfg.RenewEvery / time.Second), PauseGiveBackS: int(s.cfg.PauseGiveBack / time.Second),
 		Progress: l.Progress}
+	if !l.HoldUntil.IsZero() {
+		v.HoldUntil = ptrTime(l.HoldUntil)
+	}
 	if w := s.st.Workers[l.WorkerID]; w != nil && s.paused(w, s.cfg.Now()) {
 		v.PausedUntil = w.PausedUntil
 	}

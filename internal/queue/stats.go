@@ -139,7 +139,9 @@ func (w *Worker) speed(class string) *SpeedHist {
 }
 
 // noteResult takes a delivered rung result's fps as a sample of the worker's speed on its
-// class: its frames over its encode time, or the attempt's last reported fps.
+// class: its frames over its encode time, or the attempt's last reported fps. Both are the
+// worker's word, so the sample is never faster than the frames over the time it held the lease,
+// which the queue saw itself (v0.2.9).
 func (s *Store) noteResult(w *Worker, j *Job, l *Lease, frames int64, encodeS float64) {
 	if j == nil || j.rung == nil {
 		return
@@ -152,6 +154,12 @@ func (s *Store) noteResult(w *Worker, j *Job, l *Lease, frames int64, encodeS fl
 	}
 	if fps <= 0 || math.IsInf(fps, 0) {
 		return
+	}
+	if frames <= 0 {
+		frames = j.Spec.Source.Frames
+	}
+	if held := s.cfg.Now().Sub(l.CreatedAt).Seconds(); frames > 0 && held > 0 {
+		fps = math.Min(fps, float64(frames)/held)
 	}
 	class := rungClass(j.rung)
 	h := w.speed(class)
@@ -245,6 +253,9 @@ func (s *Store) fpsOn(w *Worker, class string) float64 {
 	}
 	if ref := s.referenceWorker(); ref != nil && s.calibratedRelative(w, class) != nil {
 		f, _ := calibratedFPS(w, class) // its own fps on the class, on the reference's clip
+		if rf, _ := calibratedFPS(ref, class); f > rf*trustCalibrated {
+			f = rf * trustCalibrated // no faster than that until measured
+		}
 		return f
 	}
 	ref := s.referenceWorker()
@@ -298,10 +309,7 @@ func (s *Store) freeAt(w *Worker, now time.Time, except string) *time.Time {
 	if !s.connected(w, now) || s.paused(w, now) {
 		return nil
 	}
-	max := w.Limits.MaxParallelJobs
-	if max < 1 {
-		max = 1
-	}
+	max := s.maxJobs(w)
 	var ends []time.Time
 	busy := 0
 	for _, l := range s.activeLeases(w.ID) {
@@ -342,10 +350,7 @@ func (s *Store) forecast(now time.Time) map[string]time.Time {
 	sort.Slice(ws, func(a, b int) bool { return ws[a].Name < ws[b].Name })
 	for _, w := range ws {
 		usable := s.connected(w, now) && !s.paused(w, now) && w.Caps != nil
-		max := w.Limits.MaxParallelJobs
-		if max < 1 {
-			max = 1
-		}
+		max := s.maxJobs(w)
 		active := s.activeLeases(w.ID)
 		for _, l := range active {
 			j := s.st.Jobs[l.JobID]
