@@ -50,6 +50,8 @@ All three are OpenAPI 3.1.
   cores, threads in use, memory, OS, the transfer rates the queue measures (source downloads
   and result uploads, a moving average), and `relative_speed`: its fps against the reference
   worker's (the median of its last 5 results per codec, size and preset, against the reference's).
+  Before a worker has a measured result, `speed_estimate` gives its live fps on the rung job it
+  encodes against the reference's median on that class.
   Each job has `eta_s` and `finish_at`; `GET /v1/jobs/{id}/candidates` estimates the job on
   every worker for the move menu, and `DELETE /v1/jobs/{id}/assign` ends a pin.
 - **Late results** are taken and judged while the job is not done; the first accepted wins,

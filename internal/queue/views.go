@@ -385,6 +385,7 @@ type WorkerView struct {
 	System        WorkerSystem    `json:"system"`
 	Transfer      Transfer        `json:"transfer"`
 	RelativeSpeed *float64        `json:"relative_speed"`
+	SpeedEstimate *SpeedEstimate  `json:"speed_estimate"`
 	SpeedClasses  []SpeedClass    `json:"speed_classes"`
 	FreeAt        *time.Time      `json:"free_at"`
 }
@@ -472,6 +473,15 @@ func (s *Store) rate(t TransferStats, now time.Time) TransferRate {
 		r.LastBps, r.AvgBps = &last, &avg
 	}
 	return r
+}
+
+// SpeedEstimate is "Tempo" before a measured relative speed exists: the running job's live fps
+// over the reference's median on its rung class (v0.2.5).
+type SpeedEstimate struct {
+	Value        float64 `json:"value"`
+	Class        string  `json:"class"`
+	FPS          float64 `json:"fps"`
+	ReferenceFPS float64 `json:"reference_fps"`
 }
 
 // SpeedClass is a worker's average fps on one rung class, beside the reference's.
@@ -571,7 +581,34 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 		}
 		v.Jobs = append(v.Jobs, wj)
 	}
+	if v.RelativeSpeed == nil {
+		v.SpeedEstimate = s.speedEstimate(w)
+	}
 	return v
+}
+
+// speedEstimate is the worker's live fps on the rung job it encodes against the reference's
+// median on that class, or nil: a new worker shows a tempo while its first job runs, before any
+// result has been measured.
+func (s *Store) speedEstimate(w *Worker) *SpeedEstimate {
+	ref := s.referenceWorker()
+	if ref == nil || ref == w {
+		return nil
+	}
+	for _, l := range s.activeLeases(w.ID) {
+		j := s.st.Jobs[l.JobID]
+		p := l.Progress
+		if j == nil || j.rung == nil || p == nil || p.Phase != "encoding" || p.FPS == nil || *p.FPS <= 0 {
+			continue
+		}
+		class := rungClass(j.rung)
+		rh := ref.speed(class)
+		if rh == nil || rh.median() <= 0 {
+			continue
+		}
+		return &SpeedEstimate{Value: *p.FPS / rh.median(), Class: class, FPS: *p.FPS, ReferenceFPS: rh.median()}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------- lists
