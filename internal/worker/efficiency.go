@@ -70,8 +70,12 @@ func (w *Worker) SetEfficiency(mode string) {
 	w.emitLimits()
 }
 
-// background is whether this run's tools belong on the efficiency cores now.
+// background is whether this run's tools belong on the efficiency cores now: by the efficiency
+// mode, or, on macOS, for a normal job while a realtime job runs (realtime.go).
 func (r *run) background() bool {
+	if r.yields() {
+		return true
+	}
 	switch r.w.efficiency() {
 	case EfficiencyAll:
 		return true
@@ -97,6 +101,8 @@ func (r *run) applyBackground() {
 	switch {
 	case err != nil:
 		r.log("warn", "worker", "the efficiency cores: "+err.Error())
+	case on && r.yields():
+		r.log("info", "worker", "a realtime job runs beside it: the background QoS until it ends")
 	case on:
 		r.log("info", "worker", "on the efficiency cores now (background QoS)")
 	default:

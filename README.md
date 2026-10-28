@@ -11,7 +11,8 @@ Linux server or Mac. **Slipstream** is the encoder helper's name on every machin
   in userspace with its own network stack, one UDP port, no host interface, no network rights.
   The peer list is the queue's state.
 - **The worker** (`encode-worker`) pairs by its public key, long-polls for a job, fetches the
-  source with range requests, runs ffmpeg (libx265, libx264) or whisper.cpp at `nice 19`, reports
+  source with range requests, runs ffmpeg (libx265, libx264) or whisper.cpp, a normal job's at
+  `nice 19` and a realtime job's at the worker's own (below, "Realtime before normal"), reports
   progress and log lines, and uploads the result over tus. Jobs are rungs, whisper runs, from
   v0.2.8 cuts, remuxes and checks (every encode and every decode runs on a worker), and from
   v0.2.16 align jobs, which time a text's words in its sound with Qwen3-ForcedAligner.
@@ -232,6 +233,17 @@ All three are OpenAPI 3.1.
   itself 30 s later if the worker does not. "Nach diesem Auftrag" (`after_job`) lets the running
   jobs finish; the queue never takes back a lease whose tool runs. A pause that runs out ends as
   "Fortsetzen" does.
+- **Realtime before normal, by the system's scheduler** (v0.2.20; Thorsten, 2026-10-28: "Instead
+  of throttling manually can we simply use the OS task scheduler and give the realtime jobs a
+  slightly higher CPU priority?"). A job of priority `now` is realtime; a job of stage 1, stage 2
+  or archive is normal, keeps its lease and its progress, and every idle cycle. On Linux a normal
+  job's tools start at nice 19 and stay there, a realtime job's at the worker's own nice, 0: CFS
+  weighs them 15 to 1024, so the realtime tool gets 98.5 % of a CPU both want. On macOS a normal
+  job's tools also start under the utility QoS clamp (`taskpolicy -c utility`), and go into the
+  background QoS (the efficiency cores) while a realtime job runs on the worker, out again when the
+  last one ends; a realtime job's start unclamped. **The worker no longer renices itself**, since
+  an unprivileged process cannot lower a nice value again: start it at nice 0. Slipstream starts it
+  at nice 19, so there a realtime tool runs at 19 too, and the QoS makes the difference.
 - **The efficiency cores** (v0.2.18; Thorsten, 2026-10-28: "Run archive encodes only on
   efficiency cores"). A Mac's worker may run every job (`efficiency: all`, Slipstream's "Nur
   Effizienzkerne") or only archive jobs (`archive`) in macOS's background QoS (PRIO_DARWIN_BG, as
@@ -300,6 +312,11 @@ All three are OpenAPI 3.1.
   the lower ones' uploads still have to write, not every running lease's `max_bytes`, which for a
   2160 archive rung is 2 × its source or 12.5 MB/s of its length.
   A job the room keeps out says so: `waiting.code` `no_room`, and `encode_queue_result_room_bytes`.
+  **A result then meets the disk when its upload starts** (v0.2.20): it must fit the free space
+  less the reserve, what other uploads still have to write and the `max_bytes` of the active
+  high-priority leases that have not begun theirs, or the upload answers `503 no_room` and the
+  worker asks again every 30 s, its lease held. A worker before 0.2.20 fails that attempt, as it
+  would on a full disk.
 
 ## The queue server
 
@@ -389,7 +406,7 @@ as uid 10001 (`worker`) with its scratch space in `/var/lib/encode-worker/work`.
 ### Embedding (Slipstream)
 
 ```
-nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name … --app-version x.y.z \
+encode-worker --key-stdin --tunnel-file … --state-dir … --name … --app-version x.y.z \
   --threads N --gpu true|false --jobs N [--high-slots N] [--efficiency off|all|archive] --ffmpeg … --ffprobe … --whisper-cli … \
   --whisper-models … --control stdio
 ```
@@ -412,7 +429,8 @@ nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name �
   `tools` (`tools: [{name, version}]`), `points` (`table`, `today`, `week`, `total`, `rank`, `of`,
   when they or the place change; v0.2.15), `limits` (`threads` in effect, the machine's
   `cores`, `throttled`: how many running jobs are held to it, `efficiency` (v0.2.18); at the
-  start, after each `limits` line and when a job is held or freed; v0.2.17), `log` (`lease_id`, `line`), `calibrating` (`classes`,
+  start, after each `limits` line and when a job is held or freed; v0.2.17), `log` (`lease_id`, `line`, and
+  from v0.2.20 `level`: `DEBUG`, `INFO`, `WARN` or `ERROR`, slog's words), `calibrating` (`classes`,
   when the calibration clip starts) and `calibrated` (`classes`, when it is done), and `model`
   for each whisper model the queue wants (`name`, `sha256`, `state`: `wanted`, `downloading`,
   `checking`, `calibrating`, `ready`, `failed`, or `unavailable` when the models folder is read-only and the host provides the models; `bytes`, `bytes_done` while downloading,

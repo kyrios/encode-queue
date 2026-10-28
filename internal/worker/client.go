@@ -26,6 +26,25 @@ type APIError struct {
 
 func (e *APIError) Error() string { return fmt.Sprintf("%d %s: %s", e.Status, e.Code, e.Detail) }
 
+// NoRoomWait is how long an upload waits before it asks again for room on the queue's disk.
+var NoRoomWait = 30 * time.Second
+
+func isNoRoom(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Code == "no_room"
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // gone is a lease that ended without this worker (410).
 func gone(err error) (string, bool) {
 	var ae *APIError
@@ -456,6 +475,17 @@ func (c *Client) Upload(ctx context.Context, leaseID, path string, chunk int64, 
 	hdr.Set("Upload-Length", strconv.FormatInt(fi.Size(), 10))
 	hdr.Set("Upload-Metadata", "lease_id "+base64.StdEncoding.EncodeToString([]byte(leaseID)))
 	resp, err := c.do(ctx, "POST", "/files", hdr, nil, nil)
+	// **No room on the queue's disk yet** (v0.2.20): the result waits there, not here, until
+	// the queue has fetched others away; the lease is renewed meanwhile.
+	for err != nil && isNoRoom(err) && ctx.Err() == nil {
+		if waitErr := sleepCtx(ctx, NoRoomWait); waitErr != nil {
+			return "", "", waitErr
+		}
+		if err := wait(ctx); err != nil {
+			return "", "", err
+		}
+		resp, err = c.do(ctx, "POST", "/files", hdr, nil, nil)
+	}
 	if err != nil {
 		return "", "", err
 	}

@@ -65,6 +65,37 @@ func (s *Store) roomFor(j *Job) int64 {
 	return full
 }
 
+// uploadRoom is how many bytes an upload of lease l may take now (v0.2.20): free space less the
+// reserve, what the other uploads still have to write, and the max_bytes of the active
+// high-priority leases that have not begun theirs. **A high-priority claim skips the lower
+// leases' worst case (rooms), so it is here that their results wait for its room**, and not on
+// a full disk: the review of v0.2.19 found two results admitted that would not have fit
+// together. A worker of 0.2.20 asks again on no_room; an older one fails the attempt, as it would
+// on a full disk.
+func (s *Store) uploadRoom(l *Lease) int64 {
+	free, err := s.cfg.FreeBytes(s.cfg.ResultDir)
+	if err != nil {
+		s.cfg.Log.Warn("free space of the result directory", "err", err)
+		return 0
+	}
+	uploading := map[string]bool{}
+	for _, u := range s.st.Uploads {
+		uploading[u.LeaseID] = true
+		if u.LeaseID != l.ID { // its own is replaced
+			free -= u.Length - u.Offset
+		}
+	}
+	for _, o := range s.st.Leases {
+		if o == l || o.State != LeaseActive || uploading[o.ID] {
+			continue
+		}
+		if j := s.st.Jobs[o.JobID]; j != nil && highPriority(j.Priority) {
+			free -= j.Spec.Result.MaxBytes
+		}
+	}
+	return free - s.cfg.ResultReserve
+}
+
 // rooms is the room for a job below stage1, and for one of priority now or stage1.
 //
 // **A high-priority job does not wait for another lease's worst case** (v0.2.19; 2026-10-28,
@@ -694,6 +725,10 @@ func (s *Store) CreateUpload(workerID, leaseID string, length int64) (string, er
 	j := s.st.Jobs[l.JobID]
 	if length < 1 || length > j.Spec.Result.MaxBytes {
 		return "", errf(413, "too_large", "the result may have at most %d bytes", j.Spec.Result.MaxBytes)
+	}
+	if room := s.uploadRoom(l); length > room {
+		return "", errf(503, "no_room", "the result's %d bytes do not fit beside the uploads in flight, the high-priority "+
+			"leases and the reserve (%d bytes free for it); ask again later", length, max(room, 0))
 	}
 	// One upload per lease: a new one replaces the old.
 	for uid, u := range s.st.Uploads {

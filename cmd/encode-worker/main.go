@@ -1,5 +1,5 @@
 // encode-worker takes jobs from encode-queue through its own userspace WireGuard and runs
-// them at nice 19.
+// them, a normal job's at nice 19 and a realtime job's at the worker's own nice (v0.2.20).
 //
 //	encode-worker pubkey        print this worker's public key (made on first use), for pairing
 //	encode-worker versions      print what this worker runs, as the queue will see it
@@ -216,9 +216,6 @@ func run(cmd string, f flags, env *config.Env) error {
 	tcfg, err := tunnel.ParseLine(line)
 	if err != nil {
 		return fmt.Errorf("the tunnel configuration: %w", err)
-	}
-	if err := worker.Renice(); err != nil {
-		log.Warn("nice 19", "err", err)
 	}
 	stdio := f.control == "stdio"
 	if stdio {

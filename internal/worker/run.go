@@ -117,8 +117,22 @@ func (r *run) log(level, source, msg string) {
 	// Only a lease's lines go to the app. A calibration's run has none (v0.2.12: with Events set,
 	// in Slipstream, its first stderr line was a nil dereference, at every start).
 	if r.w.cfg.Events != nil && r.l != nil {
-		go r.w.emit("log", map[string]any{"lease_id": r.l.ID, "line": msg})
+		go r.w.emit("log", map[string]any{"lease_id": r.l.ID, "line": msg, "level": slogLevel(level)})
 	}
+}
+
+// slogLevel is a job line's level in slog's words, as the worker's stderr has them (v0.2.20;
+// Slipstream files each line by it): DEBUG, INFO, WARN or ERROR.
+func slogLevel(level string) string {
+	switch strings.ToLower(level) {
+	case "debug":
+		return "DEBUG"
+	case "warn", "warning":
+		return "WARN"
+	case "error":
+		return "ERROR"
+	}
+	return "INFO"
 }
 
 // eventLoop tells the app about the job once a second.
@@ -685,7 +699,8 @@ func (r *run) runTool(ctx context.Context, args []string, source string, onBlock
 // onBlock), and every stderr line to errLine as well as the log.
 func (r *run) runToolTo(ctx context.Context, args []string, source string, onBlock func(map[string]string),
 	outLine, errLine func(string)) error {
-	cmd := exec.Command(args[0], args[1:]...)
+	line := launch(args, r.l != nil && realtime(r.l.Job.Priority))
+	cmd := exec.Command(line[0], line[1:]...)
 	cmd.Dir = r.dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = append(append(os.Environ(), "OMP_WAIT_POLICY=passive"), r.env...)

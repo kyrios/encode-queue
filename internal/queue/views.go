@@ -67,10 +67,14 @@ type AttemptView struct {
 
 // JobView is a job as pipeline-admin.yaml shows it.
 type JobView struct {
-	ID              string            `json:"job_id"`
-	UploadID        *string           `json:"upload_id"`
-	Title           *string           `json:"title"`
-	Kind            string            `json:"kind"`
+	ID       string  `json:"job_id"`
+	UploadID *string `json:"upload_id"`
+	Title    *string `json:"title"`
+	Kind     string  `json:"kind"`
+	// Type and Detail: what the job makes, as Funkhaus's Encoder page names it (v0.2.20,
+	// jobtype.go): "Video" and "1080p · slower CRF 29", "Untertitel" and "turbo".
+	Type            string            `json:"type"`
+	Detail          string            `json:"detail"`
 	Stage           *int              `json:"stage"`
 	Priority        string            `json:"priority"`
 	Position        *int              `json:"position"`
@@ -161,6 +165,7 @@ func (s *Store) jobViewWith(j *Job, fc map[string]time.Time) JobView {
 		Priority: j.Priority, State: st, Params: j.Spec.Params, Source: j.Spec.Source, Inputs: j.Spec.Inputs,
 		ResultSpec: j.Spec.Result, Failures: j.Failures, QueuedAt: j.QueuedAt, FinishedAt: j.FinishedAt,
 		Revision: j.Revision, Attempts: []AttemptView{}, ExcludedWorkers: []WorkerRef{}}
+	v.Type, v.Detail = jobType(j)
 	v.Requires, _ = s.requires(j)
 	v.MaxFailures = j.Spec.MaxFailures
 	if v.MaxFailures == 0 {

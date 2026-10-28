@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.13.0
+  version: 1.14.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -257,11 +257,13 @@ paths:
     post:
       tags: [Jobs]
       operationId: moveJob
-      summary: Reorder a queued job (the Encoder page's Prio)
+      summary: Reorder a queued job, or change its priority (the Encoder page's Prio)
       description: |
         Exactly one of `before`, `after` or `to`. A job moved next to a job of another priority
         takes that priority; `to: top` and `to: bottom` stay within the job's own priority
-        unless `priority` names another. Only `queued` jobs move (`409 not_queued`).
+        unless `priority` names another, `now` (Realtime) included: `{"to": "bottom",
+        "priority": P}` puts it last in its new class. Only `queued` jobs move (`409
+        not_queued`). **The admin token's alone** (v0.2.20): the pipeline's answers 403.
       requestBody:
         required: true
         content:
@@ -274,6 +276,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Job' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/Invalid' }
@@ -945,6 +948,19 @@ components:
         upload_id: { type: [string, 'null'] }
         title: { type: [string, 'null'] }
         kind: { $ref: '#/components/schemas/JobKind' }
+        type:
+          type: string
+          description: |
+            What the job makes, as the Encoder page names it (v0.2.20): `Video` (rung), `Untertitel`
+            (whisper), `Align`, `Cut`, `Remux`, `Check`; a kind it does not list is its own name.
+          examples: [Video, Untertitel]
+        detail:
+          type: string
+          description: |
+            One line of what the type means for this job (v0.2.20): the short side and the codec
+            settings of a rung, the model of a whisper run, the aligner and the language, a cut's
+            range, a remux's tag, a check's measures; empty where there is nothing to say.
+          examples: ['1080p · slower CRF 29', '720p H.264 · slow CRF 32', 'turbo', '2.5–7.5 s']
         stage: { type: [integer, 'null'] }
         priority: { $ref: '#/components/schemas/Priority' }
         position: { type: [integer, 'null'], description: 'Its place among all `queued` jobs, 1 first; null otherwise.' }
