@@ -52,25 +52,64 @@ func (s *Store) activeLeases(workerID string) []*Lease {
 // room is how many bytes of results the queue can still take: free space less what active
 // leases may still deliver and the reserve.
 func (s *Store) room() int64 {
+	full, _ := s.rooms()
+	return full
+}
+
+// roomFor is the room j's result counts against (rooms).
+func (s *Store) roomFor(j *Job) int64 {
+	full, high := s.rooms()
+	if highPriority(j.Priority) {
+		return high
+	}
+	return full
+}
+
+// rooms is the room for a job below stage1, and for one of priority now or stage1.
+//
+// **A high-priority job does not wait for another lease's worst case** (v0.2.19; 2026-10-28,
+// a `now` whisper job of 64 MB queued for hours with encoder idle). Every active lease holds its
+// result's max_bytes until it delivers, and a 2160 archive rung's is 2 × its source or 12.5 MB/s
+// of its length, 22 GB for half an hour: once an upload's sets and the archive's next fetch had
+// landed beside it, encoder's disk had less than that left, and no job of any size could be
+// claimed. A job of priority now or stage1 counts the max_bytes of the running high-priority
+// leases only, and of a lower lease what its upload still has to write, as it does not wait for
+// a lower job's slot either (slots.go): so three stage-1 rungs of one upload still fit the disk
+// together. A job below it keeps the whole reservation.
+func (s *Store) rooms() (full, high int64) {
 	free, err := s.cfg.FreeBytes(s.cfg.ResultDir)
 	if err != nil {
 		s.cfg.Log.Warn("free space of the result directory", "err", err)
-		return 0
+		return 0, 0
+	}
+	full, high = free, free
+	held := func(l *Lease) (active, hi bool) {
+		if l == nil || l.State != LeaseActive {
+			return false, false
+		}
+		j := s.st.Jobs[l.JobID]
+		return true, j != nil && highPriority(j.Priority)
 	}
 	for _, l := range s.st.Leases {
-		if l.State == LeaseActive {
-			if j := s.st.Jobs[l.JobID]; j != nil {
-				free -= j.Spec.Result.MaxBytes
+		if active, hi := held(l); active {
+			full -= s.st.Jobs[l.JobID].Spec.Result.MaxBytes
+			if hi {
+				high -= s.st.Jobs[l.JobID].Spec.Result.MaxBytes
 			}
 		}
 	}
-	// What uploads of ended leases may still write (an active lease's is counted above).
+	// What uploads still have to write, where no max_bytes above holds it.
 	for _, u := range s.st.Uploads {
-		if l := s.st.Leases[u.LeaseID]; l == nil || l.State != LeaseActive {
-			free -= u.Length - u.Offset
+		left := u.Length - u.Offset
+		active, hi := held(s.st.Leases[u.LeaseID])
+		if !active {
+			full -= left
+		}
+		if !hi {
+			high -= left
 		}
 	}
-	return free - s.cfg.ResultReserve
+	return full - s.cfg.ResultReserve, high - s.cfg.ResultReserve
 }
 
 // claimable is the first queued job this worker may run now, or nil, with the scoring that gave
@@ -79,7 +118,7 @@ func (s *Store) room() int64 {
 // scoring.
 func (s *Store) claimable(w *Worker, req LeaseRequest, ramGate bool) (*Job, *ECT, *ECT) {
 	accepted, _ := s.kinds(w)
-	room := s.room()
+	full, high := s.rooms()
 	// The jobs the Encoder page sent to this worker first, then the rest; a job sent to
 	// another worker is that worker's.
 	var mine, rest []*Job
@@ -101,6 +140,10 @@ func (s *Store) claimable(w *Worker, req LeaseRequest, ramGate bool) (*Job, *ECT
 		}
 		if req.MaxSourceBytes > 0 && j.Spec.Source.Bytes > req.MaxSourceBytes {
 			continue
+		}
+		room := full
+		if highPriority(j.Priority) {
+			room = high
 		}
 		if j.Spec.Result.MaxBytes > room {
 			continue
