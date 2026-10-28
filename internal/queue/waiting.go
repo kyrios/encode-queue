@@ -1,6 +1,8 @@
 package queue
 
 import (
+	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +24,9 @@ const (
 	WaitNoEligibleWorker = "no_eligible_worker" // no paired worker runs what it needs
 	WaitAllExcluded      = "all_excluded"       // every worker that could failed it or was rejected
 	WaitNoWorkerUp       = "no_worker_available"
+	// The queue's disk has no room for the result beside what running jobs may still deliver
+	// (rooms, v0.2.19): a worker could take it, and none may.
+	WaitNoRoom = "no_room"
 )
 
 // waiting is why a queued job has no worker that could take it now, or nil when one could
@@ -69,6 +74,11 @@ func (s *Store) waiting(j *Job, now time.Time) *Waiting {
 	}
 	for _, w := range free {
 		if s.connected(w, now) && !s.paused(w, now) {
+			if room := s.roomFor(j); j.Spec.Result.MaxBytes > room {
+				return &Waiting{Code: WaitNoRoom, Detail: fmt.Sprintf("the queue's disk has room for %.1f GB of results "+
+					"beside what running jobs may still deliver and its reserve; this one may take %.1f GB",
+					math.Max(0, float64(room))/1e9, float64(j.Spec.Result.MaxBytes)/1e9)}
+			}
 			return nil
 		}
 	}
