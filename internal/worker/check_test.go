@@ -88,7 +88,7 @@ func TestCommandsMatchThePipeline(t *testing.T) {
 		case "compare":
 			var err error
 			got, err = compareArgs("ffmpeg", CompareSettings{Every: g.Every}, "OUT", "SRC",
-				g.Size[0], g.Size[1], g.Source[0], g.Source[1])
+				g.Size[0], g.Size[1], g.Source[0], g.Source[1], "")
 			if err != nil {
 				t.Fatalf("%s: %v", g.Name, err)
 			}
@@ -143,7 +143,7 @@ func TestCompareWithVMAFOnly(t *testing.T) {
 	c.VMAF = &struct {
 		Model string `json:"model"`
 	}{Model: "vmaf_v0.6.1"}
-	got, err := compareArgs("ffmpeg", c, "OUT", "SRC", 1280, 720, 1920, 1080)
+	got, err := compareArgs("ffmpeg", c, "OUT", "SRC", 1280, 720, 1920, 1080, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,10 +155,10 @@ func TestCompareWithVMAFOnly(t *testing.T) {
 		t.Errorf("graph\n got %s\nwant %s", g, want)
 	}
 	c.VMAF.Model = "../x"
-	if _, err := compareArgs("ffmpeg", c, "OUT", "SRC", 1, 1, 1, 1); err == nil {
+	if _, err := compareArgs("ffmpeg", c, "OUT", "SRC", 1, 1, 1, 1, ""); err == nil {
 		t.Error("a model name with a path went through")
 	}
-	if _, err := compareArgs("ffmpeg", CompareSettings{Metrics: []string{}}, "OUT", "SRC", 1, 1, 1, 1); err == nil {
+	if _, err := compareArgs("ffmpeg", CompareSettings{Metrics: []string{}}, "OUT", "SRC", 1, 1, 1, 1, ""); err == nil {
 		t.Error("nothing to compare went through")
 	}
 }
@@ -269,7 +269,7 @@ func TestCheckToolsReal(t *testing.T) {
 		"-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src).CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
-	args, err := compareArgs(ff, CompareSettings{Every: 5}, src, src, 320, 180, 320, 180)
+	args, err := compareArgs(ff, CompareSettings{Every: 5}, src, src, 320, 180, 320, 180, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,5 +313,28 @@ func TestCheckToolsReal(t *testing.T) {
 	mid, side, ok := parseMidSide(strings.Split(string(mo), "\n"))
 	if !ok || !dualMono(mid, side, 40) {
 		t.Errorf("the same tone on both channels: mid %v side %v ok %v", mid, side, ok)
+	}
+}
+
+// A rung at another rate (v0.2.13): the comparison takes the source through the same fps filter,
+// so the 60 fps result's frame n meets the source's picture of the same moment; the result's
+// side is as before.
+func TestCompareAtTheRungsRate(t *testing.T) {
+	plain, _ := compareArgs("ffmpeg", CompareSettings{Every: 5}, "OUT", "SRC", 1920, 1080, 3840, 2160, "")
+	got, err := compareArgs("ffmpeg", CompareSettings{Every: 5}, "OUT", "SRC", 1920, 1080, 3840, 2160, "60000/1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := got[len(got)-6]
+	want := "[0:v]select='not(mod(n\\,5))',setpts=N/TB,fps=1,format=yuv420p10le[d0];" +
+		"[1:v]fps=60000/1001,select='not(mod(n\\,5))',setpts=N/TB,fps=1,scale=1920:1080:flags=lanczos,format=yuv420p10le,split=3"
+	if !strings.HasPrefix(g, want) {
+		t.Fatalf("the graph:\n got  %s\n want %s…", g, want)
+	}
+	if strings.Replace(g, "fps=60000/1001,", "", 1) != plain[len(plain)-6] {
+		t.Fatalf("more than the source's rate changed:\n %s\n %s", g, plain[len(plain)-6])
+	}
+	if _, err := compareArgs("ffmpeg", CompareSettings{Every: 5}, "OUT", "SRC", 1, 1, 1, 1, "60,scale=2:2"); err == nil {
+		t.Fatal("took a rate that is a filter")
 	}
 }

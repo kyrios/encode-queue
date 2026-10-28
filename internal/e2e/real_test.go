@@ -256,6 +256,14 @@ func TestRealClipRung(t *testing.T) {
 		h.submit(id, map[string]any{"kind": "rung", "priority": "now", "upload_id": "clip", "params": params(el),
 			"source": source, "result": map[string]any{"name": "mastodon.mp4", "max_bytes": 50 << 20}})
 	}
+	// The comparison at another rate: the whole picture scaled, the source taken at 60 fps too,
+	// so each pair is one moment. testsrc2 moves, and pairing the result's frame n with the 120 fps
+	// source's frame n would compare pictures 1/120 s × n apart.
+	compared := map[string]any{"rung": "180", "codec": "libx264", "preset": "veryfast", "crf": 18, "width": 320, "height": 180,
+		"audio": map[string]any{"mode": "none"}, "fps": 60,
+		"check": map[string]any{"decode": true, "frames": true, "compare": map[string]any{"every": 5, "metrics": []string{"psnr_y"}}}}
+	h.submit("clip.180-compare", map[string]any{"kind": "rung", "priority": "now", "upload_id": "clip", "params": compared,
+		"source": source, "result": map[string]any{"name": "180.mp4", "max_bytes": 50 << 20}})
 	for id, wantEdts := range map[string]bool{"clip.mastodon-s2": false, "clip.with-elst": true} {
 		j := h.waitState(id, "done", 240*time.Second)
 		file := filepath.Join(t.TempDir(), "mastodon.mp4")
@@ -276,6 +284,22 @@ func TestRealClipRung(t *testing.T) {
 			t.Errorf("%s: figures %s", id, judged[id].Check)
 		}
 		mu.Unlock()
+	}
+	checkClipCompare(t, h, &mu, judged)
+}
+
+// TestRealClipRung's comparison, after its two files.
+func checkClipCompare(t *testing.T, h *harness, mu *sync.Mutex, judged map[string]queue.AttemptResult) {
+	t.Helper()
+	h.waitState("clip.180-compare", "done", 240*time.Second)
+	mu.Lock()
+	defer mu.Unlock()
+	var f figures
+	if err := json.Unmarshal(judged["clip.180-compare"].Check, &f); err != nil || f.Compare == nil || f.Compare.Pairs != 36 {
+		t.Fatalf("the comparison at 60 fps: %s", judged["clip.180-compare"].Check)
+	}
+	if p, ok := f.Compare.PSNRY.(float64); !ok || p < 30 {
+		t.Errorf("PSNR-Y %v at 60 fps: the pairs are not the same moments", f.Compare.PSNRY)
 	}
 }
 

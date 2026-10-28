@@ -890,7 +890,8 @@ components:
             works on them; the captions come after it, drawn at the output frames' own times. A
             number (`60`, `29.97`, at most three decimals) or a ratio (`"30000/1001"`), 1 to 240.
             Absent, the file keeps the source's rate (`-fps_mode passthrough`). At another rate the
-            file has its own frames: the check reports `frames` and no `source_frames`.
+            file has its own frames: the check reports `frames` and no `source_frames`, and its
+            `compare` takes the source through the same `fps=F` first, so each pair is one moment.
         edit_list:
           type: boolean
           default: true

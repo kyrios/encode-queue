@@ -57,7 +57,9 @@ type run struct {
 	pausedSince *time.Time
 	samples     []sample
 	encodeStart time.Time
-	encodeTime  time.Duration
+	// rate: the rung's fps (v0.2.13), so the check's comparison takes the source at that rate.
+	rate       FPS
+	encodeTime time.Duration
 }
 
 func newRun(w *Worker, l *Lease) *run {
@@ -420,7 +422,7 @@ func (r *run) work(ctx context.Context) error {
 		if p.FPS != nil {
 			// v0.2.13: at another rate the file has its own frames, not the source's, so its check
 			// reports no source_frames, and the progress counts the rate's frames.
-			sameFrames, frames = false, p.FPS.frames(l.Job.Source.DurationS)
+			sameFrames, frames, r.rate = false, p.FPS.frames(l.Job.Source.DurationS), *p.FPS
 		}
 		args, err := rungArgs(r.w.cfg.FFmpeg, p, src, l.Job.Source.Width, l.Job.Source.Height, ass, out, r.w.cfg.CPUThreads)
 		if err != nil {

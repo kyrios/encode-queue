@@ -128,7 +128,8 @@ All three are OpenAPI 3.1.
   specs want no edit lists). A worker before 0.2.13 reads params loosely and would make the file
   without them, so such a rung goes only to workers of 0.2.13 or later; until one is paired it
   waits, and the Encoder page's reason names the version and the older workers. At another rate a
-  file reports its own frames and no `source_frames`. Without edit lists ffmpeg keeps picture and
+  file reports its own frames and no `source_frames`, and a comparison takes the source at that
+  rate too. Without edit lists ffmpeg keeps picture and
   sound together by the timestamps; AVFoundation plays the sound early by the picture's B-frame
   delay less the AAC priming (58.7 ms at 25 fps, 22.7 ms at 60), measured in helper.yaml's
   `edit_list`.
