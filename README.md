@@ -254,9 +254,13 @@ All three are OpenAPI 3.1.
   | 3 | 28.2 s | 314.5 s |
   | mean | 28.2 s, 6.4 fps | 297.8 s, 0.60 fps |
 
-  10.6 times as long, so r = 0.21 and the Mac Studio's `efficiency_speed` is 0.095. The
-  efficiency cores are macOS's own too: its background daemons ran beside the encode, which used
-  between 0 and 310 % of a core from second to second. Every run's file has its 180 frames.
+  10.6 times as long, so r = 0.21 and the Mac Studio's `efficiency_speed` is 0.095. That is the
+  idle Mac's figure. The efficiency cores are macOS's own too: its background daemons ran beside
+  the encode, which used between 0 and 310 % of a core from second to second. And macOS gives a
+  background job only what the Mac leaves over: beside other work (load averages 80 to 140,
+  **The CPU limit** above) a 4K slower encode in the background got 0.07 cores over a minute and
+  no frame. Such a job runs almost only while the Mac does nothing else, which the estimate
+  cannot know; Slipstream says so beside the setting. Every run's file has its 180 frames.
 - **The CPU limit** (v0.2.17; Thorsten, 2026-10-28: Slipstream said 3 of 12 cores while a 2160
   archive encode, started with `pools=12`, ran at 978 % for hours). The worker's `cpu_threads`
   (`EQ_CPU_THREADS`, Slipstream's `limits` line) is x265's pool and whisper.cpp's threads when a
