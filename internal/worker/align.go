@@ -171,7 +171,12 @@ func (w *Worker) alignerDir() string {
 // where it has an engine and lacks it, and tells the queue. Beside the claims, as the models.
 func (w *Worker) alignerLoop(ctx context.Context) {
 	changed := false
-	if autoEngine(w.cfg) && enginePython(w.cfg) == "" {
+	if autoEngine(w.cfg) && w.engine() == "" {
+		// Set up once, or again when the one set up does not answer (DetectAligner at the start).
+		if enginePython(w.cfg) != "" {
+			w.cfg.Log.Warn("aligner engine does not run: set up again", "dir", engineDir(w.cfg))
+			os.RemoveAll(engineDir(w.cfg))
+		}
 		if err := w.installEngine(ctx); err != nil {
 			if ctx.Err() == nil {
 				w.cfg.Log.Warn("aligner engine not set up", "err", err)
