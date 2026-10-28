@@ -130,6 +130,12 @@ type RungParams struct {
 	Captions   *Captions `json:"captions,omitempty"`
 	// Check: what the worker checks of its result in the same lease (v0.2.8).
 	Check *CheckSettings `json:"check,omitempty"`
+	// FPS: the frame rate the file goes out at (v0.2.13, a clip for Instagram and Threads, 23 to
+	// 60): `fps=` in the filter chain after the crop. Without it the file keeps the source's.
+	FPS *FPS `json:"fps,omitempty"`
+	// EditList false: the MP4 has no edit lists (v0.2.13, `-use_editlist 0`; Instagram's and
+	// Threads' specs want none). Absent or true, ffmpeg writes them where they are needed.
+	EditList *bool `json:"edit_list,omitempty"`
 }
 
 // Crop is a crop before the scale.
@@ -147,6 +153,10 @@ type Audio struct {
 	Mono        Mono   `json:"mono,omitempty"`
 	// MonoSideBelowDB: with mono "measure", how far below the mid the side must be (40 dB).
 	MonoSideBelowDB *float64 `json:"mono_side_below_db,omitempty"`
+	// SampleRate and Channels: the AAC's rate and channels (v0.2.13, `-ar` and `-ac`; a clip has
+	// at most 48 kHz and two). Without them it keeps the source's.
+	SampleRate int `json:"sample_rate,omitempty"`
+	Channels   int `json:"channels,omitempty"`
 }
 
 // Captions are burnt in by libass from a job input.

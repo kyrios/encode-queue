@@ -158,9 +158,27 @@ func (s *Store) mismatchTools(w *Worker, j *Job) string {
 	if w.Caps == nil {
 		return "no capabilities"
 	}
-	if needsV028(j) && versionLess(w.Caps.AppVersion, "0.2.8") {
+	if why := tooOld(w, j); why != "" {
+		return why
+	}
+	return s.mismatchRequires(w, j)
+}
+
+// tooOld says why the worker's version cannot make the job as asked, or "".
+func tooOld(w *Worker, j *Job) string {
+	v, _ := minVersion(j)
+	switch {
+	case v == "" || !versionLess(w.Caps.AppVersion, v):
+		return ""
+	case v == "0.2.8":
 		return "worker " + w.Caps.AppVersion + " runs no cut, remux or check jobs and no check step (0.2.8)"
 	}
+	// v0.2.13: an older worker would not refuse it, it would make the file without them.
+	return "worker " + w.Caps.AppVersion + " would make the file without " + strings.Join(clipFields(j), ", ") + " (0.2.13)"
+}
+
+// mismatchRequires is mismatchTools without the version: the tools, model and fonts.
+func (s *Store) mismatchRequires(w *Worker, j *Job) string {
 	req, onlyRef := s.requires(j)
 	if onlyRef && w.Name != s.cfg.ReferenceWorker {
 		return "the reference worker has not said what it runs yet"
@@ -281,6 +299,9 @@ func (s *Store) validate(id string, spec *JobSubmit) error {
 			if p.Captions.Font == "" {
 				return errf(422, "invalid", "captions.font is empty")
 			}
+		}
+		if err := validateClip(p); err != nil {
+			return errf(422, "invalid", "params: %v", err)
 		}
 	}
 	if err := validateKind(j, spec); err != nil {

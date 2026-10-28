@@ -111,7 +111,7 @@ func (r *run) checkResult(ctx context.Context, c *CheckSettings, result, source 
 		}
 	}
 	if c.Compare != nil && source != "" {
-		args, err := compareArgs(ff, *c.Compare, result, source, w, h, r.l.Job.Source.Width, r.l.Job.Source.Height)
+		args, err := compareArgs(ff, *c.Compare, result, source, w, h, r.l.Job.Source.Width, r.l.Job.Source.Height, r.rate)
 		if err != nil {
 			return nil, fail("other", "compare: %v", err)
 		}

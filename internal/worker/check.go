@@ -204,8 +204,10 @@ var vmafModelRe = regexp.MustCompile(`^[a-z0-9_.]{1,40}$`)
 // frame. pts become 0, 1, 2 … on both sides, so pairs line up by count, and fps=1 names that
 // rate (xpsnr divides by it). SSIM and PSNR on the 10-bit path; XPSNR and libvmaf in 8 bits
 // (ffmpeg's vf_xpsnr misreads 10-bit frames whose stride is not their width). srcW and srcH
-// are the source's size.
-func compareArgs(ffmpeg string, c CompareSettings, result, source string, w, h, srcW, srcH int) ([]string, error) {
+// are the source's size. rate is a rung's fps (v0.2.13; "" for none): the source goes through
+// the same fps filter first, which picks the frames the encode kept, so the pairs show one
+// moment each, not the 120 fps source's frame n beside the 60 fps result's.
+func compareArgs(ffmpeg string, c CompareSettings, result, source string, w, h, srcW, srcH int, rate FPS) ([]string, error) {
 	every := c.Every
 	if every < 1 {
 		every = 1
@@ -251,7 +253,14 @@ func compareArgs(ffmpeg string, c CompareSettings, result, source string, w, h, 
 	if srcW != w || srcH != h {
 		scale = fmt.Sprintf("scale=%d:%d:flags=lanczos,", w, h)
 	}
-	g := fmt.Sprintf("[0:v]%s,format=yuv420p10le[d0];[1:v]%s,%sformat=yuv420p10le,split=%d", sel, sel, scale, n)
+	resample := ""
+	if rate != "" {
+		if rate.value() == 0 {
+			return nil, fmt.Errorf("fps %q is no rate from 1 to 240", string(rate))
+		}
+		resample = "fps=" + string(rate) + ","
+	}
+	g := fmt.Sprintf("[0:v]%s,format=yuv420p10le[d0];[1:v]%s%s,%sformat=yuv420p10le,split=%d", sel, resample, sel, scale, n)
 	for i := 1; i <= n; i++ {
 		g += fmt.Sprintf("[r%d]", i)
 	}

@@ -827,3 +827,39 @@ func TestCancelStopsTheWorker(t *testing.T) {
 		t.Fatalf("stopped for %s", r)
 	}
 }
+
+// v0.2.13: a clip's rung through the pipeline API, the queue and the tunnel. A worker of 0.2.12
+// would drop fps, audio.sample_rate, audio.channels and edit_list and make the file without
+// them, so it never gets the job, and the job says what it waits for. A worker of 0.2.13 gets
+// the params as sent, and its ffmpeg the arguments they mean.
+func TestAClipRungGoesOnlyToAWorkerThatSetsItsFields(t *testing.T) {
+	t.Setenv("FAKE_FRAMES", "3")
+	h := newHarness(t)
+	h.pipeline()
+	h.pairWith("encoder", func(c *worker.Config) { c.Version = "0.2.12" })
+	clip := map[string]any{"rung": "mastodon", "codec": "libx264", "preset": "slow", "crf": 23, "width": 1080, "height": 1920,
+		"crop": map[string]any{"width": 1080, "height": 1920, "x": 1380, "y": 0}, "vbv_maxrate_kbps": 3992, "vbv_bufsize_kbit": 7984,
+		"audio": map[string]any{"mode": "aac", "bitrate_kbps": 128, "sample_rate": 48000, "channels": 2},
+		"fps":   "30000/1001", "edit_list": false}
+	h.rungJob("clip.mastodon-s2", "now", map[string]any{"params": clip})
+	h.rungJob("one.2160-stage1", "stage1", nil)
+	// encoder works, takes the rung behind the clip and leaves the clip.
+	h.waitState("one.2160-stage1", "done", 30*time.Second)
+	j := h.job("clip.mastodon-s2")
+	want := "it waits for a worker of 0.2.13 or later, which sets fps, audio.sample_rate, audio.channels, edit_list (paired: encoder 0.2.12)"
+	if j.State != "queued" || len(j.Attempts) != 0 || j.Waiting == nil || j.Waiting.Code != "no_eligible_worker" || j.Waiting.Detail != want {
+		t.Fatalf("the clip beside encoder 0.2.12: %s %d %+v", j.State, len(j.Attempts), j.Waiting)
+	}
+	h.pairWith("mac", func(c *worker.Config) { c.Version = "0.2.13" })
+	j = h.waitState("clip.mastodon-s2", "done", 30*time.Second)
+	if j.Worker == nil || j.Worker.Name != "mac" || len(j.Attempts) != 1 {
+		t.Fatalf("the clip went to %+v, attempts %d", j.Worker, len(j.Attempts))
+	}
+	got := h.fetch(j, 1)
+	for _, w := range []string{"-vf crop=1080:1920:1380:0,fps=30000/1001,format=yuv420p -c:v libx264",
+		"-c:a aac -b:a 128k -ar 48000 -ac 2 -map_metadata -1 -map_chapters -1 -use_editlist 0 -movflags +faststart"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("the clip's ffmpeg had no %q: %.900q", w, got)
+		}
+	}
+}

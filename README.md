@@ -121,6 +121,18 @@ All three are OpenAPI 3.1.
   its file (`result.check`), or alone from a `check` job (`outcome: figures`, no file); they wait
   as `checking` for the pipeline's verdict like a file, and the job's attempts show them. A
   worker may report the phase `checking` while it checks.
+- **A clip's rung** (v0.2.13; video-pipeline v0.2.10's Short, one 9:16 file for Instagram
+  Reels, YouTube Shorts, Mastodon, Threads and Bluesky): a rung may set `fps` (`fps=` after the
+  crop, before the scale; a number or `"30000/1001"`), `audio.sample_rate` and `audio.channels`
+  (`-ar`, `-ac`, with AAC only) and `edit_list: false` (`-use_editlist 0`; Instagram's and Threads'
+  specs want no edit lists). A worker before 0.2.13 reads params loosely and would make the file
+  without them, so such a rung goes only to workers of 0.2.13 or later; until one is paired it
+  waits, and the Encoder page's reason names the version and the older workers. At another rate a
+  file reports its own frames and no `source_frames`, and a comparison takes the source at that
+  rate too. Without edit lists ffmpeg keeps picture and
+  sound together by the timestamps; AVFoundation plays the sound early by the picture's B-frame
+  delay less the AAC priming (58.7 ms at 25 fps, 22.7 ms at 60), measured in helper.yaml's
+  `edit_list`.
 - **Late results** are taken and judged while the job is not done; the first accepted wins,
   later ones are `superseded`. A rejected or failed result excludes its worker from that job;
   after `max_failures` (3) the job is `failed`.

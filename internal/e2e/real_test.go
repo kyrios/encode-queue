@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -205,4 +206,134 @@ func TestRealChecksThroughTheQueue(t *testing.T) {
 	if !phases["checking"] || !phases["encoding"] {
 		t.Errorf("the phases the worker reported: %v", phases)
 	}
+}
+
+// **A clip's rung with the real ffmpeg** (v0.2.13): a 120 fps source with 96 kHz sound on four
+// channels comes out at 60 fps, 48 kHz and two channels, and with edit_list false without an
+// edts box; the same rung without it has one. At its own rate the file reports its own frames
+// and no source_frames, which would be the source's.
+func TestRealClipRung(t *testing.T) {
+	ff := realFFmpeg(t)
+	h := newHarness(t)
+	var mu sync.Mutex
+	judged := map[string]queue.AttemptResult{}
+	h.verdict = func(j queue.JobView, a queue.AttemptView, file []byte) (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		judged[j.ID] = *a.Result
+		return "accepted", ""
+	}
+	h.pipeline()
+	h.pairWith("encoder", func(c *worker.Config) {
+		c.Version = "0.2.13"
+		c.ChunkBytes = 4 << 20
+		c.FFmpeg = ff
+		c.WhisperCLI = "no-whisper-cli"
+	})
+	rel := "clip/master.mov"
+	p := filepath.Join(h.srcDir, rel)
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	if out, err := exec.Command(ff, "-hide_banner", "-v", "error", "-y", "-f", "lavfi",
+		"-i", "testsrc2=size=640x360:rate=120:duration=3", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=96000:duration=3",
+		"-filter_complex", "[1:a]pan=4c|c0=c0|c1=c0|c2=c0|c3=c0[a]", "-map", "0:v", "-map", "[a]",
+		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", p).CombinedOutput(); err != nil {
+		t.Fatalf("the source: %v %s", err, out)
+	}
+	data, _ := os.ReadFile(p)
+	sum := sha256.Sum256(data)
+	source := map[string]any{"path": rel, "bytes": len(data), "sha256": hex.EncodeToString(sum[:]), "container": "mov",
+		"duration_s": 3.0, "frames": 360, "width": 640, "height": 360}
+	params := func(editList any) map[string]any {
+		// veryfast, stage 1's preset, has B-frames as every clip's: the picture starts two frames late,
+		// later than the AAC priming. (Without B-frames and without edit lists the muxer stretches
+		// the first picture by the priming's 21.3 ms instead, and ffmpeg reads 59.58 fps here.)
+		return map[string]any{"rung": "mastodon", "codec": "libx264", "preset": "veryfast", "crf": 23, "width": 202, "height": 360,
+			"crop": map[string]any{"width": 202, "height": 360, "x": 218, "y": 0}, "vbv_maxrate_kbps": 2000,
+			"audio": map[string]any{"mode": "aac", "bitrate_kbps": 128, "sample_rate": 48000, "channels": 2},
+			"check": map[string]any{"decode": true, "frames": true}, "fps": 60, "edit_list": editList}
+	}
+	for id, el := range map[string]any{"clip.mastodon-s2": false, "clip.with-elst": nil} {
+		h.submit(id, map[string]any{"kind": "rung", "priority": "now", "upload_id": "clip", "params": params(el),
+			"source": source, "result": map[string]any{"name": "mastodon.mp4", "max_bytes": 50 << 20}})
+	}
+	// The comparison at another rate: the whole picture scaled, the source taken at 60 fps too,
+	// so each pair is one moment. testsrc2 moves, and pairing the result's frame n with the 120 fps
+	// source's frame n would compare pictures 1/120 s × n apart.
+	compared := map[string]any{"rung": "180", "codec": "libx264", "preset": "veryfast", "crf": 18, "width": 320, "height": 180,
+		"audio": map[string]any{"mode": "none"}, "fps": 60,
+		"check": map[string]any{"decode": true, "frames": true, "compare": map[string]any{"every": 5, "metrics": []string{"psnr_y"}}}}
+	h.submit("clip.180-compare", map[string]any{"kind": "rung", "priority": "now", "upload_id": "clip", "params": compared,
+		"source": source, "result": map[string]any{"name": "180.mp4", "max_bytes": 50 << 20}})
+	for id, wantEdts := range map[string]bool{"clip.mastodon-s2": false, "clip.with-elst": true} {
+		j := h.waitState(id, "done", 240*time.Second)
+		file := filepath.Join(t.TempDir(), "mastodon.mp4")
+		os.WriteFile(file, []byte(h.fetch(j, 1)), 0o644)
+		info, _ := exec.Command(ff, "-hide_banner", "-i", file).CombinedOutput()
+		for _, w := range []string{"202x360", "60 fps", "48000 Hz, stereo"} {
+			if !strings.Contains(string(info), w) {
+				t.Errorf("%s: no %q in\n%s", id, w, info)
+			}
+		}
+		if got := edtsBoxes(t, file); got != wantEdts {
+			t.Errorf("%s: an edts box %v, want %v", id, got, wantEdts)
+		}
+		mu.Lock()
+		var f figures
+		if err := json.Unmarshal(judged[id].Check, &f); err != nil || f.Decode == nil || f.Decode.Errors != 0 ||
+			f.Frames == nil || *f.Frames != 180 || f.SourceFrames != nil {
+			t.Errorf("%s: figures %s", id, judged[id].Check)
+		}
+		mu.Unlock()
+	}
+	checkClipCompare(t, h, &mu, judged)
+}
+
+// TestRealClipRung's comparison, after its two files.
+func checkClipCompare(t *testing.T, h *harness, mu *sync.Mutex, judged map[string]queue.AttemptResult) {
+	t.Helper()
+	h.waitState("clip.180-compare", "done", 240*time.Second)
+	mu.Lock()
+	defer mu.Unlock()
+	var f figures
+	if err := json.Unmarshal(judged["clip.180-compare"].Check, &f); err != nil || f.Compare == nil || f.Compare.Pairs != 36 {
+		t.Fatalf("the comparison at 60 fps: %s", judged["clip.180-compare"].Check)
+	}
+	if p, ok := f.Compare.PSNRY.(float64); !ok || p < 30 {
+		t.Errorf("PSNR-Y %v at 60 fps: the pairs are not the same moments", f.Compare.PSNRY)
+	}
+}
+
+// edtsBoxes says whether any trak of an MP4's moov has an edts box (an edit list).
+func edtsBoxes(t *testing.T, path string) bool {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := func(b []byte) map[string][][]byte {
+		out := map[string][][]byte{}
+		for len(b) >= 8 {
+			size := int(binary.BigEndian.Uint32(b))
+			if size < 8 || size > len(b) {
+				break
+			}
+			out[string(b[4:8])] = append(out[string(b[4:8])], b[8:size])
+			b = b[size:]
+		}
+		return out
+	}
+	moov := children(data)["moov"]
+	if len(moov) != 1 {
+		t.Fatalf("%s: %d moov boxes", path, len(moov))
+	}
+	traks := children(moov[0])["trak"]
+	if len(traks) != 2 {
+		t.Fatalf("%s: %d traks", path, len(traks))
+	}
+	for _, trak := range traks {
+		if len(children(trak)["edts"]) > 0 {
+			return true
+		}
+	}
+	return false
 }

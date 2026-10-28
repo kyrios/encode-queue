@@ -156,7 +156,7 @@ func (s *Store) noteResult(w *Worker, j *Job, l *Lease, frames int64, encodeS fl
 		return
 	}
 	if frames <= 0 {
-		frames = j.Spec.Source.Frames
+		frames = j.outFrames()
 	}
 	if held := s.cfg.Now().Sub(l.CreatedAt).Seconds(); frames > 0 && held > 0 {
 		fps = math.Min(fps, float64(frames)/held)
@@ -273,14 +273,14 @@ func (s *Store) fpsOn(w *Worker, class string) float64 {
 // encodeSeconds is how long the worker would take for the job from the start, or 0 when
 // unknown.
 func (s *Store) encodeSeconds(w *Worker, j *Job) float64 {
-	if j.rung == nil || j.Spec.Source.Frames <= 0 {
+	if j.rung == nil || j.outFrames() <= 0 {
 		return 0
 	}
 	fps := s.fpsOn(w, rungClass(j.rung))
 	if fps <= 0 {
 		return 0
 	}
-	return float64(j.Spec.Source.Frames) / fps
+	return float64(j.outFrames()) / fps
 }
 
 // eta is the seconds until an attempt finishes encoding, from frames left and its fps.
@@ -288,7 +288,7 @@ func eta(j *Job, p *Progress) *int64 {
 	if p == nil || p.Phase != "encoding" || p.FPS == nil || *p.FPS <= 0 || p.FramesDone == nil {
 		return nil
 	}
-	total := j.Spec.Source.Frames
+	total := j.outFrames()
 	if p.FramesTotal != nil && *p.FramesTotal > 0 {
 		total = *p.FramesTotal
 	}
