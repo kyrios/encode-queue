@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,39 @@ func TestANowJobTakesTheArchiveJobBackForTheRAM(t *testing.T) {
 	}
 }
 
+// An archive encode claimed after encoder's last presence is in no measured figure, only its
+// expected peak is. Taken back, its tool runs until the worker's next renewal: the peak still
+// counts until a presence measures the machine again (Codex on #21).
+func TestATakenBackJobsRAMCountsUntilMeasured(t *testing.T) {
+	e := newEnv(t, "")
+	enc := e.worker("encoder", reference)
+	e.machine(enc, 8*gib, 2*gib)
+	e.limits(enc, 1, 1)
+	e.clock.Add(time.Second)
+	e.rung("old.2160-archive", "archive")
+	if l := e.claim(enc); l == nil {
+		t.Fatal("no archive encode")
+	}
+	e.sofortWhisper("k3v9x2m1q7pz.whisper")
+	// 8 - 2 - 5.5 (claimed since the presence) - 1 < 2.5.
+	if x, err := e.high(enc); err != nil || x != nil {
+		t.Fatalf("captions beside the encode: %+v %v", x, err)
+	}
+	if !e.s.preempt(e.clock.Now()) {
+		t.Fatal("nothing taken back")
+	}
+	if x, err := e.high(enc); err != nil || x != nil {
+		t.Fatalf("captions while the taken-back encode may still run: %+v %v", x, err)
+	}
+	e.clock.Add(30 * time.Second)
+	used := 12 * gib / 10
+	e.s.PutPresence(enc, Presence{State: "idle", MemoryUsed: &used})
+	e.clock.Add(time.Second)
+	if x, err := e.high(enc); err != nil || x == nil || x.Job.ID != "k3v9x2m1q7pz.whisper" {
+		t.Fatalf("captions once the encode is measured gone: %+v %v", x, err)
+	}
+}
+
 // One lease at a time: until the RAM is measured again, a second lower job is not taken back.
 func TestANowJobTakesOneJobBackAtATime(t *testing.T) {
 	e := newEnv(t, "")
@@ -328,6 +362,31 @@ func TestAHighPriorityJobWaitsForNoArchiveJob(t *testing.T) {
 	// The stage 2 job still waits for the Mac (and encoder would run it beside the stage 1 job).
 	if y := e.claim(enc); y != nil {
 		t.Fatalf("encoder took the stage 2 job too: %+v", y)
+	}
+}
+
+// A worker with a free normal slot whose RAM a high-priority job holds is no better worker now:
+// it waits for a lease to end, and with no end in sight it counts in no scoring (Codex on #21).
+func TestARAMBlockedWorkerIsNoBetterWorker(t *testing.T) {
+	e, enc, mac := scored(t)
+	e.limits(mac, 1, 1)
+	w := e.s.st.Workers[mac]
+	w.Caps.Hardware = []byte(`{"cpu_threads":12,"memory_bytes":` + strconv.FormatInt(8*gib, 10) + `}`)
+	used := 2 * gib
+	e.s.PutPresence(mac, Presence{State: "idle", MemoryUsed: &used})
+	e.sofortWhisper("k3v9x2m1q7pz.whisper")
+	if x, err := e.high(mac); err != nil || x == nil {
+		t.Fatalf("the captions on the Mac: %+v %v", x, err)
+	}
+	e.clock.Add(time.Second)
+	used = 45 * gib / 10 // 8 - 4.5 - 1 GB leaves no room for a 4K encode's 5.5
+	e.s.PutPresence(mac, Presence{State: "working", MemoryUsed: &used})
+	e.presence(enc)
+	e.rung("b.2160-stage2", "stage2")
+	e.sized("b.2160-stage2", 400e6)
+	// The Mac would take 4 min against encoder's 12, but cannot start it: encoder takes it.
+	if x := e.claim(enc); x == nil || x.Job.ID != "b.2160-stage2" {
+		t.Fatalf("encoder left the job to the RAM-blocked Mac: %+v", x)
 	}
 }
 

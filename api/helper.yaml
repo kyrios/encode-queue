@@ -1123,7 +1123,8 @@ components:
             of priority `now` and `stage1`. Each kind counts only its own leases. A claim beside a
             lease in the other kind of slot, and a `high` one beside any lease, needs the RAM: the
             worker's memory less the last presence's `memory_used_bytes`, less the expected peak of
-            each lease claimed since that presence, less 1 GB must hold the job's expected peak.
+            each lease claimed since that presence (one the queue took back since included: its tool
+            runs until the worker's next renewal), less 1 GB must hold the job's expected peak.
             Two normal claims side by side need none: `max_parallel_jobs` says the machine takes
             them. Where only the RAM keeps a `now` job out of a free high-priority slot and no worker
             has a slot for it, the queue takes that worker's lowest lease below `stage1` back

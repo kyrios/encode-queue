@@ -45,8 +45,9 @@ All three are OpenAPI 3.1.
   `stage1`, so no archive or stage 2 job ever holds one. Both are 1 by default; Slipstream's
   settings set them. A worker before 0.2.14 has one high-priority slot, its v0.2.5 extra slot. A
   claim beside a job in the other kind of slot, and a high-priority one beside any, needs the RAM:
-  memory less the last presence's use, less the expected peak of each lease claimed since, less
-  1 GB, must hold the job's expected peak (a 4K `slower` encode 5.5 GB, whisper medium 2.5 GB).
+  memory less the last presence's use, less the expected peak of each lease claimed since (one
+  taken back since included, as its tool runs until the next renewal), less 1 GB, must hold the
+  job's expected peak (a 4K `slower` encode 5.5 GB, whisper medium 2.5 GB).
   Two normal slots side by side need none. Where only the RAM keeps a `now` job out of a free
   high-priority slot and no worker has a slot for it, it takes that worker's lowest lease below
   `stage1` back, one at a time, and the worker's claims wait for its next measured presence:

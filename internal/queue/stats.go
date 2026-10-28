@@ -341,6 +341,21 @@ func (s *Store) freeAt(w *Worker, now time.Time, except string, high bool) *time
 	return &ends[0]
 }
 
+// nextEnd is when the worker's first active attempt should finish encoding; nil when none says.
+func (s *Store) nextEnd(w *Worker, now time.Time) *time.Time {
+	var first *time.Time
+	for _, l := range s.activeLeases(w.ID) {
+		if j := s.st.Jobs[l.JobID]; j != nil {
+			if e := eta(j, l.Progress); e != nil {
+				if t := now.Add(time.Duration(*e) * time.Second); first == nil || t.Before(*first) {
+					first = &t
+				}
+			}
+		}
+	}
+	return first
+}
+
 // forecast is when each unfinished job should finish: an active attempt at now plus its eta;
 // the queued jobs in order, each to the worker slot that finishes it first, a slot starting
 // when its attempt finishes. Jobs it cannot estimate are missing.

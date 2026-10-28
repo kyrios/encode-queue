@@ -107,6 +107,10 @@ func (s *Store) ect(w *Worker, j *Job, asking bool, now time.Time) (ECT, bool) {
 	if !asking && !s.freeFor(w, j, now) {
 		// A high-priority slot the RAM keeps it out of frees nothing: a normal one must.
 		f := s.freeAt(w, now, "", highPriority(j.Priority) && !s.ramKeepsOut(w, j, now))
+		if f != nil && !f.After(now) {
+			// A slot is free but not its RAM: the job waits for one of the worker's leases to end.
+			f = s.nextEnd(w, now)
+		}
 		if f == nil {
 			return e, false // busy until it cannot tell
 		}

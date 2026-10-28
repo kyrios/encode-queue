@@ -234,7 +234,8 @@ func peakBytes(j *Job) int64 {
 
 // ramFits says whether the worker's free RAM, by its last presence, holds the job's peak with
 // the headroom. A lease claimed since that presence is not in its figure yet and counts with its
-// own expected peak (v0.2.14: two high-priority slots may claim within one presence). Unknown RAM
+// own expected peak (v0.2.14: two high-priority slots may claim within one presence), and so does
+// one the queue took back since, whose tool runs until the worker's next renewal. Unknown RAM
 // never fits.
 func (s *Store) ramFits(w *Worker, j *Job) bool {
 	free, ok := s.ramFree(w)
@@ -249,12 +250,26 @@ func (s *Store) ramFree(w *Worker) (int64, bool) {
 		return 0, false
 	}
 	used := *w.MemoryUsed
-	for _, l := range s.activeLeases(w.ID) {
-		if lj := s.st.Jobs[l.JobID]; lj != nil && l.CreatedAt.After(w.memoryAt) {
+	for _, l := range s.st.Leases {
+		if l.WorkerID != w.ID || !l.CreatedAt.After(w.memoryAt) || !mayRun(l) {
+			continue
+		}
+		if lj := s.st.Jobs[l.JobID]; lj != nil {
 			used += peakOn(w, lj)
 		}
 	}
 	return *total - used - headroom, true
+}
+
+// mayRun says whether a lease's tool may still run: an active lease, or one the queue ended
+// (preempted, cancelled, expired), which its worker hears of only at its next renewal. One the
+// worker ended itself, delivered, failed or given back, has stopped.
+func mayRun(l *Lease) bool {
+	switch l.State {
+	case LeaseActive, LeasePreempted, LeaseCancelled, LeaseExpired:
+		return true
+	}
+	return false
 }
 
 // peakOn is j's expected peak on w: with the whisper model w would run.
