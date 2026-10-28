@@ -111,6 +111,7 @@ func TestTheQueuesEchoKeepsThePauseMode(t *testing.T) {
 // Each way to pause, on a fake long tool: after the job it runs on; now it stands still, and goes
 // back after the give-back time unless the queue holds the lease; resumed, it runs again.
 func TestPauseModesOnARunningTool(t *testing.T) {
+	unclamped(t)
 	t.Setenv("EQ_BUSY_HELPER", "1")
 	for _, c := range []struct {
 		name     string
