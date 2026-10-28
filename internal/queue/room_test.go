@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -171,7 +172,7 @@ func TestAHighPriorityResultStillNeedsTheDiskAsItIs(t *testing.T) {
 	}
 	var b bytes.Buffer
 	e.s.WriteMetrics(&b, "test")
-	for _, want := range []string{`encode_queue_result_room_bytes{for="below_stage1"} `, `encode_queue_result_room_bytes{for="now_stage1"} `} {
+	for _, want := range []string{`encode_queue_result_room_bytes{priority="archive"} `, `encode_queue_result_room_bytes{priority="now"} `} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("metrics lack %s", want)
 		}
@@ -241,5 +242,104 @@ func TestAnUploadKeepsTheHighPriorityLeasesRoom(t *testing.T) {
 	free = 4 << 30
 	if _, err := e.s.CreateUpload(mac, archive.ID, 3<<30); code(err) != "no_room" {
 		t.Fatalf("an archive result the disk has no room for: %v", err)
+	}
+}
+
+// v0.2.25, live on encoder on 2026-10-28: an archive lease reserved 8 GB with 10 MB written and
+// 7.5 hours to go, and Thorsten's stage 2 job waited with no_room, "0.6 GB beside what running
+// jobs may still deliver". A claim now counts the leases of its own class and higher.
+func TestAStage2JobDoesNotWaitForAnArchiveLeasesWorstCase(t *testing.T) {
+	e := newEnv(t, "")
+	e.s.cfg.ResultReserve = 2 << 30
+	free := int64(12 << 30)
+	e.s.cfg.FreeBytes = func(string) (int64, error) { return free, nil }
+	enc, mac := e.worker("encoder", reference), e.worker("mac", reference)
+	e.limits(enc, 1, 1)
+	e.limits(mac, 1, 1)
+	e.rung("old.2160-archive", "archive")
+	e.s.st.Jobs["old.2160-archive"].Spec.Result.MaxBytes = 8 << 30
+	if l := e.claim(mac); l == nil {
+		t.Fatal("the archive lease")
+	}
+	free = (10 << 30) + (600 << 20) // 0.6 GiB beside the archive's 8 and the reserve
+	e.rung("up1.2160-stage2", "stage2")
+	e.s.st.Jobs["up1.2160-stage2"].Spec.Result.MaxBytes = 3 << 30
+	e.rung("next.2160-archive", "archive")
+	e.s.st.Jobs["next.2160-archive"].Spec.Result.MaxBytes = 1 << 30
+	if jv, _ := e.s.GetJob("up1.2160-stage2"); jv.Waiting != nil {
+		t.Fatalf("the stage 2 job waits: %+v", jv.Waiting)
+	}
+	// Another archive job still counts the archive lease in full.
+	if jv, _ := e.s.GetJob("next.2160-archive"); jv.Waiting == nil || jv.Waiting.Code != WaitNoRoom {
+		t.Fatalf("the second archive job's waiting: %+v", jv.Waiting)
+	}
+	if l := e.claim(enc); l == nil || l.Job.ID != "up1.2160-stage2" {
+		t.Fatalf("encoder's claim: %+v", l)
+	}
+	// The archive's result waits at its upload for the stage 2 lease's room; the stage 2
+	// result does not wait for the archive's.
+	archive := e.s.activeLeases(mac)[0]
+	stage2 := e.s.activeLeases(enc)[0]
+	if _, err := e.s.CreateUpload(mac, archive.ID, 6<<30); code(err) != "no_room" {
+		t.Fatalf("the archive result beside the stage 2 lease: %v", err)
+	}
+	if _, err := e.s.CreateUpload(enc, stage2.ID, 3<<30); err != nil {
+		t.Fatalf("the stage 2 result: %v", err)
+	}
+}
+
+// Each class counts the max_bytes of its own and the higher classes' active leases, and the
+// lower ones' uploads in flight; an upload leaves room for the higher classes alone.
+func TestEachClassCountsItsOwnAndTheHigherOnes(t *testing.T) {
+	e := newEnv(t, "")
+	e.s.cfg.ResultReserve = 2 << 30
+	free := int64(20 << 30)
+	e.s.cfg.FreeBytes = func(string) (int64, error) { return free, nil }
+	leases := map[string]*LeaseView{}
+	for i, c := range []struct {
+		prio string
+		gib  int64
+	}{{"archive", 4}, {"stage2", 3}, {"stage1", 2}, {"now", 1}} {
+		w := e.worker("w"+string(rune('a'+i)), reference)
+		e.limits(w, 1, 1)
+		id := "v" + string(rune('a'+i)) + ".2160-" + c.prio
+		e.rung(id, c.prio)
+		e.s.st.Jobs[id].Spec.Result.MaxBytes = c.gib << 30
+		l := e.claim(w)
+		if l == nil || l.Job.ID != id {
+			t.Fatalf("the %s claim: %+v", c.prio, l)
+		}
+		leases[c.prio] = l
+	}
+	e.s.mu.Lock()
+	got := e.s.rooms()
+	ups := map[string]int64{}
+	for p, l := range leases {
+		ups[p] = e.s.uploadRoom(e.s.st.Leases[l.ID])
+	}
+	e.s.mu.Unlock()
+	// 20 free less 2 in reserve: now counts 1, stage1 1+2, stage2 1+2+3, archive all 10.
+	want := []int64{17 << 30, 15 << 30, 12 << 30, 8 << 30}
+	for c := range want {
+		if got[c] != want[c] {
+			t.Errorf("the %s room: %d GiB, want %d", Priorities[c], got[c]>>30, want[c]>>30)
+		}
+	}
+	// An upload of each class leaves room for the classes above it.
+	for p, w := range map[string]int64{"now": 18, "stage1": 17, "stage2": 15, "archive": 12} {
+		if ups[p] != w<<30 {
+			t.Errorf("an upload of the %s lease: %d GiB, want %d", p, ups[p]>>30, w)
+		}
+	}
+	var b bytes.Buffer
+	e.s.WriteMetrics(&b, "test")
+	line := `encode_queue_result_room_bytes{priority="stage2"} `
+	i := strings.Index(b.String(), line)
+	if i < 0 {
+		t.Fatalf("no stage 2 room in the metrics")
+	}
+	v, err := strconv.ParseFloat(strings.Fields(b.String()[i+len(line):])[0], 64)
+	if err != nil || int64(v) != 12<<30 {
+		t.Errorf("the stage 2 room in the metrics: %v %v", v, err)
 	}
 }

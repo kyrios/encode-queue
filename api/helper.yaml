@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue helper API
-  version: 1.10.0
+  version: 1.10.1
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
@@ -440,7 +440,8 @@ paths:
         For a lease's result. `Upload-Metadata` names the lease (`lease_id`, base64 as tus
         requires); the upload may not exceed the lease's `result.max_bytes`. **It must fit the
         queue's disk** (v0.2.21): free space less the reserve, what other uploads still have to
-        write, and the `max_bytes` of the active high-priority leases that have not begun theirs.
+        write, and the `max_bytes` of the active leases of a higher priority than its own that have
+        not begun theirs (v0.2.25: every higher one, no longer now and stage1 alone).
         Otherwise `503 no_room` with `Retry-After`; the lease stays, and the worker asks again.
       parameters:
         - $ref: '#/components/parameters/TusResumable'

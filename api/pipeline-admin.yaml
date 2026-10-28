@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.13.1
+  version: 1.13.2
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -1110,9 +1110,9 @@ components:
             `all_excluded`: every worker that does failed it or had its result rejected.
             `no_worker_available`: those that may run it are all offline or paused.
             `no_room` (v0.2.19): a worker could take it, but the queue's result directory has no
-            room for its `max_bytes`: beside every running lease's `max_bytes` for a job below
-            stage1; for one of priority now or stage1 beside the running high-priority leases'
-            `max_bytes` and the lower ones' uploads in flight; `EQ_RESULT_RESERVE_BYTES` off both.
+            room for its `max_bytes` beside the running leases' `max_bytes` of its priority and
+            higher (v0.2.25; before, now and stage1 alone skipped the lower ones), the lower ones'
+            uploads in flight, and `EQ_RESULT_RESERVE_BYTES`.
         detail: { type: string, description: One line for a person. }
         retry_at: { type: [string, 'null'], format: date-time, description: 'For `all_excluded`: when the reference worker gets the job again; null when none will (the reference is not among the excluded).' }
     Pin:
