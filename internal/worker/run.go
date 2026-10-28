@@ -57,6 +57,7 @@ type run struct {
 	suspended   bool
 	held        bool // the throttle's SIGSTOP holds the tool (throttle.go)
 	throttled   bool // the throttle runs the tool in a duty cycle now
+	bg          bool // the tool runs in the background QoS (efficiency.go)
 	pausedSince *time.Time
 	samples     []sample
 	encodeStart time.Time
@@ -78,7 +79,8 @@ func (r *run) status() JobStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := JobStatus{LeaseID: r.l.ID, JobID: r.l.Job.ID, Title: r.l.Job.Title, Kind: r.l.Job.Kind, Slot: r.slot, Attempt: r.l.Attempt,
-		Started: r.started, Progress: r.report(), Log: append([]string(nil), r.tail...), Throttled: r.throttled}
+		Started: r.started, Progress: r.report(), Log: append([]string(nil), r.tail...), Throttled: r.throttled,
+		EfficiencyCores: r.bg}
 	if r.l.Job.Kind == "rung" {
 		var p RungParams
 		if json.Unmarshal(r.l.Params, &p) == nil {
@@ -250,7 +252,7 @@ func (r *run) renewLoop(ctx context.Context) {
 		cancel()
 		r.w.contact(err)
 		if err == nil {
-			r.w.setPause(l.PausedUntil, true)
+			r.w.setPause(l.PausedUntil, true, PauseNow)
 		} else if code, ok := gone(err); ok {
 			r.w.cfg.Log.Info("the lease is gone", "lease", r.l.ID, "code", code)
 			r.stop(code)
@@ -309,7 +311,7 @@ func (r *run) pauseLoop(ctx context.Context) {
 		giveBack = 60 * time.Second
 	}
 	for {
-		paused := r.w.paused()
+		paused := r.w.suspends()
 		r.mu.Lock()
 		switch {
 		case paused && r.pausedSince == nil:
@@ -318,9 +320,13 @@ func (r *run) pauseLoop(ctx context.Context) {
 			r.signal(syscall.SIGSTOP)
 			r.suspended = true
 			r.mu.Unlock()
-			r.log("info", "worker", "paused")
+			if r.l.PauseHold {
+				r.log("info", "worker", "paused: the tool stands still, and the queue keeps the lease until the pause ends")
+			} else {
+				r.log("info", "worker", "paused")
+			}
 			r.mu.Lock()
-		case paused && time.Since(*r.pausedSince) >= giveBack:
+		case paused && !r.l.PauseHold && time.Since(*r.pausedSince) >= giveBack:
 			r.mu.Unlock()
 			r.log("info", "worker", "the pause holds: giving the job back")
 			r.stop("paused")
@@ -366,7 +372,7 @@ func (r *run) work(ctx context.Context) error {
 	if l.Job.Kind == "check" {
 		return r.workCheck(ctx)
 	}
-	wait := r.w.waitUnpaused
+	wait := r.w.waitUnsuspended
 	src := filepath.Join(r.dir, "source")
 	total := l.Job.Source.Bytes
 	err := r.w.api.Download(ctx, l.Job.Source.FileRef, src, func(n int64) {
@@ -704,6 +710,7 @@ func (r *run) runToolTo(ctx context.Context, args []string, source string, onBlo
 		r.suspended = true
 	}
 	r.mu.Unlock()
+	r.applyBackground()
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -783,6 +790,7 @@ func (r *run) runToolTo(ctx context.Context, args []string, source string, onBlo
 	r.cmd = nil
 	r.suspended = false
 	r.held = false
+	r.bg = false
 	r.mu.Unlock()
 	if ctx.Err() != nil {
 		return ctx.Err()

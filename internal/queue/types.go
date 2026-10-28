@@ -90,6 +90,11 @@ type Limits struct {
 	// and stage1 (v0.2.14, slots.go). A worker before 0.2.14 does not send it; it has one, v0.2.5's
 	// extra slot.
 	HighPrioritySlots *int `json:"high_priority_slots,omitempty"`
+	// Efficiency: which jobs run on the efficiency cores only, in macOS's background QoS
+	// (v0.2.18): "all", "archive" (jobs of priority archive) or empty for none. EfficiencySpeed
+	// is the share of the machine's full speed such a job gets, the worker's estimate (ect.go).
+	Efficiency      string   `json:"efficiency,omitempty"`
+	EfficiencySpeed *float64 `json:"efficiency_speed,omitempty"`
 }
 
 // Capabilities is what a worker says it runs.

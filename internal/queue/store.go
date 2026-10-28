@@ -28,6 +28,7 @@ type Config struct {
 	PresenceEvery  time.Duration // 30 s; three missed and a worker is offline
 	PauseGiveBack  time.Duration // 60 s
 	PauseGrace     time.Duration // 30 s more before the queue takes a paused lease back itself
+	PauseHoldMax   time.Duration // 24 h: the longest a pause holds an archive or stage 2 lease (tick.go)
 	DoneKeep       time.Duration // 7 days
 	MaxFailures    int           // 3
 	ExcludeBackoff time.Duration // 10 min: then a job no worker may run lets the reference worker back
@@ -76,6 +77,7 @@ func (c *Config) Defaults() {
 	set(&c.PresenceEvery, 30*time.Second)
 	set(&c.PauseGiveBack, 60*time.Second)
 	set(&c.PauseGrace, 30*time.Second)
+	set(&c.PauseHoldMax, 24*time.Hour)
 	set(&c.DoneKeep, 7*24*time.Hour)
 	set(&c.ExcludeBackoff, 10*time.Minute)
 	set(&c.HoldMin, 30*time.Minute)

@@ -71,11 +71,17 @@ func (s *Store) Tick() {
 	}
 }
 
-// pausedTooLong is a lease whose worker was paused for longer than the give-back time and the
-// grace on top: the worker should have given it back itself.
+// pausedTooLong is a suspended lease whose worker was paused for longer than the give-back time
+// and the grace on top: the worker should have given it back itself. Since v0.2.18 only a lease
+// whose tool stands still counts (a worker that pauses after its jobs lets them finish), and a
+// lease the pause holds (pauseHolds) goes back only after PauseHoldMax.
 func (s *Store) pausedTooLong(w *Worker, l *Lease, now time.Time) bool {
-	if !s.paused(w, now) {
+	if !s.paused(w, now) || l.Progress == nil || l.Progress.Phase != "paused" {
 		return false
+	}
+	limit := s.cfg.PauseGiveBack + s.cfg.PauseGrace
+	if j := s.st.Jobs[l.JobID]; j != nil && pauseHolds(j) {
+		limit = s.cfg.PauseHoldMax
 	}
 	since := l.CreatedAt
 	if w.PausedAt != nil && w.PausedAt.After(since) {
@@ -84,8 +90,15 @@ func (s *Store) pausedTooLong(w *Worker, l *Lease, now time.Time) bool {
 	if l.Progress != nil && l.Progress.PausedSince != nil && l.Progress.PausedSince.After(since) {
 		since = *l.Progress.PausedSince
 	}
-	return now.Sub(since) > s.cfg.PauseGiveBack+s.cfg.PauseGrace
+	return now.Sub(since) > limit
 }
+
+// **A pause holds an archive or stage 2 lease** (v0.2.18; Thorsten, 2026-10-28). x265 cannot
+// resume elsewhere: a 2160 archive encode given back after three of its five hours on the Mac
+// Studio loses three hours, and nobody waits for it. Its tool stands still through the pause and
+// goes on where it stood; the hold clock stops meanwhile (Renew). A now or stage 1 job, which a
+// person waits for, goes back after pause_give_back_s as before, for another worker to take.
+func pauseHolds(j *Job) bool { return j.Priority == "archive" || j.Priority == "stage2" }
 
 // preempt ends the lowest lease for every new upload's job that no free worker may run
 // (ADR-0007 §1, "new before old"). A `now` job preempts only where the RAM is all that keeps it out

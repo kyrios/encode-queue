@@ -213,6 +213,15 @@ func (s *Store) applyPatch(w *Worker, p WorkerPatch) error {
 		if l.CPUThreads != nil && *l.CPUThreads < 1 {
 			return errf(422, "invalid", "cpu_threads below 1")
 		}
+		switch l.Efficiency {
+		case "", EfficiencyAll, EfficiencyArchive:
+		default:
+			return errf(422, "invalid", "efficiency %q: all, archive or none", l.Efficiency)
+		}
+		if v := l.EfficiencySpeed; v != nil && (*v <= 0 || *v > 1) {
+			return errf(422, "invalid", "efficiency_speed outside (0, 1]")
+		}
+		s.retime(w, w.Limits, l, now)
 		if l.HighPrioritySlots != nil && *l.HighPrioritySlots < 0 {
 			return errf(422, "invalid", "high_priority_slots below 0")
 		}

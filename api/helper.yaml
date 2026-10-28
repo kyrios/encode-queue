@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue helper API
-  version: 1.8.0
+  version: 1.9.0
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
@@ -59,11 +59,15 @@ info:
       newer one.
     - **Exact tool versions.** The queue offers a job only to a worker whose tools match the
       job's `requires` exactly, as text (see `Tool`).
-    - **Pause.** A paused worker suspends its encode and keeps renewing its lease with
-      `phase: paused`. After `pause_give_back_s` it deletes the lease with `reason=paused`;
-      if it does not, the queue takes the lease back itself 30 s later. While paused it
-      creates no lease. A pause can come from the worker (`PATCH /me`) or from the upload
-      center; the worker reads the current one from every presence and lease answer.
+    - **Pause.** A paused worker creates no lease. It either suspends its encode and keeps
+      renewing its lease with `phase: paused`, or lets the running job finish and renews it as
+      usual (v0.2.18, 1.9.0). A suspended lease with `pause_hold` (archive and stage 2) stays
+      through the pause, its hold time stopped while it is suspended, up to 24 h; the tool goes
+      on where it stood. Any other suspended lease the worker deletes after `pause_give_back_s`
+      with `reason=paused`; if it does not, the queue takes it back itself 30 s later. The queue
+      never takes back a lease whose phase is not `paused`. A pause can come from the worker
+      (`PATCH /me`) or from the upload center; the worker reads the current one from every
+      presence and lease answer.
     - **Low priority.** The worker runs every tool at `nice 19`.
 servers:
   - url: '{api}'
@@ -612,7 +616,7 @@ components:
       type: object
       description: How much of the machine the worker may use for queue jobs. Every tool runs at `nice 19` regardless.
       properties:
-        cpu_threads: { type: [integer, 'null'], minimum: 1, description: "x265's thread pool (`pools=N`) and whisper.cpp's threads. Null: the tool's own default." }
+        cpu_threads: { type: [integer, 'null'], minimum: 1, description: "x265's thread pool (`pools=N`) and whisper.cpp's threads; from v0.2.17 also the cores a running tool may use, and from v0.2.18 a lower one lengthens the holds of the worker's leases (1.9.0). Null: the tool's own default." }
         gpu: { type: boolean, description: whisper.cpp may use the GPU (Metal on a Mac). }
         max_parallel_jobs: { type: integer, minimum: 1, default: 1, description: 'Normal slots, which take every job. What the worker asks for; the queue gives at most EQ_MAX_PARALLEL_JOBS (2) (1.4.0).' }
         high_priority_slots:
@@ -623,6 +627,14 @@ components:
             priority `now` and `stage1`, so no archive or stage 2 job ever holds one. What the worker
             asks for; the queue gives at most EQ_MAX_HIGH_PRIORITY_SLOTS (2). A worker that does not
             send it (before 0.2.14) has one, its extra slot (v0.2.5). The worker's default is 1.
+        efficiency:
+          type: string
+          enum: [all, archive]
+          description: |
+            Which jobs run on the efficiency cores only, in macOS's background QoS (v0.2.18,
+            1.9.0): `all`, or `archive` (jobs of priority archive). Absent: none. The ECT divides
+            such a job's run time by `efficiency_speed`, and its lease's hold grows with it.
+        efficiency_speed: { type: number, exclusiveMinimum: 0, maximum: 1, description: "The share of the machine's full speed a job gets on the efficiency cores, the worker's estimate (v0.2.18, 1.9.0)." }
     Me:
       type: object
       required: [worker_id, name, state]
@@ -1205,6 +1217,7 @@ components:
         hold_until: { type: string, format: date-time, description: 'The latest a renewal reaches (1.4.0): then `410 overdue`.' }
         renew_every_s: { type: integer, examples: [30] }
         pause_give_back_s: { type: integer, examples: [60], description: How long a pause may hold this lease before the worker gives it back. }
+        pause_hold: { type: boolean, description: 'A pause keeps this lease, suspended, until it ends (v0.2.18, 1.9.0): jobs of priority archive and stage 2, which nobody waits for. The worker does not give it back for the pause.' }
         paused_until: { type: [string, 'null'], format: date-time, description: "The worker's current pause." }
         params:
           oneOf:

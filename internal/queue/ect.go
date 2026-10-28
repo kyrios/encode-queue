@@ -96,6 +96,57 @@ func (s *Store) threadShare(w *Worker, beside int) float64 {
 	return allowed / free
 }
 
+// **The efficiency cores** (v0.2.18; Thorsten, 2026-10-28: "Run archive encodes only on
+// efficiency cores"). A Mac's worker may run every job, or only archive jobs, in macOS's background
+// QoS, which keeps its tools on the efficiency cores. It says so in its limits, with the share of
+// the machine's full speed such a job gets (efficiency_speed: on the Mac Studio, M2 Max, x265
+// slower took 10.6 times as long there). The ECT divides the job's run time by that share, and
+// a lease's hold grows with it (holdUntil, retime), so a slow job is neither left to the Mac by
+// mistake nor taken back as overdue. The points do not change: they price the job, not the time.
+const (
+	EfficiencyAll     = "all"
+	EfficiencyArchive = "archive"
+)
+
+// efficient says whether j runs on the efficiency cores under l.
+func efficient(l Limits, j *Job) bool {
+	if l.EfficiencySpeed == nil || *l.EfficiencySpeed <= 0 {
+		return false
+	}
+	return l.Efficiency == EfficiencyAll || (l.Efficiency == EfficiencyArchive && j.Priority == "archive")
+}
+
+// speedShare is the share of w's full speed j gets under l: on the efficiency cores the worker's
+// estimate, else the threads it may use over its CPUs (a lowered limit holds a running tool to
+// them, v0.2.17). Only the holds scale by the threads: the ECT keeps its calibrated speed.
+func (s *Store) speedShare(w *Worker, l Limits, j *Job) float64 {
+	if efficient(l, j) {
+		return *l.EfficiencySpeed
+	}
+	cpus := s.system(w).CPUThreads
+	if cpus == nil || *cpus <= 0 || l.CPUThreads == nil || *l.CPUThreads >= *cpus {
+		return 1
+	}
+	return float64(*l.CPUThreads) / float64(*cpus)
+}
+
+// retime lengthens the holds of w's active leases when its new limits slow their jobs, by the
+// ratio of the shares, to at most HoldMax over the new share from now. It never shortens one.
+func (s *Store) retime(w *Worker, old, l Limits, now time.Time) {
+	for _, ls := range s.activeLeases(w.ID) {
+		j := s.st.Jobs[ls.JobID]
+		if j == nil || ls.HoldUntil.IsZero() || !ls.HoldUntil.After(now) {
+			continue
+		}
+		before, after := s.speedShare(w, old, j), s.speedShare(w, l, j)
+		if after >= before {
+			continue
+		}
+		rest := time.Duration(float64(ls.HoldUntil.Sub(now)) * before / after)
+		ls.HoldUntil = now.Add(min(rest, time.Duration(float64(s.cfg.HoldMax)/after)))
+	}
+}
+
 // correction is the learned ratio of actual to estimated compute time for w and a kind, 1 at
 // first.
 func correction(w *Worker, kind string) float64 {
@@ -137,7 +188,12 @@ func (s *Store) ect(w *Worker, j *Job, asking bool, now time.Time) (ECT, bool) {
 		up = defaultUpBps
 	}
 	e.InS = float64(j.Spec.Source.Bytes) / down
-	e.RunS = run * s.threadShare(w, beside) * correction(w, j.Spec.Kind)
+	if efficient(w.Limits, j) {
+		// On the efficiency cores, beside nothing of the worker's own that counts (v0.2.18).
+		e.RunS = run / *w.Limits.EfficiencySpeed * correction(w, j.Spec.Kind)
+	} else {
+		e.RunS = run * s.threadShare(w, beside) * correction(w, j.Spec.Kind)
+	}
 	e.OutS = float64(j.Spec.Result.ExpectedBytes) / up
 	e.S = e.BusyS + e.InS + e.RunS + e.OutS
 	return e, true

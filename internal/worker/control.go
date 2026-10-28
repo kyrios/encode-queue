@@ -32,6 +32,7 @@ func (w *Worker) ServeControl(ctx context.Context, path string) error {
 		var body struct {
 			Until   *time.Time `json:"until"`
 			Minutes int        `json:"minutes"`
+			Mode    string     `json:"mode"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(rw, r.Body, 4096)).Decode(&body); err != nil {
 			reply(rw, 422, map[string]string{"error": "want {\"minutes\": N} or {\"until\": time}"})
@@ -45,7 +46,7 @@ func (w *Worker) ServeControl(ctx context.Context, path string) error {
 			reply(rw, 422, map[string]string{"error": "the pause must end in the future"})
 			return
 		}
-		w.Pause(until)
+		w.PauseWith(until, body.Mode)
 		reply(rw, 200, w.Status())
 	})
 	mux.HandleFunc("POST /resume", func(rw http.ResponseWriter, r *http.Request) {

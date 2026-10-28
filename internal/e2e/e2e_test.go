@@ -826,12 +826,14 @@ func TestCrashedWorkerLeaseExpires(t *testing.T) {
 	}
 }
 
+// A stage 1 job, which a person waits for, goes back from a paused worker after the give-back
+// time; an archive or stage 2 job stays, suspended (v0.2.18, pause_test.go).
 func TestPauseGivesTheJobBack(t *testing.T) {
 	h := newHarness(t)
 	h.pipeline()
 	t.Setenv("FAKE_FRAMES", "500")
 	tw := h.pair("mac")
-	h.rungJob("p_1.2160", "archive", nil)
+	h.rungJob("p_1.2160", "stage1", nil)
 	h.waitFor("encoding", 30*time.Second, func() bool {
 		j := h.job("p_1.2160")
 		return j.Progress != nil && j.Progress.Phase == "encoding"
