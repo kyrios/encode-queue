@@ -12,8 +12,9 @@ Linux server or Mac. **Slipstream** is the encoder helper's name on every machin
   The peer list is the queue's state.
 - **The worker** (`encode-worker`) pairs by its public key, long-polls for a job, fetches the
   source with range requests, runs ffmpeg (libx265, libx264) or whisper.cpp at `nice 19`, reports
-  progress and log lines, and uploads the result over tus. Jobs are rungs, whisper runs, and
-  from v0.2.8 cuts, remuxes and checks: every encode and every decode runs on a worker.
+  progress and log lines, and uploads the result over tus. Jobs are rungs, whisper runs, from
+  v0.2.8 cuts, remuxes and checks (every encode and every decode runs on a worker), and from
+  v0.2.16 align jobs, which time a text's words in its sound with Qwen3-ForcedAligner.
 - **The worker measures, the pipeline judges** (v0.2.8). After a rung, a cut or a remux the
   same lease checks the result: a full decode, its frames and length, SSIM, PSNR-Y and XPSNR
   (and VMAF when asked) against the source, the packets of a remux. The figures go with the
@@ -49,7 +50,7 @@ All three are OpenAPI 3.1.
   with `mem_limit` 10g on 14 GiB) less the last presence's use, less the expected peak of each lease claimed since (one
   taken back since included, as its tool runs until the next renewal), less 1 GB, must hold the
   job's expected peak (a 4K `slower` encode 5.5 GB, whisper turbo or medium 2 GB, measured on
-  encoder).
+  encoder; an align job 3.5 GiB on a Mac's MLX, 3 GiB on the CPU, v0.2.16).
   Two normal slots side by side need none. Where only the RAM keeps a `now` job out of a free
   high-priority slot and no worker has a slot for it, it takes that worker's lowest lease below
   `stage1` back, one at a time, and the worker's claims wait for its next measured presence:
@@ -98,6 +99,26 @@ All three are OpenAPI 3.1.
   job, never what it holds.
   The worker fetches those from ggerganov/whisper.cpp at a pinned revision only, checks their
   sha256 and times them on the calibration's speech clip.
+- **The align job** (v0.2.16; video-pipeline's `docs/aligner-timing.md`, approved by Thorsten on
+  2026-10-28): `Qwen/Qwen3-ForcedAligner-0.6B` at revision `c7cbfc20` gives every word of a text
+  that already exists its time in the sound: the Socials version's burnt-in captions and the
+  proofread captions, which whisper `small` with the pipeline's matching and `proofread.align`
+  timed before (93 to 97 % of speech onsets met within 0.2 s against 74 to 90 %). Audio and the
+  words in, whisper-cli's `-oj` JSON out, one segment per word (helper.yaml's `AlignParams`).
+  **A Mac first, encoder's CPU as the fallback** ("The macs are not always there. We need a
+  fallback that works", Thorsten): a Mac runs it through MLX and `mlx-qwen3-asr`, which the
+  worker sets up itself (python-build-standalone's CPython 3.12.12 and the pinned wheels, each
+  by its sha256, in `STATE/aligner`, 357 MB, 18 s); the Linux image brings PyTorch for the CPU and
+  `qwen-asr`. A worker with the CPU engine leaves a job to a connected Mac that may run it, as a
+  worse whisper model does. Pieces of at most 30 s, cut between words by the times the text
+  already has; MLX's buffer cache is freed after each (without it a 21-minute episode grew to 24
+  GiB). Measured: a Mac Studio 1 % of the audio's length plus 1.4 s to load, 3.0 to 3.4 GiB;
+  encoder's six cores in float32 16 % plus 6 s, 4.4 to 4.9 GB, and where 6 GiB are not free
+  beside what runs (a 4K archive encode) `lean`, bfloat16 weights with float32 products, 58 % and
+  2.9 GB with the weights' pages, the same start as float32 for 1635 of 1641 words. The model is a folder of
+  eight files, `qwen3-forced-aligner-0.6b-c7cbfc20`, in the models folder, each file by its
+  sha256; its sha256 is their manifest's (`32f47d21…`). A worker fetches it where the folder is
+  writable; encoder's is filled by infra.
 - **Leases** last 120 s and are renewed every 30 s with the progress; the long poll waits 25 s;
   presence every 30 s, offline after three missed. A lease that runs out, a worker that goes
   offline, a removed worker: the job goes back to `queued`, the next attempt with the next number.
@@ -176,6 +197,7 @@ All three are OpenAPI 3.1.
   | whisper large-v3-turbo | 12.76 × real time | 1 / (speed × 60) a second of audio (an hour: 4.7) |
   | whisper small | 32.34 × | ″ |
   | whisper medium | 12.93 × (2.5 times small's time, not timed there) | ″ |
+  | align, Qwen3-ForcedAligner on MLX (v0.2.16) | 90.9 × (0.011 of the audio's length, #24) | ″ (an hour: 0.66) |
   | remux job of a 3840x2160 master (the copy and its check) | 39.0 fps | 1 / (fps × 60) a source frame (2 hours: 77) |
   | score check job against a 3840x2160 master | 65.8 fps | ″ (2 hours: 46) |
 
@@ -271,7 +293,8 @@ docker run --rm -p 8090:8090 -p 51821:51821/udp -v /srv/eq:/data \
 | `EQ_FFMPEG`, `EQ_WHISPER_CLI` | the tools; default `ffmpeg`, `whisper-cli` from `PATH` |
 | `EQ_WHISPER_VERSION` | the whisper.cpp release, when there is no `versions.txt` beside `whisper-cli` (the toolchain has one) |
 | `EQ_TOOLCHAIN_VERSIONS` | the toolchain's `versions.txt` when it is not beside ffmpeg and whisper-cli (Slipstream's signed bundle keeps it in `Contents/Resources`): libass's and whisper.cpp's versions come from it; `EQ_WHISPER_VERSION` still wins (v0.2.8) |
-| `EQ_WHISPER_MODELS_DIR` | the `*.bin` models, found by sha256 (`/models` in the image); the models the queue wants are fetched into it, or into `STATE/models` without it. A read-only folder (encoder's, filled by infra) fetches nothing: a wanted model it lacks is `unavailable`, provided by the host, never a failure |
+| `EQ_WHISPER_MODELS_DIR` | the `*.bin` models, found by sha256 (`/models` in the image), and the aligner's folder `qwen3-forced-aligner-0.6b-c7cbfc20` (v0.2.16); the models the queue wants and, where the worker has an aligner engine, the aligner are fetched into it, or into `STATE/models` without it. A read-only folder (encoder's, filled by infra) fetches nothing: a wanted model it lacks is `unavailable`, provided by the host, never a failure |
+| `EQ_ALIGNER_PYTHON` | the Python of the aligner's engine (v0.2.16; the image's `/opt/aligner/python/bin/python3`). Unset on an Apple-silicon Mac, the worker sets up MLX in `STATE/aligner` itself; `off`: no align jobs |
 | `EQ_CALIBRATE` | `false` skips the calibration at pairing (`true` by default) |
 | `EQ_FONTS` | font families to announce besides fontconfig's, comma-separated |
 | `EQ_HOST_APP_NAME`, `EQ_HOST_APP_VERSION` | the app the worker runs inside (Slipstream and its version), shown on the Encoder page; never compared with the queue's minimum |
@@ -311,7 +334,10 @@ nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name �
   when the calibration clip starts) and `calibrated` (`classes`, when it is done), and `model`
   for each whisper model the queue wants (`name`, `sha256`, `state`: `wanted`, `downloading`,
   `checking`, `calibrating`, `ready`, `failed`, or `unavailable` when the models folder is read-only and the host provides the models; `bytes`, `bytes_done` while downloading,
-  `speed` in times real time once timed, `reason` when it failed).
+  `speed` in times real time once timed, `reason` when it failed); the aligner's folder is
+  `Qwen3-ForcedAligner-0.6B` among them (v0.2.16). `aligner` (v0.2.16): the aligner's engine,
+  `state` `downloading`, `installing`, `ready` or `failed`, with `engine`, `bytes`, `bytes_done`
+  and `reason`.
 - **Standard error** is the log for people.
 
 Without `--control stdio`, `--control <path>` serves [worker-control.yaml](api/worker-control.yaml)
@@ -346,8 +372,11 @@ video-pipeline ran itself before v0.2.8 (testdata/pipeline-v028-args.json).
   worker's `PATH`. The toolchain workflow burns the same ASS file on both and compares the
   pictures.
 - `ghcr.io/kyrios/slipstream`: Slipstream for Linux, the worker (`encode-worker`) on that
-  toolchain. Models are not in the image; mount them at `/models` or point
-  `EQ_WHISPER_MODELS_DIR` at a read-only mount. Up to v0.2.2 this image was
+  toolchain, and from v0.2.16 the aligner's engine in `/opt/aligner`: python-build-standalone's
+  CPython 3.12.12 with PyTorch 2.15.0 for the CPU and qwen-asr 0.0.6, every package by its hash
+  (`internal/aligner/requirements-torch*.txt`): 1.8 GB more in the image (223 MB before),
+  0.52 GB more to download. Models are not in
+  the image; mount them at `/models` or point `EQ_WHISPER_MODELS_DIR` at a read-only mount. Up to v0.2.2 this image was
   `ghcr.io/kyrios/encode-worker`; releases from v0.2.3 on publish only `slipstream`.
 - Each release `vX.Y.Z` carries `encode-worker-darwin-arm64` and the toolchain's
   `encode-toolchain-darwin-arm64.tar.gz`, with `SHA256SUMS`, for Slipstream to embed and sign.

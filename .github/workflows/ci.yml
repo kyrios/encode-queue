@@ -95,5 +95,5 @@ jobs:
         run: |
           docker run --rm encode-queue:ci -version
           docker run --rm slipstream:ci versions | tee versions.json
-          for t in ffmpeg libx265 libx264 whisper.cpp; do jq -e --arg t "$t" '.tools[] | select(.name == $t)' versions.json >/dev/null; done
+          for t in ffmpeg libx265 libx264 whisper.cpp qwen-asr; do jq -e --arg t "$t" '.tools[] | select(.name == $t)' versions.json >/dev/null; done
           jq -e '.fonts | index("Inter ExtraBold")' versions.json >/dev/null

@@ -95,22 +95,22 @@ const gib = 1 << 30
 
 // PeakBytes is a job's expected peak on an engine, for the RAM gate and the slots. MLX: 3.0 to
 // 3.4 GiB on every episode of #24 with its cache freed after each piece. PyTorch: the lean
-// precision's, 2.5 to 2.9 GB (0.8 GB of its own and 1.7 GB of the weights' pages, encoder,
-// 2026-10-28), which the worker uses whenever float32's 4.4 to 4.8 GB do not fit
+// precision's, 2.5 to 2.9 GB (0.8 to 1.2 GB of its own and 1.7 GB of the weights' pages, encoder,
+// 2026-10-28), which the worker uses whenever float32's 4.4 to 4.9 GB do not fit
 // (TorchFloat32Bytes): beside a 4K `slower` archive encode on encoder (10 GB, 5.5 GB for the
 // encode) it fits, and the queue takes no archive lease back for it.
 var PeakBytes = map[string]int64{EngineMLX: 7 * gib / 2, EngineTorch: 3 * gib}
 
 // TorchFloat32Bytes is the memory beside what runs that a CPU worker needs to align in float32
-// (4.4 to 4.8 GB at its peak in its cgroup on encoder; killed in a 4.5 GB cap) with the
-// headroom; below it, it aligns lean, at 0.57 of the audio's length instead of 0.15, the same
-// times to within 80 ms for 1613 of 1641 words against 1612 (KW41's first ten minutes).
+// (4.4 to 4.9 GB at its peak in its cgroup on encoder; killed in a 4.5 GB cap) with the
+// headroom; below it, it aligns lean, at 0.58 of the audio's length instead of 0.16, and gives
+// 1635 of KW41's first 1641 words the same start as float32, 1638 within one 80 ms step.
 const TorchFloat32Bytes = 6 * gib
 
 // Speed is an engine's seconds of audio per second of work, and LoadS its start, for the
 // expected completion time before a worker has results: MLX 0.011 of the audio's length and
 // 1.4 s to load on the Mac Studio (#24); PyTorch on encoder's six cores in float32 0.15 and 7 s
-// (2026-10-28). Each worker's results correct them (ect.go's learn).
+// (2026-10-28; lean 0.58 and 6 s, which the correction learns where it runs). Each worker's results correct them (ect.go's learn).
 var (
 	Speed = map[string]float64{EngineMLX: 90, EngineTorch: 6.7}
 	LoadS = map[string]float64{EngineMLX: 1.5, EngineTorch: 8}

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.11.0
+  version: 1.12.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -772,7 +772,7 @@ components:
       required: [name, version]
       description: A tool and its exact version string; how each is read is in helper.yaml's `Tool`.
       properties:
-        name: { type: string, enum: [ffmpeg, libx265, libx264, whisper.cpp] }
+        name: { type: string, enum: [ffmpeg, libx265, libx264, whisper.cpp, mlx-qwen3-asr, qwen-asr] }
         version: { type: string }
     Requires:
       type: object
@@ -796,6 +796,17 @@ components:
     WhisperParams:
       description: helper.yaml's `WhisperParams`, unchanged.
       $ref: 'helper.yaml#/components/schemas/WhisperParams'
+    AlignParams:
+      description: |
+        helper.yaml's `AlignParams`, unchanged (v0.2.16): the words are an input. Its source is the
+        media or a WAV, as a whisper job's, with `duration_s` for the points. It goes to a worker of
+        0.2.16 or later that holds the aligner and runs an engine (`mlx-qwen3-asr` or `qwen-asr`),
+        and from a worker with `qwen-asr` (encoder's CPU) to a connected one with `mlx-qwen3-asr`
+        (a Mac) that may run it, as a whisper job to a better model; a source that is not WAV also
+        needs the reference's ffmpeg. Its expected peak is its engine's: 3.5 GiB on MLX, 3 GiB on
+        the CPU. Points: its seconds of audio at the Mac Studio's MLX speed, 0.011 of real time
+        (an hour: 0.66).
+      $ref: 'helper.yaml#/components/schemas/AlignParams'
     CutParams:
       $ref: 'helper.yaml#/components/schemas/CutParams'
     RemuxParams:
@@ -839,7 +850,8 @@ components:
             - $ref: '#/components/schemas/CutParams'
             - $ref: '#/components/schemas/RemuxParams'
             - $ref: '#/components/schemas/CheckParams'
-          description: 'The params of its kind: `RungParams`, `WhisperParams`, `CutParams`, `RemuxParams` or `CheckParams`; unknown fields are refused.'
+            - $ref: '#/components/schemas/AlignParams'
+          description: 'The params of its kind: `RungParams`, `WhisperParams`, `CutParams`, `RemuxParams`, `CheckParams` or `AlignParams`; unknown fields are refused.'
         source: { $ref: '#/components/schemas/SourceIn' }
         inputs:
           type: object
@@ -939,7 +951,7 @@ components:
         state: { $ref: '#/components/schemas/JobState' }
         rung: { type: [string, 'null'], description: 'The rung''s name, or null for whisper.' }
         resolution: { type: [string, 'null'], description: '"Auflösung": the output size, `WIDTHxHEIGHT`.', examples: ['3840x2160'] }
-        quality: { type: [string, 'null'], description: '"Qualität": the preset and the CRF, or the whisper model.', examples: ['slower CRF 29', 'ggml-medium.bin'] }
+        quality: { type: [string, 'null'], description: '"Qualität": the preset and the CRF, the whisper model, or the aligner and the language.', examples: ['slower CRF 29', 'ggml-medium.bin', 'Qwen3-ForcedAligner-0.6B de'] }
         worker: { oneOf: [{ $ref: '#/components/schemas/WorkerRef' }, { type: 'null' }], description: '"Encoder": the worker of the active attempt, or of the accepted one.' }
         progress: { oneOf: [{ $ref: '#/components/schemas/Progress' }, { type: 'null' }], description: "The active attempt's last report: phase, share, fps, speed, time left." }
         params: { type: object, description: As submitted. }

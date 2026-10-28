@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue helper API
-  version: 1.7.0
+  version: 1.8.0
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
@@ -673,8 +673,11 @@ components:
         - `libx264`: the same with libx264, `core N rNNNN hash` from its SEI (for example
           `core 164 r3108 31e19f9`).
         - `whisper.cpp`: the release tag the binary was built from (for example `v1.9.5`).
+        - `mlx-qwen3-asr` or `qwen-asr` (v0.2.16): the aligner's engine and its package's version,
+          as `align.py version` prints it under the aligner's Python (for example `0.4.4` on a
+          Mac, `0.0.6` in the Linux image). A worker has at most the best one.
       properties:
-        name: { type: string, enum: [ffmpeg, libx265, libx264, whisper.cpp] }
+        name: { type: string, enum: [ffmpeg, libx265, libx264, whisper.cpp, mlx-qwen3-asr, qwen-asr] }
         version: { type: string, examples: ['7.1.2-0+deb13u1', '4.1+1-1d117be', 'core 164 r3108 31e19f9', 'v1.9.5'] }
     Model:
       type: object
@@ -828,8 +831,10 @@ components:
 
     JobKind:
       type: string
-      enum: [rung, whisper, cut, remux, check]
+      enum: [rung, whisper, cut, remux, check, align]
       description: |
+        `align` from v0.2.16 (`AlignParams`): Qwen3-ForcedAligner times a text's words; a worker
+        before 0.2.16 never gets one.
         `cut`, `remux` and `check` from v0.2.8 (ADR-0007: every encode and every decode runs on a
         worker; the pipeline reads headers only). `rung`, `cut` and `remux` check their own result
         in the same lease (`CheckSettings`) and deliver the figures with it; `check` only checks,
@@ -1082,6 +1087,43 @@ components:
             queue gives the job to a worker holding the first it can: a worse model runs only
             when no connected, unpaused worker that may run the job holds a better one. Never in
             a lease.
+    AlignParams:
+      type: object
+      title: align
+      description: |
+        Qwen3-ForcedAligner-0.6B (v0.2.16) times the words of a text that already exists in the
+        source's sound: `align.py run`, which the worker embeds, under its engine's Python with
+        `HF_HUB_OFFLINE=1`, after the sound is made 16 kHz mono WAV as for whisper. On a Mac MLX
+        through `mlx-qwen3-asr`, bfloat16, MLX's buffer cache freed after each piece; on Linux
+        PyTorch for the CPU through `qwen-asr`, float32 where 6 GiB are free beside what runs, else
+        `lean` (bfloat16 weights, float32 products: 2.9 GB at its peak with the weights' pages,
+        3.6 times float32's time). Progress on stderr as whisper-cli's `progress = N%`.
+
+        **The words** (the input `text` names, UTF-8 JSON, at most 8 MiB and 100,000 words):
+        `{"words": [{"text": "Ein", "start": 0.0, "end": 0.31}, …]}`, the text split on
+        whitespace with its punctuation, in order, with the times it already has. They only cut
+        the pieces: at most 30 s, between two words, at the widest gap once a piece holds 15 s,
+        its sound to the middle of that gap. A file that is not this fails the attempt with
+        `other` ("the aligner refused the words").
+
+        **The result** is whisper-cli's `-oj` JSON with one segment per word of the file, in order,
+        its `text` the word exactly after a space, `offsets` in milliseconds (steps of 80 ms), plus
+        `engine` and `pieces`. A word the aligner gives no time (punctuation alone) sits without
+        length where the word before it ends.
+      required: [model_sha256, language]
+      properties:
+        model_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: |
+            The aligner's manifest: the sha256 of the lines `<sha256>  <name>\n` of its eight files
+            at revision `c7cbfc20…`, sorted by name: `32f47d21e29b4029b9911c4ff8549e5187b099d52340f675f9717bde1f37ad4e`.
+            A worker holds it as the folder `qwen3-forced-aligner-0.6b-c7cbfc20` in its models
+            folder, fetched from huggingface.co at that revision, each file by its sha256, or put
+            there by the host where the folder is read-only.
+        model: { type: string, examples: [Qwen3-ForcedAligner-0.6B], description: For people. }
+        language: { type: string, enum: [zh, en, yue, fr, de, it, pt, ru, es], description: "whisper's code; the aligner has no Japanese or Korean on a Mac." }
+        text: { type: string, default: text, description: The input that holds the words. }
     FileRef:
       type: object
       required: [url, bytes, sha256]
@@ -1171,7 +1213,8 @@ components:
             - $ref: '#/components/schemas/CutParams'
             - $ref: '#/components/schemas/RemuxParams'
             - $ref: '#/components/schemas/CheckParams'
-          description: 'The params of the job''s kind: `RungParams` for `rung`, `WhisperParams` for `whisper`, `CutParams`, `RemuxParams`, `CheckParams`.'
+            - $ref: '#/components/schemas/AlignParams'
+          description: 'The params of the job''s kind: `RungParams` for `rung`, `WhisperParams` for `whisper`, `CutParams`, `RemuxParams`, `CheckParams`, `AlignParams` for `align`.'
         result:
           type: object
           properties:
@@ -1208,7 +1251,7 @@ components:
       properties:
         time: { type: string, format: date-time }
         level: { type: string, enum: [debug, info, warning, error] }
-        source: { type: string, enum: [worker, ffmpeg, x265, x264, whisper] }
+        source: { type: string, enum: [worker, ffmpeg, x265, x264, whisper, aligner] }
         message: { type: string, maxLength: 2000 }
 
     ResultIn:

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kyrios/encode-queue/internal/aligner"
 	"golang.org/x/sys/unix"
 )
 
@@ -32,10 +33,13 @@ type Config struct {
 	// x264's, which the tools print, is read from it. WhisperVersion still wins for whisper.cpp.
 	ToolchainVersions string
 	ModelsDir         string
-	Fonts             []string
-	CPUThreads        int // 0: the tools' own
-	GPU               bool
-	MaxParallel       int // normal slots, which take every job
+	// AlignerPython is the Python of the aligner's engine (EQ_ALIGNER_PYTHON, v0.2.16; the
+	// image's /opt/aligner); "" on an Apple-silicon Mac sets up MLX in STATE/aligner, "off" none.
+	AlignerPython string
+	Fonts         []string
+	CPUThreads    int // 0: the tools' own
+	GPU           bool
+	MaxParallel   int // normal slots, which take every job
 	// HighPrioritySlots: slots on top of MaxParallel for jobs of priority now and stage1 only
 	// (v0.2.14; 0 none). The command's default is 1.
 	HighPrioritySlots int
@@ -156,6 +160,7 @@ type Worker struct {
 	quit        chan struct{}
 	quitOnce    sync.Once
 	unavailable map[string]bool // wanted models a read-only models folder cannot take (fetch.go)
+	aligner     string          // the aligner model's folder, when the worker holds it (align.go)
 	points      *Points         // the queue's last word on them (notePoints)
 	busy        *busySampler    // used by the presence loop only
 	machine     *machineSampler // likewise
@@ -410,6 +415,10 @@ func (w *Worker) Run(ctx context.Context) error {
 	w.emit("idle", nil)
 	w.models = map[string]string{}
 	for _, m := range caps.Models {
+		if m.SHA256 == aligner.SHA256 {
+			w.aligner = m.path // a folder, never a whisper model to time
+			continue
+		}
 		w.models[m.SHA256] = m.path
 	}
 	// Until the queue answers, keep asking: the tunnel may come up after the worker.
@@ -444,6 +453,9 @@ func (w *Worker) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() { defer wg.Done(); w.calibrateAll(ctx, &wg) }()
 	}
+	// The aligner's engine and model (v0.2.16), in the background as the whisper models.
+	wg.Add(1)
+	go func() { defer wg.Done(); w.alignerLoop(ctx) }()
 	// The normal slots and, beside them, the high-priority ones (v0.2.14), which the queue gives
 	// only jobs of priority now and stage1, beside other work only while this machine's RAM allows.
 	for i := 0; i < maxSlots; i++ {
@@ -628,6 +640,9 @@ func (w *Worker) modelLoop(ctx context.Context, c *Calibration, wanted []WantedM
 		w.caps.Models = w.caps.Models[:0]
 		for sha, path := range held {
 			w.caps.Models = append(w.caps.Models, Model{Name: filepath.Base(path), SHA256: sha})
+		}
+		if w.aligner != "" {
+			w.caps.Models = append(w.caps.Models, Model{Name: aligner.Name, SHA256: aligner.SHA256})
 		}
 		sort.Slice(w.caps.Models, func(i, j int) bool { return w.caps.Models[i].Name < w.caps.Models[j].Name })
 		w.mu.Unlock()
