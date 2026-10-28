@@ -473,6 +473,9 @@ type PresenceAck struct {
 	PresenceEveryS int        `json:"presence_every_s"`
 	PausedUntil    *time.Time `json:"paused_until"`
 	Draining       bool       `json:"draining"`
+	// Points: the worker's own today, this week and in all, and its place today (v0.2.15), for
+	// Slipstream's menu.
+	Points PointsRank `json:"points"`
 }
 
 // PutPresence notes that a worker is alive.
@@ -502,7 +505,7 @@ func (s *Store) PutPresence(id string, p Presence) (PresenceAck, error) {
 	w.OtherLoad = p.OtherLoad
 	s.touch(false)
 	now := s.cfg.Now()
-	ack := PresenceAck{ServerTime: now.UTC(), PresenceEveryS: int(s.cfg.PresenceEvery / time.Second), Draining: s.draining}
+	ack := PresenceAck{ServerTime: now.UTC(), PresenceEveryS: int(s.cfg.PresenceEvery / time.Second), Draining: s.draining, Points: s.pointsRank(w)}
 	if s.paused(w, now) {
 		ack.PausedUntil = w.PausedUntil
 	}

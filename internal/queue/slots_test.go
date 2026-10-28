@@ -157,7 +157,7 @@ func TestANowJobTakesTheArchiveJobBackForTheRAM(t *testing.T) {
 		t.Fatal("no archive encode")
 	}
 	e.clock.Add(time.Second)
-	used := 53 * gib / 10 // the encode in use: 8 - 5.3 - 1 GB headroom < 2.5 GB
+	used := 53 * gib / 10 // the encode in use: 8 - 5.3 - 1 GB headroom < 2 GB
 	e.s.PutPresence(enc, Presence{State: "working", MemoryUsed: &used})
 	e.sofortWhisper("k3v9x2m1q7pz.whisper")
 	// A whisper job pinned to medium (model_sha256 alone) runs only where medium is.
@@ -192,7 +192,7 @@ func TestANowJobTakesTheArchiveJobBackForTheRAM(t *testing.T) {
 		t.Fatalf("the now job after the encode stopped: %+v %v", x, err)
 	}
 	// The archive job waits beside it: a normal claim beside a high-priority job needs the RAM,
-	// and 8 - 1.2 - 2.5 (claimed since the presence) - 1 < 5.5.
+	// and 8 - 1.2 - 2 (claimed since the presence) - 1 < 5.5.
 	if x, err := e.s.Claim(context.Background(), enc, LeaseRequest{}, 0); err != nil || x != nil {
 		t.Fatalf("the archive encode beside the captions: %+v %v", x, err)
 	}
@@ -212,7 +212,7 @@ func TestATakenBackJobsRAMCountsUntilMeasured(t *testing.T) {
 		t.Fatal("no archive encode")
 	}
 	e.sofortWhisper("k3v9x2m1q7pz.whisper")
-	// 8 - 2 - 5.5 (claimed since the presence) - 1 < 2.5.
+	// 8 - 2 - 5.5 (claimed since the presence) - 1 < 2.
 	if x, err := e.high(enc); err != nil || x != nil {
 		t.Fatalf("captions beside the encode: %+v %v", x, err)
 	}
@@ -243,7 +243,7 @@ func TestANowJobTakesOneJobBackAtATime(t *testing.T) {
 	e.clock.Add(time.Second)
 	e.claim(mac)
 	e.clock.Add(time.Second)
-	used := 13 * gib // 16 - 13 - 1 < 2.5
+	used := 27 * gib / 2 // 16 - 13.5 - 1 < 2
 	e.s.PutPresence(mac, Presence{State: "working", MemoryUsed: &used})
 	e.sofortWhisper("k3v9x2m1q7pz.whisper")
 	if !e.s.preempt(e.clock.Now()) {

@@ -123,6 +123,7 @@ type Status struct {
 	Jobs          []JobStatus `json:"jobs"`
 	Recent        []Finished  `json:"recent"`
 	FinishedToday int         `json:"finished_today"`
+	Points        *Points     `json:"points,omitempty"` // v0.2.15, from the queue
 }
 
 // Worker runs jobs.
@@ -155,6 +156,7 @@ type Worker struct {
 	quit        chan struct{}
 	quitOnce    sync.Once
 	unavailable map[string]bool // wanted models a read-only models folder cannot take (fetch.go)
+	points      *Points         // the queue's last word on them (notePoints)
 	busy        *busySampler    // used by the presence loop only
 	machine     *machineSampler // likewise
 }
@@ -303,7 +305,7 @@ func (w *Worker) Status() Status {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	st := Status{Name: w.name, PausedUntil: w.pausedUntil, LastContact: w.lastContact, LastError: w.lastErr,
-		Refused: w.refused, Tools: w.caps.Tools, Jobs: []JobStatus{}, Recent: append([]Finished(nil), w.recent...), FinishedToday: w.today}
+		Refused: w.refused, Tools: w.caps.Tools, Jobs: []JobStatus{}, Recent: append([]Finished(nil), w.recent...), FinishedToday: w.today, Points: w.points}
 	st.Connected = w.lastContact != nil && time.Since(*w.lastContact) < 90*time.Second
 	for _, r := range w.runs {
 		st.Jobs = append(st.Jobs, r.status())
@@ -555,6 +557,7 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 			if ack.PresenceEveryS > 0 {
 				every = time.Duration(ack.PresenceEveryS) * time.Second
 			}
+			w.notePoints(ack.Points)
 		}
 		w.mu.Lock()
 		ch := w.pauseCh
@@ -565,6 +568,21 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 		case <-time.After(every):
 		case <-ch: // a pause or resume reaches the queue at once
 		}
+	}
+}
+
+// notePoints tells Slipstream this worker's points when they or its place changed (v0.2.15).
+func (w *Worker) notePoints(p *Points) {
+	if p == nil {
+		return
+	}
+	c := *p
+	w.mu.Lock()
+	same := w.points != nil && *w.points == c
+	w.points = &c
+	w.mu.Unlock()
+	if !same {
+		w.emit("points", map[string]any{"table": p.Table, "today": p.Today, "week": p.Week, "total": p.Total, "rank": p.Rank, "of": p.Of})
 	}
 }
 

@@ -98,3 +98,25 @@ func TestTheLastAnswerReachesSlipstreamEachMinute(t *testing.T) {
 		t.Fatalf("an answer a minute later: %v", e)
 	}
 }
+
+// The queue's word on this worker's points (v0.2.15) reaches Slipstream once per change.
+func TestPointsReachSlipstreamOncePerChange(t *testing.T) {
+	var events []map[string]any
+	w, err := New(Config{StateDir: t.TempDir(), Events: func(e map[string]any) { events = append(events, e) }}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.notePoints(nil) // a queue before 0.2.15
+	p := Points{Table: "v1", Today: 1240.5, Week: 3000, Total: 9000, Rank: 1, Of: 3}
+	w.notePoints(&p)
+	same := p
+	w.notePoints(&same)
+	p.Rank = 2
+	w.notePoints(&p)
+	if len(events) != 2 || events[0]["event"] != "points" || events[0]["today"] != 1240.5 || events[1]["rank"] != 2 || events[1]["of"] != 3 {
+		t.Fatalf("events: %v", events)
+	}
+	if st := w.Status(); st.Points == nil || st.Points.Rank != 2 {
+		t.Fatalf("the status's points: %+v", st.Points)
+	}
+}

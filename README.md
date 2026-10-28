@@ -45,9 +45,11 @@ All three are OpenAPI 3.1.
   `stage1`, so no archive or stage 2 job ever holds one. Both are 1 by default; Slipstream's
   settings set them. A worker before 0.2.14 has one high-priority slot, its v0.2.5 extra slot. A
   claim beside a job in the other kind of slot, and a high-priority one beside any, needs the RAM:
-  memory less the last presence's use, less the expected peak of each lease claimed since (one
+  memory (in a container, its cgroup's limit where that is lower, v0.2.15: encoder's worker runs
+  with `mem_limit` 10g on 14 GiB) less the last presence's use, less the expected peak of each lease claimed since (one
   taken back since included, as its tool runs until the next renewal), less 1 GB, must hold the
-  job's expected peak (a 4K `slower` encode 5.5 GB, whisper medium 2.5 GB).
+  job's expected peak (a 4K `slower` encode 5.5 GB, whisper turbo or medium 2 GB, measured on
+  encoder).
   Two normal slots side by side need none. Where only the RAM keeps a `now` job out of a free
   high-priority slot and no worker has a slot for it, it takes that worker's lowest lease below
   `stage1` back, one at a time, and the worker's claims wait for its next measured presence:
@@ -92,16 +94,21 @@ All three are OpenAPI 3.1.
   it unless a connected worker holds a better one; the lease names the one chosen. The queue
   tells each worker which models to hold (`wanted_models`): small for caption timing and
   large-v3-turbo, the one caption model on every worker (v0.2.14; Thorsten, 2026-10-28), wherever
-  its RAM holds turbo's 3 GB peak with 1 GB to spare. The speed decides only which worker gets a
+  its RAM holds turbo's 2 GB peak with 1 GB to spare. The speed decides only which worker gets a
   job, never what it holds.
   The worker fetches those from ggerganov/whisper.cpp at a pinned revision only, checks their
   sha256 and times them on the calibration's speech clip.
 - **Leases** last 120 s and are renewed every 30 s with the progress; the long poll waits 25 s;
   presence every 30 s, offline after three missed. A lease that runs out, a worker that goes
   offline, a removed worker: the job goes back to `queued`, the next attempt with the next number.
-- **Preemption**: a stage 1 or stage 2 job that no free worker may run ends the active lease
-  with the lowest priority (then the youngest) whose worker may run it; that worker's next
-  renewal answers `410 preempted`.
+- **Preemption**: a stage 1 or stage 2 job that no free worker may run ends an active lease of a
+  lower priority whose worker may run it; that worker's next renewal answers `410 preempted`.
+  Since v0.2.15 a lease with under 20 minutes to go by its progress, or over 80 % of its frames
+  done, is never taken back, and the new job waits for it (Thorsten, 2026-10-28: queue v0.2.12 threw
+  away a 2160 archive encode 95 % done after five hours for the smoke test's stage 2 job). Of the
+  others the one that ran the shortest goes, whatever its priority. The log's `preempt` line says
+  the minutes and frames lost, and `encode_queue_worker_preempted_work_seconds_total` and
+  `_preempted_frames_total` count them.
 - **Moving a job to a worker** (`POST /v1/jobs/{id}/assign`): a queued or leased job goes to
   one worker that is connected, not paused and runs the reference's tools. Its attempt on
   another worker is preempted; the job is pinned to the target until the target leases it, or
@@ -151,6 +158,44 @@ All three are OpenAPI 3.1.
   sound together by the timestamps; AVFoundation plays the sound early by the picture's B-frame
   delay less the AAC priming (58.7 ms at 25 fps, 22.7 ms at 60), measured in helper.yaml's
   `edit_list`.
+- **Points** (v0.2.15; Thorsten, 2026-10-28): every job the pipeline accepts earns its worker
+  points from a frozen table, **Punkte-Tabelle v1**. One point is one minute of the Mac Studio's
+  work by its calibration of 2026-10-28, and a job earns the same on every machine, linear in its
+  frames or seconds of audio:
+
+  | class | the Mac Studio's speed | points |
+  |---|---|---|
+  | libx265 3840x2160 ultrafast | 48.42 fps | 1 / (fps × 60) a frame |
+  | libx265 1920x1080 veryfast | 99.63 fps | ″ |
+  | libx265 1280x720 veryfast | 131.05 fps | ″ |
+  | libx264 1280x720 veryfast | 271.00 fps | ″ |
+  | libx265 3840x2160 slower | 2.284 fps | ″ (a 2-hour episode at 25 fps: 1314) |
+  | libx265 1920x1080 slow | 29.17 fps | ″ |
+  | libx265 1280x720 slow | 57.47 fps | ″ |
+  | libx264 1280x720 slow | 188.31 fps | ″ |
+  | whisper large-v3-turbo | 12.76 × real time | 1 / (speed × 60) a second of audio (an hour: 4.7) |
+  | whisper small | 32.34 × | ″ |
+  | whisper medium | 12.93 × (2.5 times small's time, not timed there) | ″ |
+  | remux job of a 3840x2160 master (the copy and its check) | 39.0 fps | 1 / (fps × 60) a source frame (2 hours: 77) |
+  | score check job against a 3840x2160 master | 65.8 fps | ″ (2 hours: 46) |
+
+  Another size of a codec and preset in the table takes the nearest size's speed scaled by the
+  pixels (the Clip's 1080x1920 at x264 `slow`: 188.31 / 2.25); a codec and preset outside it earns
+  nothing. A cut is priced as an encode of its frames in its class (libx264 at the source's size
+  and its preset, its length at the source's rate). A remux or check job pays its source's frames
+  at the measured speed, scaled by the source's pixels, both measured on the Mac Studio with the
+  worker's own commands (`TestMeasureRemuxAndCheck`, three runs on 2026-10-28). A job that names
+  no frames counts its length at 25 fps; an audio check names no size and earns nothing. The
+  queue prices a job from the pipeline's own figures,
+  the source's `frames` or `duration_s` and the job's settings, never from the worker's (a whisper
+  job without `duration_s` earns nothing). Only a result its worker delivered while it held the
+  lease earns: nothing for a rejected, failed, given back, expired, preempted or moved attempt,
+  and nothing for moving bytes. Points are counted and shown and never steer the scoring. Every
+  worker started at zero. `GET /v1/workers` gives each worker `points` (`today` and `week` from
+  Monday, both Europe/Berlin, and `total`) and `house` for encoder's own worker, each attempt its
+  `points`; a presence's answer gives the worker its own and its place today among every paired
+  worker (`rank` of `of`, equal points sharing a place); the metric is
+  `encode_queue_worker_points_total`.
 - **Late results** are taken and judged while the job is not done; the first accepted wins,
   later ones are `superseded`. A rejected or failed result excludes its worker from that job;
   after `max_failures` (3) the job is `failed`.
@@ -261,7 +306,8 @@ nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name �
   `slot`: `normal` or `high`, `phase`, `fraction`, `fps`, `speed`, `eta_s`; at every phase change and once a second),
   `idle`, `result` (`lease_id`, `title`, `verdict`: `accepted`, `rejected` or `given_back`,
   `check`), `paused` (`until` or null), `update` (`latest`, when the queue wants a newer app),
-  `tools` (`tools: [{name, version}]`), `log` (`lease_id`, `line`), `calibrating` (`classes`,
+  `tools` (`tools: [{name, version}]`), `points` (`table`, `today`, `week`, `total`, `rank`, `of`,
+  when they or the place change; v0.2.15), `log` (`lease_id`, `line`), `calibrating` (`classes`,
   when the calibration clip starts) and `calibrated` (`classes`, when it is done), and `model`
   for each whisper model the queue wants (`name`, `sha256`, `state`: `wanted`, `downloading`,
   `checking`, `calibrating`, `ready`, `failed`, or `unavailable` when the models folder is read-only and the host provides the models; `bytes`, `bytes_done` while downloading,
@@ -328,6 +374,9 @@ otherwise). Per-worker series carry `worker_id` and
 | `encode_queue_worker_jobs` | gauge | The worker's jobs now: leased (an active lease) and checking (a result waiting for the pipeline). |
 | `encode_queue_worker_slots` | gauge | The worker's slots by kind: normal (every job) and high (priority now and stage1 only), as the queue gives them. |
 | `encode_queue_worker_slots_busy` | gauge | The worker's slots that hold an active lease, by kind. |
+| `encode_queue_worker_preempted_work_seconds_total` | counter | How long the worker's leases that preemption took back had run: work thrown away. |
+| `encode_queue_worker_preempted_frames_total` | counter | Frames those leases had done. |
+| `encode_queue_worker_points_total` | counter | Points the worker's accepted results earned, by Punkte-Tabelle v1: one point is a minute of the Mac Studio's work. |
 | `encode_queue_worker_attempts_total` | counter | Attempts the worker ended, by outcome: accepted, rejected, superseded, failed, given_back, expired, preempted, cancelled. |
 | `encode_queue_worker_leases_expired_total` | counter | Leases of the worker that ran out or whose worker went offline. |
 | `encode_queue_worker_results_rejected_total` | counter | Results of the worker that the pipeline rejected. |

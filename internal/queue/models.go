@@ -33,9 +33,12 @@ const (
 )
 
 var catalogue = map[string]CatalogueModel{
-	SHASmall:        {Name: "ggml-small.bin", SHA256: SHASmall, Bytes: 487601967, URL: hf("ggml-small.bin"), PeakBytes: 1 << 30, Cost: 1},
-	SHAMedium:       {Name: "ggml-medium.bin", SHA256: SHAMedium, Bytes: 1533763059, URL: hf("ggml-medium.bin"), PeakBytes: 5 << 29, Cost: 2.5},
-	SHALargeV3Turbo: {Name: "ggml-large-v3-turbo.bin", SHA256: SHALargeV3Turbo, Bytes: 1624555275, URL: hf("ggml-large-v3-turbo.bin"), PeakBytes: 3 << 30, Cost: 2},
+	SHASmall: {Name: "ggml-small.bin", SHA256: SHASmall, Bytes: 487601967, URL: hf("ggml-small.bin"), PeakBytes: 1 << 30, Cost: 1},
+	// PeakBytes of medium and turbo: measured on encoder on 2026-10-28 beside a 4K archive encode
+	// (the cc-proofread session), turbo 1827 MB and medium 1867 MB at their peak, with a little
+	// to spare: 2.0 GiB each (they were 3 and 2.5 GiB, guesses that held turbo back).
+	SHAMedium:       {Name: "ggml-medium.bin", SHA256: SHAMedium, Bytes: 1533763059, URL: hf("ggml-medium.bin"), PeakBytes: 2 << 30, Cost: 2.5},
+	SHALargeV3Turbo: {Name: "ggml-large-v3-turbo.bin", SHA256: SHALargeV3Turbo, Bytes: 1624555275, URL: hf("ggml-large-v3-turbo.bin"), PeakBytes: 2 << 30, Cost: 2},
 }
 
 // Quality is the catalogue's models, best first.

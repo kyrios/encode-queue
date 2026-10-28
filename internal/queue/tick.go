@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"fmt"
 	"sort"
 	"time"
 )
@@ -118,7 +119,7 @@ func (s *Store) preempt(now time.Time) bool {
 			continue
 		}
 		// The candidates: active leases of lower priority whose connected, unpaused worker may
-		// run this job. The lowest priority goes first, then the youngest (least work lost).
+		// run this job, but none nearly done (spared). The one with the least work done goes.
 		var cands []*Lease
 		for _, l := range s.st.Leases {
 			if l.State != LeaseActive {
@@ -135,20 +136,32 @@ func (s *Store) preempt(now time.Time) bool {
 			if j.Priority == PriorityNow && (highPriority(lj.Priority) || s.clearing(w, now) || !s.ramKeepsOut(w, j, now) || !s.roomWithout(w, j, lj)) {
 				continue
 			}
+			if spared(lj, l) {
+				continue
+			}
 			cands = append(cands, l)
 		}
 		if len(cands) == 0 {
 			continue
 		}
 		sort.Slice(cands, func(a, b int) bool {
-			pa, pb := prioIndex(s.st.Jobs[cands[a].JobID].Priority), prioIndex(s.st.Jobs[cands[b].JobID].Priority)
-			if pa != pb {
-				return pa > pb
+			if !cands[a].CreatedAt.Equal(cands[b].CreatedAt) {
+				return cands[a].CreatedAt.After(cands[b].CreatedAt)
 			}
-			return cands[a].CreatedAt.After(cands[b].CreatedAt)
+			return cands[a].ID < cands[b].ID
 		})
 		victim := cands[0]
-		s.cfg.Log.Info("preempt", "lease", victim.ID, "job", victim.JobID, "for", j.ID)
+		lost := now.Sub(victim.CreatedAt)
+		var frames int64
+		if p := victim.Progress; p != nil && p.FramesDone != nil {
+			frames = *p.FramesDone
+		}
+		s.cfg.Log.Info("preempt", "lease", victim.ID, "job", victim.JobID, "for", j.ID, "worker", victim.Worker,
+			"lost_minutes", fmt.Sprintf("%.1f", lost.Minutes()), "lost_frames", frames)
+		if w := s.st.Workers[victim.WorkerID]; w != nil {
+			w.PreemptedWorkS += lost.Seconds()
+			w.PreemptedFrames += frames
+		}
 		s.endLease(victim, LeasePreempted, "preempted")
 		if j.Priority == PriorityNow {
 			s.st.Workers[victim.WorkerID].ramPreemptAt = now
@@ -157,6 +170,35 @@ func (s *Store) preempt(now time.Time) bool {
 		// The worker is free now; the next job in line finds it so and preempts no other.
 	}
 	return changed
+}
+
+// **Nearly done is never taken back** (v0.2.15; Thorsten, 2026-10-28). Queue v0.2.12 on encoder
+// preempted a 2160 archive encode about 95 % done after five hours for the smoke test's stage 2
+// job; it started again from zero on the Mac Studio. A lease with less than spareLeft to go by
+// its progress, or more than spareDone of its frames done, is spared: the new job waits for it.
+// Of the others, the one that ran the shortest goes, whatever its priority, so the least work is
+// lost; the log and encode_queue_worker_preempted_work_seconds_total say how much.
+const (
+	spareLeft = 20 * time.Minute
+	spareDone = 0.8
+)
+
+// spared says whether lease l of job j is too near its end to be taken back.
+func spared(j *Job, l *Lease) bool {
+	p := l.Progress
+	if p == nil {
+		return false
+	}
+	if p.Fraction != nil && *p.Fraction > spareDone {
+		return true
+	}
+	if p.FramesDone != nil && p.FramesTotal != nil && *p.FramesTotal > 0 && float64(*p.FramesDone)/float64(*p.FramesTotal) > spareDone {
+		return true
+	}
+	if e := eta(j, p); e != nil && time.Duration(*e)*time.Second < spareLeft {
+		return true
+	}
+	return false
 }
 
 // dropPins ends the pins whose worker is gone, offline or paused: the job is an ordinary

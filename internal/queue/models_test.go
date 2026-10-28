@@ -134,9 +134,9 @@ func TestEveryWorkerWantsTurbo(t *testing.T) {
 	if got := wanted(); len(got) != 2 || got[1] != "ggml-large-v3-turbo.bin" {
 		t.Fatalf("a slow CPU: %v", got)
 	}
-	// Too little RAM for turbo's 3 GB with the headroom: small only.
-	e.timed(w, 3<<30, map[string]float64{SHASmall: 12})
+	// Too little RAM for turbo's 2 GB with the headroom: small only.
+	e.timed(w, 5<<29, map[string]float64{SHASmall: 12})
 	if got := wanted(); len(got) != 1 || got[0] != "ggml-small.bin" {
-		t.Fatalf("3 GB of RAM: %v", got)
+		t.Fatalf("2.5 GB of RAM: %v", got)
 	}
 }

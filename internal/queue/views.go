@@ -59,6 +59,8 @@ type AttemptView struct {
 	// Scoring: why the claim had that comparison (v0.2.10): scored, waited, assigned,
 	// only_worker, not_claiming, speed_unknown; null for a lease from before.
 	Scoring *string `json:"scoring"`
+	// Points: what it earned once accepted (v0.2.15), by Punkte-Tabelle v1; 0 otherwise.
+	Points float64 `json:"points"`
 }
 
 // JobView is a job as pipeline-admin.yaml shows it.
@@ -121,7 +123,8 @@ func (s *Store) workerRef(id, fallback string) WorkerRef {
 
 func (s *Store) attemptView(j *Job, l *Lease) AttemptView {
 	a := AttemptView{Attempt: l.Attempt, LeaseID: l.ID, Worker: s.workerRef(l.WorkerID, l.Worker), State: l.State,
-		StartedAt: l.CreatedAt, EndedAt: l.EndedAt, EndCode: strp(l.EndCode), ModelSHA256: strp(l.Model), RunnerUp: l.RunnerUp, Scoring: strp(l.Scoring)}
+		StartedAt: l.CreatedAt, EndedAt: l.EndedAt, EndCode: strp(l.EndCode), ModelSHA256: strp(l.Model), RunnerUp: l.RunnerUp, Scoring: strp(l.Scoring),
+		Points: l.Points}
 	if l.ECT != nil {
 		v := l.ECT.S
 		a.ECTS = &v
@@ -431,32 +434,36 @@ type WorkerView struct {
 	State string  `json:"state"`
 	// Claiming: it asked for work within two presence intervals, or works (v0.2.10); one that
 	// does not counts in no scoring.
-	Claiming      bool            `json:"claiming"`
-	PausedUntil   *time.Time      `json:"paused_until"`
-	PublicKey     string          `json:"public_key"`
-	Address       string          `json:"tunnel_address"`
-	AppVersion    *string         `json:"app_version"`
-	HostApp       *HostApp        `json:"host_app"`
-	OS            *string         `json:"os"`
-	Tools         []Tool          `json:"tools"`
-	Models        []Model         `json:"models"`
-	Fonts         []string        `json:"fonts"`
-	Hardware      json.RawMessage `json:"hardware"`
-	Limits        Limits          `json:"limits"`
-	Slots         WorkerSlots     `json:"slots"`
-	AcceptedKinds []string        `json:"accepted_kinds"`
-	Refused       []Refusal       `json:"refused"`
-	Jobs          []WorkerJob     `json:"jobs"`
-	LastSeen      *time.Time      `json:"last_seen"`
-	AddedAt       time.Time       `json:"added_at"`
-	Counts        Counts          `json:"counts"`
-	Endpoint      *string         `json:"endpoint"`
-	LastHandshake *time.Time      `json:"last_handshake"`
-	TunnelState   *string         `json:"tunnel_state"`
-	TunnelSince   *time.Time      `json:"tunnel_since"`
-	System        WorkerSystem    `json:"system"`
-	Transfer      Transfer        `json:"transfer"`
-	RelativeSpeed *float64        `json:"relative_speed"`
+	Claiming    bool            `json:"claiming"`
+	PausedUntil *time.Time      `json:"paused_until"`
+	PublicKey   string          `json:"public_key"`
+	Address     string          `json:"tunnel_address"`
+	AppVersion  *string         `json:"app_version"`
+	HostApp     *HostApp        `json:"host_app"`
+	OS          *string         `json:"os"`
+	Tools       []Tool          `json:"tools"`
+	Models      []Model         `json:"models"`
+	Fonts       []string        `json:"fonts"`
+	Hardware    json.RawMessage `json:"hardware"`
+	Limits      Limits          `json:"limits"`
+	Slots       WorkerSlots     `json:"slots"`
+	// Points: what its accepted results earned today, this week and in all (v0.2.15). House: it is
+	// encoder's own worker, the reference, which counts with the others under a "Haus" badge.
+	Points        PointsView   `json:"points"`
+	House         bool         `json:"house"`
+	AcceptedKinds []string     `json:"accepted_kinds"`
+	Refused       []Refusal    `json:"refused"`
+	Jobs          []WorkerJob  `json:"jobs"`
+	LastSeen      *time.Time   `json:"last_seen"`
+	AddedAt       time.Time    `json:"added_at"`
+	Counts        Counts       `json:"counts"`
+	Endpoint      *string      `json:"endpoint"`
+	LastHandshake *time.Time   `json:"last_handshake"`
+	TunnelState   *string      `json:"tunnel_state"`
+	TunnelSince   *time.Time   `json:"tunnel_since"`
+	System        WorkerSystem `json:"system"`
+	Transfer      Transfer     `json:"transfer"`
+	RelativeSpeed *float64     `json:"relative_speed"`
 	// RelativeSpeedSource: "measured" from delivered jobs, "calibrated" from the calibration
 	// clip until there are some (v0.2.5); null without a relative speed.
 	RelativeSpeedSource *string        `json:"relative_speed_source"`
@@ -685,6 +692,8 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 	v.FreeAt = s.freeAt(w, now, "", false)
 	normal, high := s.slotsBusy(w)
 	v.Slots = WorkerSlots{Normal: SlotCount{s.maxJobs(w), normal}, High: SlotCount{s.highSlots(w), high}}
+	v.Points = s.pointsView(w)
+	v.House = s.cfg.ReferenceWorker != "" && w.Name == s.cfg.ReferenceWorker
 	v.Corrections = map[string]float64{}
 	for k, c := range w.Corrections {
 		v.Corrections[k] = c

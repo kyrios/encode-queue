@@ -138,6 +138,19 @@ type PresenceAck struct {
 	PresenceEveryS int        `json:"presence_every_s"`
 	PausedUntil    *time.Time `json:"paused_until"`
 	Draining       bool       `json:"draining"`
+	// Points: this worker's today, this week and in all, and its place today among every paired
+	// worker (v0.2.15); nil from a queue before it.
+	Points *Points `json:"points"`
+}
+
+// Points is what the queue says this worker's accepted jobs earned (Punkte-Tabelle v1).
+type Points struct {
+	Table string  `json:"table"`
+	Today float64 `json:"today"`
+	Week  float64 `json:"week"`
+	Total float64 `json:"total"`
+	Rank  int     `json:"rank"`
+	Of    int     `json:"of"`
 }
 
 // FileRef is a file to fetch.

@@ -250,6 +250,10 @@ func (h *harness) rungJob(id, prio string, extra map[string]any) {
 	src := body["source"].(map[string]any)
 	src["bytes"], src["sha256"] = f.Bytes, f.SHA256
 	for k, v := range extra {
+		if k == "source_frames" {
+			src["frames"] = v // the fake encode's length, for a progress that says how far it is
+			continue
+		}
 		body[k] = v
 	}
 	if st := h.call("PUT", "/v1/jobs/"+id, pipelineToken, body, nil); st != 201 {
@@ -646,11 +650,12 @@ func TestSofortBesideAnEncode(t *testing.T) {
 func TestPreemptionOverTheTunnel(t *testing.T) {
 	h := newHarness(t)
 	h.pipeline()
-	t.Setenv("FAKE_FRAMES", "1000")
+	// 200000 frames at 100 fps: 33 minutes to go, so the archive encode is not spared (v0.2.15).
+	t.Setenv("FAKE_FRAMES", "200000")
 	t.Setenv("FAKE_FRAME_MS", "10")
 	// Without a high-priority slot (v0.2.14) the stage 1 job takes the one slot back.
 	h.pairWith("encoder", func(c *worker.Config) { c.HighPrioritySlots = 0 })
-	h.rungJob("old_1.2160-archive", "archive", nil)
+	h.rungJob("old_1.2160-archive", "archive", map[string]any{"source_frames": 200000})
 	// The fake encode reads FAKE_FRAMES when it starts, and "leased" comes before that (the
 	// source is still downloading): wait for its first frames, so the archive encode is the long
 	// one for certain and cannot finish before stage 1 preempts it.
@@ -714,6 +719,33 @@ func TestStage1InTheHighPrioritySlot(t *testing.T) {
 	if o.State != "leased" || len(o.Attempts) != 1 || o.Attempts[0].State != "active" {
 		t.Fatalf("the archive job beside it: %s %+v", o.State, o.Attempts)
 	}
+}
+
+// Points (v0.2.15): the pipeline accepts a 4K slower rung of 10 frames, the queue prices it by
+// Punkte-Tabelle v1, and the worker hears its points and its place with its next presence, as
+// Slipstream's menu shows them.
+func TestPointsReachTheWorker(t *testing.T) {
+	h := newHarness(t)
+	h.pipeline()
+	enc := h.pair("encoder")
+	h.rungJob("one_1.2160-stage2", "stage2", nil)
+	h.waitState("one_1.2160-stage2", "done", 30*time.Second)
+	want := 10 / (2.2835275723167556 * 60)
+	var v queue.WorkerView
+	h.call("GET", "/v1/workers/"+enc.id, adminToken, nil, &v)
+	if d := v.Points.Total - want; d > 1e-9 || d < -1e-9 || v.Points.Today != v.Points.Total {
+		t.Fatalf("the worker's points: %+v, want %v", v.Points, want)
+	}
+	h.waitFor("the points event", 10*time.Second, func() bool {
+		h.evMu.Lock()
+		defer h.evMu.Unlock()
+		for _, ev := range h.events {
+			if ev["event"] == "points" && ev["total"] == v.Points.Total && ev["rank"] == 1 && ev["of"] == 1 {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 func TestAssignOverTheTunnel(t *testing.T) {
