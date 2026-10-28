@@ -72,6 +72,8 @@ func (s *Store) runSeconds(w *Worker, j *Job) (float64, bool) {
 		if v := aligner.Speed[e]; v > 0 && j.Spec.Source.DurationS > 0 {
 			return aligner.LoadS[e] + j.Spec.Source.DurationS/v, true
 		}
+	case mediaKind(j):
+		return mediaSeconds(j)
 	}
 	return 0, false
 }

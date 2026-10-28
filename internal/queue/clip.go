@@ -131,6 +131,9 @@ func minVersion(j *Job) (version, what string) {
 	if f := clipFields(j); len(f) > 0 {
 		return "0.2.13", "sets " + strings.Join(f, ", ")
 	}
+	if mediaKind(j) {
+		return "0.2.22", "runs peaks and strip jobs"
+	}
 	if j.align != nil {
 		return "0.2.16", "runs align jobs"
 	}

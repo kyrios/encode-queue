@@ -282,6 +282,8 @@ const headroom = 1 << 30
 func peakBytes(j *Job) int64 {
 	const gb = 1 << 30
 	switch {
+	case mediaKind(j):
+		return mediaPeakBytes
 	case j.align != nil:
 		// Without a worker: the larger of its engines' (v0.2.16).
 		return max(aligner.PeakBytes[aligner.EngineMLX], aligner.PeakBytes[aligner.EngineTorch])

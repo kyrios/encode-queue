@@ -310,4 +310,6 @@ var toolsByKind = map[string][]string{
 	KindCut:     {"ffmpeg", "libx264"},
 	KindRemux:   {"ffmpeg"},
 	KindCheck:   {"ffmpeg"},
+	KindPeaks:   {"ffmpeg"}, // v0.2.22, media.go
+	KindStrip:   {"ffmpeg"},
 }
