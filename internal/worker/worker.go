@@ -137,6 +137,7 @@ type Worker struct {
 	pausedUntil *time.Time
 	pausePatch  bool // the pause changed here and the queue does not know yet
 	lastContact *time.Time
+	saidContact time.Time // the last answer the last connection event named
 	lastErr     string
 	refused     []string
 	refusedKind []map[string]string
@@ -201,7 +202,10 @@ func (w *Worker) contact(err error) {
 		}
 	}
 	up := w.lastContact != nil && time.Since(*w.lastContact) < 90*time.Second
-	if up != w.up {
+	// The event again once the last answer's minute changed (v0.2.14): Slipstream's menu says
+	// "letzte Antwort 9:01" from it, which stayed 9:01 all afternoon while the tunnel stayed up.
+	newMinute := w.lastContact != nil && !w.lastContact.Truncate(time.Minute).Equal(w.saidContact.Truncate(time.Minute))
+	if up != w.up || newMinute {
 		w.up = up
 		w.emitConnectionLocked()
 	}
@@ -212,6 +216,7 @@ func (w *Worker) emitConnectionLocked() {
 	refused = append(refused, w.refusedKind...)
 	f := map[string]any{"up": w.up, "refused": refused, "last_answer_at": nil}
 	if w.lastContact != nil {
+		w.saidContact = *w.lastContact
 		f["last_answer_at"] = w.lastContact.UTC().Format(time.RFC3339)
 	}
 	go w.emit("connection", f)
