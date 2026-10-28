@@ -48,10 +48,7 @@ type Config struct {
 	HoldFactor           float64
 	HoldMin              time.Duration
 	HoldMax              time.Duration
-	// WhisperMinSpeed: how many times real time a worker must transcribe with a model for the
-	// queue to want it there (wantedModels); 0 is 1.
-	WhisperMinSpeed float64
-	MinAppVersion   string
+	MinAppVersion        string
 
 	// The tunnel, for the configurations the queue hands out.
 	Subnet          netip.Prefix

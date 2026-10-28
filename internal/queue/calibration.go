@@ -161,97 +161,20 @@ func whisperSpeed(w *Worker, sha string) (float64, bool) {
 	return small / c.Cost, true
 }
 
-// wantedModels are the models the queue wants a worker to hold (v0.2.7; Thorsten, 2026-10-27:
-// "Choose the whisper model based on measured performance at first launch"): small for the
-// caption timing, and the best model it runs at least WhisperMinSpeed times real time, by its
-// calibration, that fits its RAM with the headroom. Before small is timed, only small.
-//
-// A model the worker has not timed is guessed from small's speed, and wanted only when no model
-// below it in quality measured too slow there (v0.2.8): on encoder small ran at 2.87×, medium
-// at 0.96×, and the guess for large-v3-turbo said 1.4×, a 1.6 GB download for a model that
-// would run slowly. When no model clears the threshold, the best one it holds stays wanted as
-// its fallback (encoder's medium), whatever its speed.
+// wantedModels are the models the queue wants a worker to hold: small for the caption timing,
+// and large-v3-turbo, the one caption model on every worker (v0.2.14; Thorsten, 2026-10-28),
+// whenever its RAM holds turbo's peak with the headroom. Before, the queue wanted the best model
+// a worker's calibration said it ran at real time, so Alex's Vimes held only small and could
+// take no turbo captions job. The speed no longer decides what a worker holds, only which worker
+// gets a job (ect.go).
 func (s *Store) wantedModels(w *Worker) []CatalogueModel {
 	if w.Caps == nil {
 		return nil
 	}
 	out := []CatalogueModel{catalogue[SHASmall]}
-	min := s.cfg.WhisperMinSpeed
-	if min <= 0 {
-		min = 1
-	}
-	total := s.system(w).MemoryBytes
-	for i, sha := range Quality {
-		if sha == SHASmall {
-			break
-		}
-		c := catalogue[sha]
-		if total != nil && c.PeakBytes+headroom > *total {
-			continue
-		}
-		v, ok := whisperSpeed(w, sha)
-		if !ok || v < min {
-			continue
-		}
-		if !measured(w, sha) && slowerBelow(w, Quality[i+1:], min) {
-			continue // a guess, against a measured model below it that is too slow
-		}
-		out = append(out, c)
-		return out
-	}
-	// Nothing clears the threshold: once small is timed, the best model it holds (but small) is
-	// its fallback.
-	if !measured(w, SHASmall) {
-		return out
-	}
-	for _, sha := range Quality {
-		if sha == SHASmall {
-			break
-		}
-		if holds(w, sha) {
-			return append(out, catalogue[sha])
-		}
+	turbo := catalogue[SHALargeV3Turbo]
+	if total := s.system(w).MemoryBytes; total == nil || turbo.PeakBytes+headroom <= *total {
+		out = append(out, turbo)
 	}
 	return out
-}
-
-// measured says whether the worker's calibration timed the model.
-func measured(w *Worker, sha string) bool {
-	if w.Caps == nil || w.Caps.Calibration == nil {
-		return false
-	}
-	for _, m := range w.Caps.Calibration.Whisper {
-		if m.SHA256 == sha {
-			return true
-		}
-	}
-	return false
-}
-
-// slowerBelow says whether one of these models (below in quality, small left out) measured
-// slower than min on the worker.
-func slowerBelow(w *Worker, below []string, min float64) bool {
-	for _, sha := range below {
-		if sha == SHASmall {
-			continue
-		}
-		if measured(w, sha) {
-			if v, _ := whisperSpeed(w, sha); v < min {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func holds(w *Worker, sha string) bool {
-	if w.Caps == nil {
-		return false
-	}
-	for _, m := range w.Caps.Models {
-		if m.SHA256 == sha {
-			return true
-		}
-	}
-	return false
 }

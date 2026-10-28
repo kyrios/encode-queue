@@ -779,9 +779,8 @@ components:
           type: array
           description: |
             The whisper models the queue wants this worker to hold (v0.2.7): small for caption
-            timing, and the best model it runs at least `EQ_WHISPER_MIN_SPEED_PCT` (100) per cent
-            of real time by its calibration whose peak fits its RAM with 1 GB to spare (a model
-            not timed yet is guessed from small's speed). The worker fetches each it lacks from
+            timing, and large-v3-turbo, the one caption model on every worker (v0.2.14), whenever
+            its peak fits the worker's RAM with 1 GB to spare. The worker fetches each it lacks from
             `url` (ggerganov/whisper.cpp at a pinned revision, nothing else), checks `sha256`,
             times it and sends its capabilities again.
           items:

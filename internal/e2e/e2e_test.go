@@ -545,8 +545,9 @@ func TestCalibrationAtPairing(t *testing.T) {
 		t.Fatalf("calibrated classes against the reference: %d of %+v", n, v.SpeedClasses)
 	}
 	// The whisper part (v0.2.7): the model it holds, timed on the speech clip. The test's model
-	// is not the catalogue's small (another sha256), so the queue wants the real one, which the
-	// worker tries to fetch and reports as failed (no internet in tests).
+	// is not the catalogue's small (another sha256), so the queue wants the real one, and
+	// large-v3-turbo on every worker (v0.2.14), which the worker tries to fetch and reports as
+	// failed (no internet in tests).
 	var rep queue.CapabilityReport
 	h.waitFor("whisper timed", 30*time.Second, func() bool {
 		rep, _ = h.store.GetCapabilities(mac.id)
@@ -555,7 +556,7 @@ func TestCalibrationAtPairing(t *testing.T) {
 	if m := rep.Capabilities.Calibration.Whisper[0]; m.Name != "ggml-small.bin" || m.Speed <= 0 || m.Whisper != "v1.9.5" {
 		t.Fatalf("whisper calibration %+v", m)
 	}
-	if len(rep.WantedModels) != 1 || rep.WantedModels[0].SHA256 != queue.SHASmall {
+	if len(rep.WantedModels) != 2 || rep.WantedModels[0].SHA256 != queue.SHASmall || rep.WantedModels[1].SHA256 != queue.SHALargeV3Turbo {
 		t.Fatalf("wanted %+v", rep.WantedModels)
 	}
 	h.waitFor("a failed fetch reported", 30*time.Second, func() bool {
