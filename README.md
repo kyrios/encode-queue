@@ -335,15 +335,19 @@ All three are OpenAPI 3.1.
   cores and wrote the free run's transcript byte for byte; with the GPU it uses under one core and
   runs free.
 - **Disk**: the queue leases only while its result directory has room for every active lease's
-  `max_bytes` plus `EQ_RESULT_RESERVE_BYTES`. **A job of priority now or stage1 counts against the
-  disk as it is** (v0.2.19; 2026-10-28, a `now` whisper job of 64 MB waited for hours beside an idle
-  encoder): free space less the reserve, the running high-priority leases' `max_bytes` and what
-  the lower ones' uploads still have to write, not every running lease's `max_bytes`, which for a
-  2160 archive rung is 2 × its source or 12.5 MB/s of its length.
-  A job the room keeps out says so: `waiting.code` `no_room`, and `encode_queue_result_room_bytes`.
+  `max_bytes` plus `EQ_RESULT_RESERVE_BYTES`. **A claim counts the leases of its own priority and
+  higher; a lower one gets what is left** (v0.2.25; v0.2.19 did it for now and stage1 alone, after a
+  `now` whisper job of 64 MB waited for hours beside an idle encoder, and on 2026-10-28 a stage 2 job
+  then waited behind an archive lease's 8 GB with 10 MB written): free space less the reserve, the
+  `max_bytes` of the running leases of its priority and higher, and what the lower ones' uploads
+  still have to write. A 2160 archive rung's `max_bytes` is 2 × its source or 12.5 MB/s of its
+  length, so archive never blocks stage 2, stage 2 never stage 1 or `now`, and three stage-1 rungs
+  of one upload still count each other. A job the room keeps out says so: `waiting.code`
+  `no_room`, and `encode_queue_result_room_bytes{priority}`.
   **A result then meets the disk when its upload starts** (v0.2.21): it must fit the free space
   less the reserve, what other uploads still have to write and the `max_bytes` of the active
-  high-priority leases that have not begun theirs, or the upload answers `503 no_room` and the
+  leases of a higher priority than its own that have not begun theirs (v0.2.25: every higher one,
+  not only now and stage1), or the upload answers `503 no_room` and the
   worker asks again every 30 s, its lease held. A worker before 0.2.21 fails that attempt, as it
   would on a full disk.
 
@@ -525,7 +529,7 @@ otherwise). Per-worker series carry `worker_id` and
 |---|---|---|
 | `encode_queue_build_info` | gauge | The queue's version, as a label; always 1. |
 | `encode_queue_revision` | gauge | The queue's revision: every change to a job raises it. |
-| `encode_queue_result_room_bytes` | gauge | Bytes of results the queue can still take: for a job below stage1 beside every running lease's max_bytes, for one of priority now or stage1 beside the running high-priority leases' max_bytes and the lower ones' uploads in flight; the reserve is off both. |
+| `encode_queue_result_room_bytes` | gauge | Bytes of results a job of the priority can still claim: beside the max_bytes of the running leases of its priority and higher, the lower ones' uploads in flight and the reserve. |
 | `encode_queue_jobs` | gauge | Jobs by priority and state. |
 | `encode_queue_workers` | gauge | Workers by state (idle, working, paused, offline). |
 | `encode_queue_worker_connected` | gauge | 1 while the worker called within three presence intervals. |

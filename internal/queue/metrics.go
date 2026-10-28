@@ -22,7 +22,7 @@ func freeBytes(dir string) (int64, error) {
 var MetricHelp = []struct{ Name, Type, Help string }{
 	{"encode_queue_build_info", "gauge", "The queue's version, as a label; always 1."},
 	{"encode_queue_revision", "gauge", "The queue's revision: every change to a job raises it."},
-	{"encode_queue_result_room_bytes", "gauge", "Bytes of results the queue can still take: for a job below stage1 beside every running lease's max_bytes, for one of priority now or stage1 beside the running high-priority leases' max_bytes and the lower ones' uploads in flight; the reserve is off both."},
+	{"encode_queue_result_room_bytes", "gauge", "Bytes of results a job of the priority can still claim: beside the max_bytes of the running leases of its priority and higher, the lower ones' uploads in flight and the reserve."},
 	{"encode_queue_jobs", "gauge", "Jobs by priority and state."},
 	{"encode_queue_workers", "gauge", "Workers by state (idle, working, paused, offline)."},
 	{"encode_queue_worker_connected", "gauge", "1 while the worker called within three presence intervals."},
@@ -70,9 +70,9 @@ func (s *Store) WriteMetrics(w io.Writer, version string) {
 	}
 	add("encode_queue_build_info", fmt.Sprintf(`version="%s"`, esc(version)), 1)
 	add("encode_queue_revision", "", float64(s.st.Revision))
-	full, high := s.rooms()
-	add("encode_queue_result_room_bytes", `for="below_stage1"`, float64(full))
-	add("encode_queue_result_room_bytes", `for="now_stage1"`, float64(high))
+	for c, r := range s.rooms() {
+		add("encode_queue_result_room_bytes", fmt.Sprintf(`priority="%s"`, Priorities[c]), float64(r))
+	}
 	jobs := map[[2]string]int{}
 	for _, j := range s.st.Jobs {
 		jobs[[2]string{j.Priority, s.jobState(j)}]++

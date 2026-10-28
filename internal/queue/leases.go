@@ -50,33 +50,51 @@ func (s *Store) activeLeases(workerID string) []*Lease {
 }
 
 // room is how many bytes of results the queue can still take: free space less what active
-// leases may still deliver and the reserve.
+// leases may still deliver and the reserve. It is an archive job's room, the lowest class's.
 func (s *Store) room() int64 {
-	full, _ := s.rooms()
-	return full
+	r := s.rooms()
+	return r[len(r)-1]
 }
 
 // roomFor is the room j's result counts against (rooms).
 func (s *Store) roomFor(j *Job) int64 {
-	full, high := s.rooms()
-	if highPriority(j.Priority) {
-		return high
+	return s.rooms()[class(j.Priority)]
+}
+
+// class is a priority's place in Priorities, now first; one the queue does not know counts as
+// the lowest.
+func class(p string) int {
+	return min(prioIndex(p), len(Priorities)-1)
+}
+
+// leaseClass is the class of an active lease's job, or -1 for a lease that holds no reservation:
+// gone, ended, or its job forgotten.
+func (s *Store) leaseClass(l *Lease) int {
+	if l == nil || l.State != LeaseActive {
+		return -1
 	}
-	return full
+	if j := s.st.Jobs[l.JobID]; j != nil {
+		return class(j.Priority)
+	}
+	return -1
 }
 
 // uploadRoom is how many bytes an upload of lease l may take now (v0.2.21): free space less the
-// reserve, what the other uploads still have to write, and the max_bytes of the active
-// high-priority leases that have not begun theirs. **A high-priority claim skips the lower
-// leases' worst case (rooms), so it is here that their results wait for its room**, and not on
-// a full disk: the review of v0.2.19 found two results admitted that would not have fit
-// together. A worker of 0.2.21 asks again on no_room; an older one fails the attempt, as it would
-// on a full disk.
+// reserve, what the other uploads still have to write, and the max_bytes of the active leases of
+// a higher priority than l's that have not begun theirs (v0.2.25: of every higher class, no
+// longer of now and stage1 alone). **A claim skips the lower classes' worst case (rooms), so it
+// is here that their results wait for its room**, and not on a full disk: the review of v0.2.19
+// found two results admitted that would not have fit together. A worker of 0.2.21 asks again on
+// no_room; an older one fails the attempt, as it would on a full disk.
 func (s *Store) uploadRoom(l *Lease) int64 {
 	free, err := s.cfg.FreeBytes(s.cfg.ResultDir)
 	if err != nil {
 		s.cfg.Log.Warn("free space of the result directory", "err", err)
 		return 0
+	}
+	mine := s.leaseClass(l)
+	if mine < 0 {
+		mine = len(Priorities) - 1
 	}
 	uploading := map[string]bool{}
 	for _, u := range s.st.Uploads {
@@ -86,61 +104,56 @@ func (s *Store) uploadRoom(l *Lease) int64 {
 		}
 	}
 	for _, o := range s.st.Leases {
-		if o == l || o.State != LeaseActive || uploading[o.ID] {
+		if o == l || uploading[o.ID] {
 			continue
 		}
-		if j := s.st.Jobs[o.JobID]; j != nil && highPriority(j.Priority) {
-			free -= j.Spec.Result.MaxBytes
+		if c := s.leaseClass(o); c >= 0 && c < mine {
+			free -= s.st.Jobs[o.JobID].Spec.Result.MaxBytes
 		}
 	}
 	return free - s.cfg.ResultReserve
 }
 
-// rooms is the room for a job below stage1, and for one of priority now or stage1.
+// rooms is the room of each class, by its place in Priorities: what a claim of that priority
+// counts against.
 //
-// **A high-priority job does not wait for another lease's worst case** (v0.2.19; 2026-10-28,
-// a `now` whisper job of 64 MB queued for hours with encoder idle). Every active lease holds its
-// result's max_bytes until it delivers, and a 2160 archive rung's is 2 × its source or 12.5 MB/s
-// of its length, 22 GB for half an hour: once an upload's sets and the archive's next fetch had
-// landed beside it, encoder's disk had less than that left, and no job of any size could be
-// claimed. A job of priority now or stage1 counts the max_bytes of the running high-priority
-// leases only, and of a lower lease what its upload still has to write, as it does not wait for
-// a lower job's slot either (slots.go): so three stage-1 rungs of one upload still fit the disk
-// together. A job below it keeps the whole reservation.
-func (s *Store) rooms() (full, high int64) {
+// **A claim counts the leases of its own class and higher; a lower class gets what is left**
+// (v0.2.25; the master, 2026-10-28). Every active lease holds its result's max_bytes until it
+// delivers, and a 2160 archive rung's is 2 × its source or 12.5 MB/s of its length. v0.2.19 let a
+// `now` or stage 1 claim skip the lower leases' worst case (a `now` whisper job of 64 MB had
+// queued for hours with encoder idle), but stage 2 still counted the archive's in full: on
+// 2026-10-28 an archive lease reserved 8 GB with 10 MB written and 7.5 hours to go, and
+// Thorsten's stage 2 job waited with no_room. Now a claim counts the max_bytes of the active
+// leases of its class and the classes above it, and of a lower lease what its upload still has to
+// write: archive never blocks stage 2, stage 2 never stage 1 or now, and three stage-1 rungs of
+// one upload still count each other. The upload's own check (uploadRoom) keeps the real disk.
+func (s *Store) rooms() []int64 {
+	n := len(Priorities)
+	out := make([]int64, n)
 	free, err := s.cfg.FreeBytes(s.cfg.ResultDir)
 	if err != nil {
 		s.cfg.Log.Warn("free space of the result directory", "err", err)
-		return 0, 0
+		return out
 	}
-	full, high = free, free
-	held := func(l *Lease) (active, hi bool) {
-		if l == nil || l.State != LeaseActive {
-			return false, false
-		}
-		j := s.st.Jobs[l.JobID]
-		return true, j != nil && highPriority(j.Priority)
-	}
+	held := make([]int64, n) // max_bytes of the active leases, by class
 	for _, l := range s.st.Leases {
-		if active, hi := held(l); active {
-			full -= s.st.Jobs[l.JobID].Spec.Result.MaxBytes
-			if hi {
-				high -= s.st.Jobs[l.JobID].Spec.Result.MaxBytes
+		if c := s.leaseClass(l); c >= 0 {
+			held[c] += s.st.Jobs[l.JobID].Spec.Result.MaxBytes
+		}
+	}
+	for c := range out {
+		out[c] = free - s.cfg.ResultReserve
+		for k := 0; k <= c; k++ {
+			out[c] -= held[k]
+		}
+		// What uploads still have to write, where no max_bytes above holds it.
+		for _, u := range s.st.Uploads {
+			if k := s.leaseClass(s.st.Leases[u.LeaseID]); k < 0 || k > c {
+				out[c] -= u.Length - u.Offset
 			}
 		}
 	}
-	// What uploads still have to write, where no max_bytes above holds it.
-	for _, u := range s.st.Uploads {
-		left := u.Length - u.Offset
-		active, hi := held(s.st.Leases[u.LeaseID])
-		if !active {
-			full -= left
-		}
-		if !hi {
-			high -= left
-		}
-	}
-	return full - s.cfg.ResultReserve, high - s.cfg.ResultReserve
+	return out
 }
 
 // claimable is the first queued job this worker may run now, or nil, with the scoring that gave
@@ -149,7 +162,7 @@ func (s *Store) rooms() (full, high int64) {
 // scoring.
 func (s *Store) claimable(w *Worker, req LeaseRequest, ramGate bool) (*Job, *ECT, *ECT) {
 	accepted, _ := s.kinds(w)
-	full, high := s.rooms()
+	rooms := s.rooms()
 	// The jobs the Encoder page sent to this worker first, then the rest; a job sent to
 	// another worker is that worker's.
 	var mine, rest []*Job
@@ -172,11 +185,7 @@ func (s *Store) claimable(w *Worker, req LeaseRequest, ramGate bool) (*Job, *ECT
 		if req.MaxSourceBytes > 0 && j.Spec.Source.Bytes > req.MaxSourceBytes {
 			continue
 		}
-		room := full
-		if highPriority(j.Priority) {
-			room = high
-		}
-		if j.Spec.Result.MaxBytes > room {
+		if j.Spec.Result.MaxBytes > rooms[class(j.Priority)] {
 			continue
 		}
 		if s.mismatch(w, j) != "" {
