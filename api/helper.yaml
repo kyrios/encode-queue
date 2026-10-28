@@ -710,7 +710,7 @@ components:
             performance_cores: { type: integer }
             efficiency_cores: { type: integer }
             gpu_cores: { type: integer }
-            memory_bytes: { type: integer }
+            memory_bytes: { type: integer, description: 'The RAM the worker may use: the machine''s, or on Linux its cgroup''s limit where that is lower (v0.2.15: a container with `mem_limit`).' }
             cpu_cores: { type: integer, description: Physical cores. }
             cpu_threads: { type: integer, description: Logical CPUs the worker can use. }
             os_name: { type: string, examples: [macOS, 'Debian GNU/Linux'] }
@@ -798,7 +798,7 @@ components:
         state: { type: string, enum: [idle, working, paused] }
         disk_free_bytes: { type: integer }
         on_battery: { type: boolean }
-        memory_used_bytes: { type: integer, description: 'RAM in use: macOS active, wired and compressed pages; Linux MemTotal less MemAvailable.' }
+        memory_used_bytes: { type: integer, description: 'RAM in use: macOS active, wired and compressed pages; Linux MemTotal less MemAvailable, or, under a cgroup limit lower than the machine (v0.2.15), the cgroup''s use less its inactive page cache.' }
         other_load: { type: number, minimum: 0, description: 'Threads other programs keep busy (v0.2.7): the machine''s busy threads (Linux /proc/stat, macOS ps -A) less `threads_busy`. The queue counts the machine as that much slower for the next job. Left out when unknown.' }
         threads_busy: { type: integer, minimum: 0, description: 'How many threads the worker''s own tools kept busy since the last presence (v0.2.5): Linux from their process groups'' CPU time, macOS from ps''s %cpu. Left out when unknown.' }
     PresenceAck:

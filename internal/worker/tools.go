@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -362,9 +363,8 @@ func hardware() json.RawMessage {
 		}
 	}
 	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
-		var kb int64
-		fmt.Sscanf(string(data), "MemTotal: %d kB", &kb)
-		hw["memory_bytes"] = kb * 1024
+		total, _ := linuxMemory(string(data), cgroupRoot)
+		hw["memory_bytes"] = total
 	}
 	if c, err := os.ReadFile("/proc/cpuinfo"); err == nil {
 		chip, cores := cpuInfo(string(c))
@@ -380,7 +380,8 @@ func hardware() json.RawMessage {
 }
 
 // memoryUsed is the RAM in use: on macOS active, wired and compressed pages (what Activity
-// Monitor calls used, less the app cache), on Linux MemTotal less MemAvailable; 0 unknown.
+// Monitor calls used, less the app cache), on Linux MemTotal less MemAvailable, or the cgroup's
+// use where its limit is lower (linuxMemory); 0 unknown.
 func memoryUsed() int64 {
 	if runtime.GOOS == "darwin" {
 		out, err := exec.Command("vm_stat").Output()
@@ -393,7 +394,57 @@ func memoryUsed() int64 {
 	if err != nil {
 		return 0
 	}
-	return meminfoUsed(string(data))
+	_, used := linuxMemory(string(data), cgroupRoot)
+	return used
+}
+
+// cgroupRoot is where a container shows the worker its own cgroup.
+var cgroupRoot = "/sys/fs/cgroup"
+
+// linuxMemory is the RAM the worker may use and what is in use of it: the machine's by
+// /proc/meminfo, or its cgroup's where the cgroup's limit is lower (v0.2.15: encoder's worker
+// container runs with mem_limit 10g on a 14 GiB host; by the host's figures the queue's RAM gate
+// would let jobs past the 10g at which the kernel kills one inside the container).
+func linuxMemory(meminfo, root string) (total, used int64) {
+	var kb int64
+	fmt.Sscanf(meminfo, "MemTotal: %d kB", &kb)
+	total, used = kb*1024, meminfoUsed(meminfo)
+	if limit, u, ok := cgroupMemory(root); ok && (total == 0 || limit < total) {
+		return limit, u
+	}
+	return total, used
+}
+
+// cgroupMemory is a cgroup's memory limit and what its processes use of it, less the page cache
+// the kernel drops first (inactive_file); false without a limit. cgroup v2, else v1.
+func cgroupMemory(root string) (limit, used int64, ok bool) {
+	read := func(p string) (int64, bool) {
+		data, err := os.ReadFile(filepath.Join(root, p))
+		if err != nil {
+			return 0, false
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64) // "max": no limit
+		return n, err == nil
+	}
+	stat := func(p, key string) int64 {
+		data, _ := os.ReadFile(filepath.Join(root, p))
+		for _, line := range strings.Split(string(data), "\n") {
+			if k, v, _ := strings.Cut(line, " "); k == key {
+				n, _ := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+				return n
+			}
+		}
+		return 0
+	}
+	if l, ok := read("memory.max"); ok && l > 0 {
+		u, _ := read("memory.current")
+		return l, max(u-stat("memory.stat", "inactive_file"), 0), true
+	}
+	if l, ok := read("memory/memory.limit_in_bytes"); ok && l > 0 && l < 1<<62 { // v1 says no limit with a huge number
+		u, _ := read("memory/memory.usage_in_bytes")
+		return l, max(u-stat("memory/memory.stat", "total_inactive_file"), 0), true
+	}
+	return 0, 0, false
 }
 
 // memoryAvailable is the RAM a new process could get: Linux MemAvailable, macOS the memory
