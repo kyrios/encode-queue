@@ -101,9 +101,14 @@ All three are OpenAPI 3.1.
 - **Leases** last 120 s and are renewed every 30 s with the progress; the long poll waits 25 s;
   presence every 30 s, offline after three missed. A lease that runs out, a worker that goes
   offline, a removed worker: the job goes back to `queued`, the next attempt with the next number.
-- **Preemption**: a stage 1 or stage 2 job that no free worker may run ends the active lease
-  with the lowest priority (then the youngest) whose worker may run it; that worker's next
-  renewal answers `410 preempted`.
+- **Preemption**: a stage 1 or stage 2 job that no free worker may run ends an active lease of a
+  lower priority whose worker may run it; that worker's next renewal answers `410 preempted`.
+  Since v0.2.15 a lease with under 20 minutes to go by its progress, or over 80 % of its frames
+  done, is never taken back, and the new job waits for it (Thorsten, 2026-10-28: queue v0.2.12 threw
+  away a 2160 archive encode 95 % done after five hours for the smoke test's stage 2 job). Of the
+  others the one that ran the shortest goes, whatever its priority. The log's `preempt` line says
+  the minutes and frames lost, and `encode_queue_worker_preempted_work_seconds_total` and
+  `_preempted_frames_total` count them.
 - **Moving a job to a worker** (`POST /v1/jobs/{id}/assign`): a queued or leased job goes to
   one worker that is connected, not paused and runs the reference's tools. Its attempt on
   another worker is preempted; the job is pinned to the target until the target leases it, or
@@ -369,6 +374,8 @@ otherwise). Per-worker series carry `worker_id` and
 | `encode_queue_worker_jobs` | gauge | The worker's jobs now: leased (an active lease) and checking (a result waiting for the pipeline). |
 | `encode_queue_worker_slots` | gauge | The worker's slots by kind: normal (every job) and high (priority now and stage1 only), as the queue gives them. |
 | `encode_queue_worker_slots_busy` | gauge | The worker's slots that hold an active lease, by kind. |
+| `encode_queue_worker_preempted_work_seconds_total` | counter | How long the worker's leases that preemption took back had run: work thrown away. |
+| `encode_queue_worker_preempted_frames_total` | counter | Frames those leases had done. |
 | `encode_queue_worker_points_total` | counter | Points the worker's accepted results earned, by Punkte-Tabelle v1: one point is a minute of the Mac Studio's work. |
 | `encode_queue_worker_attempts_total` | counter | Attempts the worker ended, by outcome: accepted, rejected, superseded, failed, given_back, expired, preempted, cancelled. |
 | `encode_queue_worker_leases_expired_total` | counter | Leases of the worker that ran out or whose worker went offline. |

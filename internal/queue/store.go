@@ -222,6 +222,10 @@ type Worker struct {
 	Corrections map[string]float64 `json:"corrections,omitempty"`
 	// Points: what its accepted results earned (v0.2.15, points.go).
 	Points *PointsLedger `json:"points,omitempty"`
+	// PreemptedWorkS and PreemptedFrames: what preemption threw away on it, the time its taken
+	// back leases had run and their frames done (v0.2.15, tick.go).
+	PreemptedWorkS  float64 `json:"preempted_work_s,omitempty"`
+	PreemptedFrames int64   `json:"preempted_frames,omitempty"`
 
 	tunnelSince *time.Time // when the tunnel last came up; not kept over a restart
 	// memoryAt: when a presence last said memory_used_bytes. A lease claimed since is not in that

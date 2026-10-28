@@ -250,6 +250,10 @@ func (h *harness) rungJob(id, prio string, extra map[string]any) {
 	src := body["source"].(map[string]any)
 	src["bytes"], src["sha256"] = f.Bytes, f.SHA256
 	for k, v := range extra {
+		if k == "source_frames" {
+			src["frames"] = v // the fake encode's length, for a progress that says how far it is
+			continue
+		}
 		body[k] = v
 	}
 	if st := h.call("PUT", "/v1/jobs/"+id, pipelineToken, body, nil); st != 201 {
@@ -646,11 +650,12 @@ func TestSofortBesideAnEncode(t *testing.T) {
 func TestPreemptionOverTheTunnel(t *testing.T) {
 	h := newHarness(t)
 	h.pipeline()
-	t.Setenv("FAKE_FRAMES", "1000")
+	// 200000 frames at 100 fps: 33 minutes to go, so the archive encode is not spared (v0.2.15).
+	t.Setenv("FAKE_FRAMES", "200000")
 	t.Setenv("FAKE_FRAME_MS", "10")
 	// Without a high-priority slot (v0.2.14) the stage 1 job takes the one slot back.
 	h.pairWith("encoder", func(c *worker.Config) { c.HighPrioritySlots = 0 })
-	h.rungJob("old_1.2160-archive", "archive", nil)
+	h.rungJob("old_1.2160-archive", "archive", map[string]any{"source_frames": 200000})
 	// The fake encode reads FAKE_FRAMES when it starts, and "leased" comes before that (the
 	// source is still downloading): wait for its first frames, so the archive encode is the long
 	// one for certain and cannot finish before stage 1 preempts it.
