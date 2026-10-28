@@ -134,6 +134,7 @@ type Job struct {
 	cut     *CutParams   // v0.2.8
 	remux   *RemuxParams // v0.2.8
 	check   *CheckParams // v0.2.8
+	align   *AlignParams // v0.2.16
 }
 
 // Lease is one attempt at a job.
@@ -553,7 +554,7 @@ func hashSpec(spec JobSubmit) string {
 func ptrTime(t time.Time) *time.Time { return &t }
 
 func (j *Job) parse() error {
-	j.rung, j.whisper, j.cut, j.remux, j.check = nil, nil, nil, nil, nil
+	j.rung, j.whisper, j.cut, j.remux, j.check, j.align = nil, nil, nil, nil, nil, nil
 	switch j.Spec.Kind {
 	case KindCut:
 		var p CutParams
@@ -585,6 +586,12 @@ func (j *Job) parse() error {
 			return err
 		}
 		j.whisper = &p
+	case KindAlign:
+		var p AlignParams
+		if err := strictUnmarshal(j.Spec.Params, &p); err != nil {
+			return err
+		}
+		j.align = &p
 	default:
 		return fmt.Errorf("unknown kind %q", j.Spec.Kind)
 	}

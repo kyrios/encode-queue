@@ -45,6 +45,11 @@ var pointsWhisperSpeed = map[string]float64{
 	SHAMedium:       32.336355149617205 / 2.5,
 }
 
+// pointsAlignSpeed is its speed on an align job (v0.2.16), seconds of audio a second: MLX through
+// mlx-qwen3-asr, 0.011 of the audio's length over the four #one Folgen of video-pipeline's
+// docs/aligner-timing.md (2026-10-28), so an hour of audio earns 0.66.
+const pointsAlignSpeed = 1 / 0.011
+
 // pointsRemuxFPS and pointsCheckFPS are the Mac Studio's speed on a remux job and a score check
 // job, in frames of a 3840x2160 master a second (Thorsten, 2026-10-28: "a small per-frame price,
 // measured once"). Measured on 2026-10-28 with toolchain 3's ffmpeg, as the worker's
@@ -115,6 +120,8 @@ func jobPoints(j *Job, l *Lease) float64 {
 		if v := pointsWhisperSpeed[m]; v > 0 && j.Spec.Source.DurationS > 0 {
 			return j.Spec.Source.DurationS / (v * 60)
 		}
+	case j.align != nil:
+		return j.Spec.Source.DurationS / (pointsAlignSpeed * 60)
 	}
 	return 0
 }

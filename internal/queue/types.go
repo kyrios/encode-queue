@@ -13,6 +13,8 @@ import (
 const (
 	KindRung    = "rung"
 	KindWhisper = "whisper"
+	// KindAlign times the words of a text in the source's sound (v0.2.16, internal/aligner).
+	KindAlign = "align"
 )
 
 // Priorities, first first (ADR-0005's order). "now" (the Encoder page's "Sofort", v0.2.5) is for a
@@ -190,6 +192,25 @@ func (p *WhisperParams) acceptable() []string {
 	return []string{p.ModelSHA256}
 }
 
+// AlignParams are an align job's settings (v0.2.16): Qwen3-ForcedAligner by its sha256 (the
+// manifest of its files, aligner.SHA256), whisper's language code, and the input that holds the
+// words, {"words": [{"text", "start", "end"}]}, with the times the text already has, which only
+// cut the pieces. The result is whisper-cli's JSON, one segment per word.
+type AlignParams struct {
+	ModelSHA256 string `json:"model_sha256"`
+	Model       string `json:"model,omitempty"`
+	Language    string `json:"language"`
+	Text        string `json:"text,omitempty"`
+}
+
+// input is the name of the input that holds the words: Text, or "text".
+func (p *AlignParams) input() string {
+	if p.Text == "" {
+		return "text"
+	}
+	return p.Text
+}
+
 // FileIn is a file under the source directory.
 type FileIn struct {
 	Path   string `json:"path"`
@@ -280,6 +301,7 @@ func errf(status int, code, format string, args ...any) *Error {
 var toolsByKind = map[string][]string{
 	KindRung:    {"ffmpeg", "libx265", "libx264"},
 	KindWhisper: {"whisper.cpp"},
+	KindAlign:   nil, // its engine, any of aligner.Engines (jobs.go), and ffmpeg for a source not in WAV
 	KindCut:     {"ffmpeg", "libx264"},
 	KindRemux:   {"ffmpeg"},
 	KindCheck:   {"ffmpeg"},

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/kyrios/encode-queue/internal/aligner"
 )
 
 // WorkerCreate adds a worker.
@@ -374,9 +376,20 @@ func (s *Store) kinds(w *Worker) (accepted []string, refused []Refusal) {
 	if w.Caps == nil {
 		return accepted, nil
 	}
-	for _, kind := range []string{KindRung, KindWhisper, KindCut, KindRemux, KindCheck} {
+	for _, kind := range []string{KindRung, KindWhisper, KindCut, KindRemux, KindCheck, KindAlign} {
 		if kind != KindRung && kind != KindWhisper && versionLess(w.Caps.AppVersion, "0.2.8") {
 			continue // a worker before 0.2.8 knows no such kind; it neither takes nor refuses it
+		}
+		if kind == KindAlign {
+			// v0.2.16: no tools of the reference's, one of the aligner's engines (jobs.go).
+			switch {
+			case versionLess(w.Caps.AppVersion, "0.2.16"):
+			case alignEngine(w) == "":
+				refused = append(refused, Refusal{Kind: kind, Reason: "no aligner engine (" + strings.Join(aligner.Engines, " or ") + ")"})
+			default:
+				accepted = append(accepted, kind)
+			}
+			continue
 		}
 		tools, configured, known := s.reference(kind, false)
 		reason := ""

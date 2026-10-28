@@ -3,6 +3,8 @@ package queue
 import (
 	"math"
 	"time"
+
+	"github.com/kyrios/encode-queue/internal/aligner"
 )
 
 // **Which worker gets a job: the expected completion time** (v0.2.7; Thorsten, 2026-10-27, the
@@ -62,6 +64,13 @@ func (s *Store) runSeconds(w *Worker, j *Job) (float64, bool) {
 		_, m := modelOn(w, j)
 		if v, ok := whisperSpeed(w, m); ok && v > 0 && j.Spec.Source.DurationS > 0 {
 			return j.Spec.Source.DurationS / v, true
+		}
+	case j.align != nil:
+		// The engine's measured speed and start (v0.2.16, aligner.Speed); the worker's results
+		// correct it as any kind's.
+		e := alignEngine(w)
+		if v := aligner.Speed[e]; v > 0 && j.Spec.Source.DurationS > 0 {
+			return aligner.LoadS[e] + j.Spec.Source.DurationS/v, true
 		}
 	}
 	return 0, false

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/kyrios/encode-queue/internal/aligner"
 )
 
 // LeaseRequest narrows a claim.
@@ -198,6 +200,9 @@ const headroom = 1 << 30
 func peakBytes(j *Job) int64 {
 	const gb = 1 << 30
 	switch {
+	case j.align != nil:
+		// Without a worker: the larger of its engines' (v0.2.16).
+		return max(aligner.PeakBytes[aligner.EngineMLX], aligner.PeakBytes[aligner.EngineTorch])
 	case j.whisper != nil:
 		if c, ok := catalogue[j.whisper.acceptable()[0]]; ok {
 			return c.PeakBytes
@@ -272,8 +277,15 @@ func mayRun(l *Lease) bool {
 	return false
 }
 
-// peakOn is j's expected peak on w: with the whisper model w would run.
+// peakOn is j's expected peak on w: with the whisper model w would run, or for an align job with
+// w's engine (v0.2.16).
 func peakOn(w *Worker, j *Job) int64 {
+	if j.align != nil {
+		if b, ok := aligner.PeakBytes[alignEngine(w)]; ok {
+			return b
+		}
+		return peakBytes(j)
+	}
 	if _, m := modelOn(w, j); m != "" {
 		if c, ok := catalogue[m]; ok {
 			return c.PeakBytes

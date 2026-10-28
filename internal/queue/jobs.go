@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/kyrios/encode-queue/internal/aligner"
 )
 
 var (
@@ -121,7 +123,7 @@ func (s *Store) requires(j *Job) (req Requires, onlyReference bool) {
 	if j.Spec.Requires != nil {
 		req = *j.Spec.Requires
 	} else {
-		tools, configured, known := s.reference(j.Spec.Kind, j.whisper != nil && j.Spec.Source.Container != "wav")
+		tools, configured, known := s.reference(j.Spec.Kind, (j.whisper != nil || j.align != nil) && j.Spec.Source.Container != "wav")
 		if configured && !known {
 			onlyReference = true
 		}
@@ -172,6 +174,8 @@ func tooOld(w *Worker, j *Job) string {
 		return ""
 	case v == "0.2.8":
 		return "worker " + w.Caps.AppVersion + " runs no cut, remux or check jobs and no check step (0.2.8)"
+	case v == "0.2.16":
+		return "worker " + w.Caps.AppVersion + " runs no align jobs (0.2.16)"
 	}
 	// v0.2.13: an older worker would not refuse it, it would make the file without them.
 	return "worker " + w.Caps.AppVersion + " would make the file without " + strings.Join(clipFields(j), ", ") + " (0.2.13)"
@@ -213,12 +217,44 @@ func (s *Store) mismatchRequires(w *Worker, j *Job) string {
 			return "model " + j.whisper.acceptable()[0][:12] + " missing"
 		}
 	}
+	if j.align != nil {
+		if alignEngine(w) == "" {
+			return "no aligner engine (" + strings.Join(aligner.Engines, " or ") + ")"
+		}
+		if _, m := modelOn(w, j); m == "" {
+			return "model " + modelLabel(j.align.ModelSHA256) + " missing"
+		}
+	}
+	return ""
+}
+
+// alignEngine is the best aligner engine the worker runs (v0.2.16), or "".
+func alignEngine(w *Worker) string {
+	if w.Caps == nil {
+		return ""
+	}
+	for _, e := range aligner.Engines {
+		if _, ok := w.Caps.tool(e); ok {
+			return e
+		}
+	}
 	return ""
 }
 
 // modelOn is the best of the job's acceptable models the worker holds: its place in the list
-// (0 is the best) and its sha256, or -1 and "".
+// (0 is the best) and its sha256, or -1 and "". An align job has one model, and its place is
+// the worker's engine's (v0.2.16): a CPU worker leaves the job to a Mac with MLX as a worker with
+// a worse whisper model leaves a whisper job to one with a better (betterModelElsewhere).
 func modelOn(w *Worker, j *Job) (int, string) {
+	if w.Caps != nil && j.align != nil {
+		rank := aligner.Rank(alignEngine(w))
+		for _, have := range w.Caps.Models {
+			if have.SHA256 == j.align.ModelSHA256 && rank >= 0 {
+				return rank, have.SHA256
+			}
+		}
+		return -1, ""
+	}
 	if w.Caps == nil || j.whisper == nil {
 		return -1, ""
 	}
@@ -324,6 +360,21 @@ func (s *Store) validate(id string, spec *JobSubmit) error {
 			}
 		}
 	}
+	if p := j.align; p != nil {
+		if !sha256Re.MatchString(p.ModelSHA256) {
+			return errf(422, "invalid", "align needs model_sha256")
+		}
+		if _, ok := aligner.Languages[p.Language]; !ok {
+			return errf(422, "invalid", "align: language %q is not one of the aligner's (%s)", p.Language, languages())
+		}
+		in, ok := spec.Inputs[p.input()]
+		if !ok {
+			return errf(422, "invalid", "align: the words, input %q, are not among the inputs", p.input())
+		}
+		if in.Bytes > aligner.MaxWordsBytes {
+			return errf(422, "invalid", "align: the words weigh %d bytes, more than %d", in.Bytes, aligner.MaxWordsBytes)
+		}
+	}
 	if err := s.checkFile("source", spec.Source.FileIn); err != nil {
 		return err
 	}
@@ -361,6 +412,16 @@ func (s *Store) sourcePath(rel string) (string, error) {
 		return "", errors.New("the path must be relative, inside the source directory")
 	}
 	return filepath.Join(s.cfg.SourceDir, filepath.Clean(rel)), nil
+}
+
+// languages are the aligner's language codes, sorted.
+func languages() string {
+	var out []string
+	for c := range aligner.Languages {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return strings.Join(out, " ")
 }
 
 // Submit puts a job. created is false when the same job was there already.
