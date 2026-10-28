@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -40,5 +41,25 @@ func TestPeaksBesideA4KEncode(t *testing.T) {
 	o := h.job("old_1.2160-archive")
 	if o.State != "leased" || len(o.Attempts) != 1 || o.Attempts[0].State != "active" {
 		t.Fatalf("the archive encode beside it: %s %+v", o.State, o.Attempts)
+	}
+}
+
+// The loudness job end to end (v0.2.24): realtime by default, the worker's ebur128 log (the fake
+// ffmpeg writes the golden one) read into the JSON the pipeline fetches.
+func TestLoudnessEndToEnd(t *testing.T) {
+	h := newHarness(t)
+	h.pipeline()
+	h.pairWith("encoder", func(c *worker.Config) { c.Version = "0.2.24" })
+	src := h.source("rec_8/upload.mp4", "an upload with sound")
+	h.submit("rec_8.loudness", map[string]any{"kind": "loudness", "params": map[string]any{}, "upload_id": "rec_8",
+		"source": map[string]any{"path": src.Path, "bytes": src.Bytes, "sha256": src.SHA256, "container": "mp4", "duration_s": 10},
+		"result": map[string]any{"name": "loudness.json", "max_bytes": 1 << 20}})
+	j := h.waitState("rec_8.loudness", "done", 20*time.Second)
+	if j.Priority != "now" || j.Type != "Lautheit" {
+		t.Fatalf("the job: %s %s", j.Priority, j.Type)
+	}
+	want, _ := os.ReadFile("../worker/testdata/loudness-tone.json")
+	if got := h.fetch(j, 1); got != string(want) {
+		t.Fatalf("the result: %s", got)
 	}
 }

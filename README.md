@@ -16,7 +16,8 @@ Linux server or Mac. **Slipstream** is the encoder helper's name on every machin
   progress and log lines, and uploads the result over tus. Jobs are rungs, whisper runs, from
   v0.2.8 cuts, remuxes and checks (every encode and every decode runs on a worker), from
   v0.2.16 align jobs, which time a text's words in its sound with Qwen3-ForcedAligner, and from
-  v0.2.22 the sound's peaks and a video's filmstrip for Funkhaus's timeline.
+  v0.2.22 the sound's peaks and a video's filmstrip for Funkhaus's timeline, and from v0.2.24
+  its loudness in LUFS.
 - **The worker measures, the pipeline judges** (v0.2.8). After a rung, a cut or a remux the
   same lease checks the result: a full decode, its frames and length, SSIM, PSNR-Y and XPSNR
   (and VMAF when asked) against the source, the packets of a remux. The figures go with the
@@ -139,6 +140,15 @@ All three are OpenAPI 3.1.
   hour (a two-hour file: peaks 10 s, strip 13 s, 71 and 101 MB at the peak, counted as 512 MiB),
   at most 64 MiB of result, and earns no points. Only workers of 0.2.22 with the reference's
   ffmpeg get them.
+- **The loudness job** (v0.2.24; Thorsten, 2026-10-28, idea 6 of the NLE research): how loud an
+  upload is by EBU R 128, for Funkhaus's Checks ("zu leise / passt / zu laut" against -16 LUFS
+  for podcasts and Folgen, -14 for clips) and a lane on its waveform. ffmpeg's
+  `ebur128=peak=true` reads the first sound; its log goes to an FFREPORT file and gives the
+  integrated loudness, the loudness range, the true peak and the short-term loudness every
+  second, as a small JSON (helper.yaml's `LoudnessParams`; the golden file
+  `internal/worker/testdata/loudness-tone.json`). EBU Tech 3341's tone reads -23.0 LUFS. As the
+  peaks: realtime by default, `decode_failed` at once without sound, a worker of 0.2.24 with the
+  reference's ffmpeg, no points; type "Lautheit".
 - **Leases** last 120 s and are renewed every 30 s with the progress; the long poll waits 25 s;
   presence every 30 s, offline after three missed. A lease that runs out, a worker that goes
   offline, a removed worker: the job goes back to `queued`, the next attempt with the next number.

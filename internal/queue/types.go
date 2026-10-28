@@ -304,12 +304,13 @@ func errf(status int, code, format string, args ...any) *Error {
 }
 
 var toolsByKind = map[string][]string{
-	KindRung:    {"ffmpeg", "libx265", "libx264"},
-	KindWhisper: {"whisper.cpp"},
-	KindAlign:   nil, // its engine, any of aligner.Engines (jobs.go), and ffmpeg for a source not in WAV
-	KindCut:     {"ffmpeg", "libx264"},
-	KindRemux:   {"ffmpeg"},
-	KindCheck:   {"ffmpeg"},
-	KindPeaks:   {"ffmpeg"}, // v0.2.22, media.go
-	KindStrip:   {"ffmpeg"},
+	KindRung:     {"ffmpeg", "libx265", "libx264"},
+	KindWhisper:  {"whisper.cpp"},
+	KindAlign:    nil, // its engine, any of aligner.Engines (jobs.go), and ffmpeg for a source not in WAV
+	KindCut:      {"ffmpeg", "libx264"},
+	KindRemux:    {"ffmpeg"},
+	KindCheck:    {"ffmpeg"},
+	KindPeaks:    {"ffmpeg"}, // v0.2.22, media.go
+	KindStrip:    {"ffmpeg"},
+	KindLoudness: {"ffmpeg"}, // v0.2.24
 }

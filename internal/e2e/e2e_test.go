@@ -33,6 +33,9 @@ func TestMain(m *testing.M) {
 		os.Exit(fakeTool(os.Args[1:]))
 	}
 	os.Setenv("EQ_FAKE_TOOL", "1") // for the tools the workers start
+	if p, err := filepath.Abs("../worker/testdata/loudness-tone.log"); err == nil {
+		os.Setenv("EQ_FAKE_LOUDNESS_LOG", p) // the fake ffmpeg's ebur128 log (fake_test.go)
+	}
 	os.Exit(m.Run())
 }
 
