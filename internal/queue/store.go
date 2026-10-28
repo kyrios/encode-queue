@@ -37,15 +37,17 @@ type Config struct {
 
 	// **A rogue worker cannot hold everything** (v0.2.9; security review M2, 2026-10-27): a
 	// worker sets its own max_parallel_jobs and reports its own calibrated speed, and a lease
-	// renewed every 30 s never ran out. MaxParallelJobs caps the regular slots of every worker
-	// (2; the Sofort slot comes on top). A lease may be held HoldFactor times its expected
-	// completion time (3), at least HoldMin (30 min), and HoldMax (12 h) when nothing is expected;
-	// then the queue takes the job back and keeps it from that worker. A calibrated speed counts
-	// at most as the reference's until measured results confirm it (calibration.go).
-	MaxParallelJobs int
-	HoldFactor      float64
-	HoldMin         time.Duration
-	HoldMax         time.Duration
+	// renewed every 30 s never ran out. MaxParallelJobs caps the normal slots of every worker (2),
+	// MaxHighPrioritySlots its high-priority slots on top of them (2, v0.2.14). A lease may be held
+	// HoldFactor times its expected completion time (3), at least HoldMin (30 min), and HoldMax
+	// (12 h) when nothing is expected; then the queue takes the job back and keeps it from that
+	// worker. A calibrated speed counts at most as the reference's until measured results confirm
+	// it (calibration.go).
+	MaxParallelJobs      int
+	MaxHighPrioritySlots int
+	HoldFactor           float64
+	HoldMin              time.Duration
+	HoldMax              time.Duration
 	// WhisperMinSpeed: how many times real time a worker must transcribe with a model for the
 	// queue to want it there (wantedModels); 0 is 1.
 	WhisperMinSpeed float64
@@ -83,6 +85,9 @@ func (c *Config) Defaults() {
 	set(&c.HoldMax, 12*time.Hour)
 	if c.MaxParallelJobs == 0 {
 		c.MaxParallelJobs = 2
+	}
+	if c.MaxHighPrioritySlots == 0 {
+		c.MaxHighPrioritySlots = 2
 	}
 	if c.HoldFactor == 0 {
 		c.HoldFactor = 3
@@ -151,8 +156,9 @@ type Lease struct {
 	EndCode   string     `json:"end_code,omitempty"`
 	Progress  *Progress  `json:"progress,omitempty"`
 	Result    *Result    `json:"result,omitempty"`
-	// Extra: claimed past max_parallel_jobs, in the worker's extra slot (v0.2.5).
-	Extra bool `json:"extra,omitempty"`
+	// High: in one of the worker's high-priority slots (v0.2.14), beside its max_parallel_jobs; the
+	// state keeps v0.2.5's name for its extra slot.
+	High bool `json:"extra,omitempty"`
 	// Model: the whisper model the queue chose for this attempt (v0.2.7), the best of the job's
 	// models the worker holds; the lease's params carry it as model_sha256.
 	Model string `json:"model,omitempty"`
@@ -217,6 +223,12 @@ type Worker struct {
 	Corrections map[string]float64 `json:"corrections,omitempty"`
 
 	tunnelSince *time.Time // when the tunnel last came up; not kept over a restart
+	// memoryAt: when a presence last said memory_used_bytes. A lease claimed since is not in that
+	// figure yet (ramFits); zero after a restart, so every active lease counts until the next.
+	memoryAt time.Time
+	// ramPreemptAt: when the queue last took a lease of this worker back for a `now` job's RAM
+	// (clearing, slots.go); not kept over a restart.
+	ramPreemptAt time.Time
 }
 
 // Pin is the worker the Encoder page sent a job to.

@@ -87,7 +87,7 @@ func TestExtraSlotBesideAnEncode(t *testing.T) {
 	if err != nil || x == nil || x.Job.ID != "k3v9x2m1q7pz.whisper" {
 		t.Fatalf("extra slot: %+v %v", x, err)
 	}
-	if !e.s.st.Leases[x.ID].Extra {
+	if !e.s.st.Leases[x.ID].High {
 		t.Fatal("the lease is not marked extra")
 	}
 	v := must(e.s.GetWorker(w))
@@ -104,7 +104,7 @@ func TestExtraSlotBesideAnEncode(t *testing.T) {
 		t.Fatal("a second extra lease")
 	}
 	// The encode still counts as the one regular slot; the extra lease does not hold one.
-	if fa := e.s.freeAt(e.s.st.Workers[w], e.clock.Now(), ""); fa != nil && !fa.After(e.clock.Now()) {
+	if fa := e.s.freeAt(e.s.st.Workers[w], e.clock.Now(), "", false); fa != nil && !fa.After(e.clock.Now()) {
 		t.Fatalf("free at %v while the encode runs", fa)
 	}
 	if err := e.s.Release(w, enc.ID, "user"); err != nil {
@@ -153,6 +153,12 @@ func TestExtraSlotOnAnIdleWorker(t *testing.T) {
 	if err != nil || x == nil || x.Job.ID != "k3v9x2m1q7pz.whisper" {
 		t.Fatalf("extra on an idle worker: %+v %v", x, err)
 	}
+	// Beside the high-priority slot's job the normal slot needs the RAM too (v0.2.14): unknown
+	// RAM never fits, 32 GB do.
+	if l, err := e.s.Claim(context.Background(), w, LeaseRequest{}, 0); err != nil || l != nil {
+		t.Fatalf("regular beside it with unknown RAM: %+v %v", l, err)
+	}
+	e.machine(w, 32*gib, 6*gib)
 	if l := e.claim(w); l == nil || l.Job.ID != "a.stage1" {
 		t.Fatalf("regular beside it: %+v", l)
 	}

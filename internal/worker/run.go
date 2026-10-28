@@ -44,6 +44,7 @@ type run struct {
 	l       *Lease
 	dir     string
 	started time.Time
+	slot    string // normal or high, the claim loop's (v0.2.14)
 
 	mu          sync.Mutex
 	flushMu     sync.Mutex
@@ -62,14 +63,18 @@ type run struct {
 	encodeTime time.Duration
 }
 
-func newRun(w *Worker, l *Lease) *run {
-	return &run{w: w, l: l, dir: filepath.Join(w.cfg.WorkDir, l.ID), started: time.Now(), prog: Progress{Phase: "downloading"}}
+func newRun(w *Worker, l *Lease, high bool) *run {
+	r := &run{w: w, l: l, dir: filepath.Join(w.cfg.WorkDir, l.ID), started: time.Now(), prog: Progress{Phase: "downloading"}, slot: "normal"}
+	if high {
+		r.slot = "high"
+	}
+	return r
 }
 
 func (r *run) status() JobStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	st := JobStatus{LeaseID: r.l.ID, JobID: r.l.Job.ID, Title: r.l.Job.Title, Kind: r.l.Job.Kind, Attempt: r.l.Attempt,
+	st := JobStatus{LeaseID: r.l.ID, JobID: r.l.Job.ID, Title: r.l.Job.Title, Kind: r.l.Job.Kind, Slot: r.slot, Attempt: r.l.Attempt,
 		Started: r.started, Progress: r.report(), Log: append([]string(nil), r.tail...)}
 	if r.l.Job.Kind == "rung" {
 		var p RungParams
@@ -123,7 +128,7 @@ func (r *run) eventLoop(ctx context.Context) {
 		p := st.Progress
 		if p.Phase != phase || time.Since(last) >= time.Second {
 			phase, last = p.Phase, time.Now()
-			r.w.emit("job", map[string]any{"lease_id": st.LeaseID, "title": st.Title, "kind": st.Kind, "rung": st.Rung,
+			r.w.emit("job", map[string]any{"lease_id": st.LeaseID, "title": st.Title, "kind": st.Kind, "rung": st.Rung, "slot": st.Slot,
 				"phase": p.Phase, "fraction": p.Fraction, "fps": p.FPS, "speed": p.Speed, "eta_s": p.ETAS})
 		}
 		select {

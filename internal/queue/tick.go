@@ -86,13 +86,10 @@ func (s *Store) pausedTooLong(w *Worker, l *Lease, now time.Time) bool {
 	return now.Sub(since) > s.cfg.PauseGiveBack+s.cfg.PauseGrace
 }
 
-// free is whether a worker could take one more job now.
-func (s *Store) free(w *Worker, now time.Time) bool {
-	return s.connected(w, now) && s.canClaim(w, now, false) == nil
-}
-
 // preempt ends the lowest lease for every new upload's job that no free worker may run
-// (ADR-0007 §1, "new before old").
+// (ADR-0007 §1, "new before old"). A `now` job preempts only where the RAM is all that keeps it out
+// of a free high-priority slot (v0.2.14, slots.go): that worker's lowest lease below stage1, one at
+// a time until its tool has stopped.
 func (s *Store) preempt(now time.Time) bool {
 	if s.draining {
 		return false
@@ -106,16 +103,13 @@ func (s *Store) preempt(now time.Time) bool {
 		if j.Pin != nil {
 			continue // it waits for its worker
 		}
-		if j.Priority == PriorityNow {
-			continue // Sofort waits first in line or takes an extra slot; it never preempts
-		}
 		p := prioIndex(j.Priority)
 		if p >= prioIndex("archive") {
 			break // queued() is in order: nothing further is new
 		}
 		served := false
 		for _, w := range workers {
-			if s.free(w, now) && s.mismatch(w, j) == "" {
+			if (s.freeFor(w, j, now) || s.waitsForHigh(w, now)) && s.mismatch(w, j) == "" {
 				served = true
 				break
 			}
@@ -138,6 +132,9 @@ func (s *Store) preempt(now time.Time) bool {
 			if !s.connected(w, now) || s.paused(w, now) || s.mismatch(w, j) != "" {
 				continue
 			}
+			if j.Priority == PriorityNow && (highPriority(lj.Priority) || s.clearing(w, now) || !s.ramKeepsOut(w, j, now) || !s.roomWithout(w, j, lj)) {
+				continue
+			}
 			cands = append(cands, l)
 		}
 		if len(cands) == 0 {
@@ -153,6 +150,9 @@ func (s *Store) preempt(now time.Time) bool {
 		victim := cands[0]
 		s.cfg.Log.Info("preempt", "lease", victim.ID, "job", victim.JobID, "for", j.ID)
 		s.endLease(victim, LeasePreempted, "preempted")
+		if j.Priority == PriorityNow {
+			s.st.Workers[victim.WorkerID].ramPreemptAt = now
+		}
 		changed = true
 		// The worker is free now; the next job in line finds it so and preempts no other.
 	}

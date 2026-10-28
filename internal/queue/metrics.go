@@ -27,6 +27,8 @@ var MetricHelp = []struct{ Name, Type, Help string }{
 	{"encode_queue_worker_connected", "gauge", "1 while the worker called within three presence intervals."},
 	{"encode_queue_worker_paused", "gauge", "1 while the worker is paused."},
 	{"encode_queue_worker_jobs", "gauge", "The worker's jobs now: leased (an active lease) and checking (a result waiting for the pipeline)."},
+	{"encode_queue_worker_slots", "gauge", "The worker's slots by kind: normal (every job) and high (priority now and stage1 only), as the queue gives them."},
+	{"encode_queue_worker_slots_busy", "gauge", "The worker's slots that hold an active lease, by kind."},
 	{"encode_queue_worker_attempts_total", "counter", "Attempts the worker ended, by outcome: accepted, rejected, superseded, failed, given_back, expired, preempted, cancelled."},
 	{"encode_queue_worker_leases_expired_total", "counter", "Leases of the worker that ran out or whose worker went offline."},
 	{"encode_queue_worker_results_rejected_total", "counter", "Results of the worker that the pipeline rejected."},
@@ -121,6 +123,11 @@ func (s *Store) WriteMetrics(w io.Writer, version string) {
 		}
 		add("encode_queue_worker_jobs", l+`,state="leased"`, float64(leased))
 		add("encode_queue_worker_jobs", l+`,state="checking"`, float64(checking))
+		normal, high := s.slotsBusy(wk)
+		add("encode_queue_worker_slots", l+`,slot="normal"`, float64(s.maxJobs(wk)))
+		add("encode_queue_worker_slots", l+`,slot="high"`, float64(s.highSlots(wk)))
+		add("encode_queue_worker_slots_busy", l+`,slot="normal"`, float64(normal))
+		add("encode_queue_worker_slots_busy", l+`,slot="high"`, float64(high))
 		c := wk.Counts
 		for _, o := range []struct {
 			name string

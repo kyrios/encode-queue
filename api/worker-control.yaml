@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-worker control API
-  version: 1.0.0
+  version: 1.1.0
   license: { name: MIT, identifier: MIT }
   summary: How the app that embeds the worker (Slipstream) reads its state and pauses, resumes or stops it.
   description: |
@@ -87,6 +87,7 @@ components:
               title: { type: string }
               kind: { type: string, enum: [rung, whisper] }
               rung: { type: string }
+              slot: { type: string, enum: [normal, high], description: 'The slot it runs in (v0.2.14, 1.1.0): a normal one or a high-priority one, which takes only jobs of priority `now` and `stage1`.' }
               attempt: { type: integer }
               started_at: { type: string, format: date-time }
               progress: { $ref: '#/components/schemas/Progress' }

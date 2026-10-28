@@ -16,8 +16,8 @@ const (
 )
 
 // Priorities, first first (ADR-0005's order). "now" (the Encoder page's "Sofort", v0.2.5) is for a
-// job someone in Funkhaus waits for: captions from the audio, a Loop. It goes first in line, may
-// run in a worker's extra slot beside a long encode, and never preempts.
+// job someone in Funkhaus waits for: captions from the audio, a Loop. It goes first in line, and
+// with "stage1" may run in a worker's high-priority slots beside a long encode (slots.go).
 const PriorityNow = "now"
 
 var Priorities = []string{PriorityNow, "stage1", "stage2", "archive"}
@@ -84,6 +84,10 @@ type Limits struct {
 	CPUThreads      *int `json:"cpu_threads,omitempty"`
 	GPU             bool `json:"gpu"`
 	MaxParallelJobs int  `json:"max_parallel_jobs"`
+	// HighPrioritySlots: the slots on top of max_parallel_jobs that take only jobs of priority now
+	// and stage1 (v0.2.14, slots.go). A worker before 0.2.14 does not send it; it has one, v0.2.5's
+	// extra slot.
+	HighPrioritySlots *int `json:"high_priority_slots,omitempty"`
 }
 
 // Capabilities is what a worker says it runs.

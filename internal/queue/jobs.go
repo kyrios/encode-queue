@@ -234,14 +234,15 @@ func modelOn(w *Worker, j *Job) (int, string) {
 
 // betterModelElsewhere says whether another connected, unpaused worker that may run the job
 // holds a better one of its models than w: then w leaves the job to it. A worse model runs
-// only when no worker with a better one is there.
+// only when no worker with a better one is there, or, for a job of priority now or stage1, when
+// that one would first finish a lower job (waitsBehindLower).
 func (s *Store) betterModelElsewhere(w *Worker, j *Job, now time.Time) bool {
 	mine, _ := modelOn(w, j)
 	if mine <= 0 {
 		return false
 	}
 	for _, v := range s.st.Workers {
-		if v == w || !s.claiming(v, now) || s.mismatch(v, j) != "" {
+		if v == w || !s.claiming(v, now) || s.mismatch(v, j) != "" || s.waitsBehindLower(v, j, now) {
 			continue
 		}
 		if i, _ := modelOn(v, j); i >= 0 && i < mine {
@@ -690,7 +691,7 @@ func (s *Store) JobCandidates(id string) (Candidates, error) {
 			continue
 		}
 		c.Available = true
-		if f := s.freeAt(w, now, j.ID); f != nil {
+		if f := s.freeAt(w, now, j.ID, highPriority(j.Priority)); f != nil {
 			c.FreeAt = ut(*f)
 			if d := s.encodeSeconds(w, j); d > 0 {
 				c.EncodeS = &d
