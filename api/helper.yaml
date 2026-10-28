@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue helper API
-  version: 1.4.0
+  version: 1.5.0
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
@@ -823,11 +823,17 @@ components:
         worker's file is the file `encoder` would have made.
 
         For `libx265`: `-i SRC -map 0:v:0 [-map 0:a:0] -fps_mode passthrough
-        [-vf scale=W:H:flags=lanczos] -c:v libx265 -preset P -crf C -pix_fmt yuv420p10le
+        [-vf [crop=…,][fps=F,]scale=W:H:flags=lanczos] -c:v libx265 -preset P -crf C -pix_fmt yuv420p10le
         -profile:v main10 -tag:v hvc1 -x265-params log-level=error[:vbv-maxrate=R:vbv-bufsize=B][:pools=N]`.
-        For `libx264`: `-vf [crop=…,][scale=…,]format=yuv420p[,ass=filename=…]
+        For `libx264`: `-vf [crop=…,][fps=F,][scale=…,]format=yuv420p[,ass=filename=…]
         -c:v libx264 -preset P -crf C [-maxrate Rk -bufsize Bk] -profile:v high -pix_fmt yuv420p`.
-        Then the audio, then `-map_metadata -1 -map_chapters -1 -movflags +faststart OUT`.
+        Then the audio (`-c:a copy`, or `[-af pan=…] -c:a aac -b:a Bk [-ar S] [-ac C]`), then
+        `-map_metadata -1 -map_chapters -1 [-use_editlist 0] -movflags +faststart OUT`.
+
+        **A clip's settings** (v0.2.13; video-pipeline v0.2.10's Short for Instagram Reels, YouTube
+        Shorts, Mastodon, Threads and Bluesky): `fps`, `audio.sample_rate`, `audio.channels` and
+        `edit_list: false`. A worker before 0.2.13 would drop them and make the file without them,
+        so a rung with any of them goes only to a worker of 0.2.13 or later.
       required: [codec, preset, crf, width, height]
       properties:
         rung: { type: string, examples: ['2160', '1080', '720', h264, mastodon], description: 'The rung''s name, for people.' }
@@ -863,7 +869,39 @@ components:
                 at least `mono_side_below_db` below the mid. A level it cannot read counts as
                 stereo. `CheckFigures.audio_levels` says what it found.
             mono_side_below_db: { type: number, default: 40 }
+            sample_rate:
+              type: integer
+              enum: [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000]
+              description: 'For `aac` (v0.2.13): `-ar S`. Absent, the source''s rate.'
+            channels:
+              type: integer
+              minimum: 1
+              maximum: 8
+              description: 'For `aac` (v0.2.13): `-ac C`. Absent, the source''s channels. Not beside `mono` true or `measure`, which set the channels themselves.'
         check: { $ref: '#/components/schemas/CheckSettings' }
+        fps:
+          oneOf:
+            - { type: number, minimum: 1, maximum: 240 }
+            - { type: string, pattern: '^[0-9]{1,6}/[0-9]{1,6}$' }
+          examples: [60, '30000/1001']
+          description: |
+            The frame rate the file goes out at (v0.2.13): `fps=F` in the filter chain, after the
+            crop and before the scale, so a 120 fps source drops half its frames before the scale
+            works on them; the captions come after it, drawn at the output frames' own times. A
+            number (`60`, `29.97`, at most three decimals) or a ratio (`"30000/1001"`), 1 to 240.
+            Absent, the file keeps the source's rate (`-fps_mode passthrough`). At another rate the
+            file has its own frames: the check reports `frames` and no `source_frames`.
+        edit_list:
+          type: boolean
+          default: true
+          description: |
+            `false` (v0.2.13): an MP4 without edit lists, `-use_editlist 0`, as Instagram's and
+            Threads' specs ask. The mov muxer then shifts both tracks so the first timestamp is 0
+            and stretches the first sample of the track that starts earlier: with B-frames, the AAC
+            priming's packet lasts until the picture starts. By the timestamps (ffmpeg) picture and
+            sound stay together to the sample; AVFoundation plays the sound earlier by the
+            picture's delay less the priming, 58.7 ms at 25 fps and 22.7 ms at 60 (measured,
+            encode-queue#20). `true` or absent: ffmpeg's own edit lists.
         captions:
           type: [object, 'null']
           description: Captions burnt in by libass (libx264 only). The ASS file is the job input `input`; the worker must have `font`.
@@ -966,7 +1004,7 @@ components:
             errors: { type: integer }
             lines: { type: array, maxItems: 20, items: { type: string } }
         frames: { type: integer, description: Frames the result decodes to. }
-        source_frames: { type: integer, description: Frames the source decodes to (an edit list may hide some from its header). }
+        source_frames: { type: integer, description: 'Frames the source decodes to (an edit list may hide some from its header). Not for a rung with `fps` (v0.2.13): its file has the rate''s frames.' }
         duration_s: { type: number, description: The result's length as decoded. }
         compare:
           type: object

@@ -416,12 +416,18 @@ func (r *run) work(ctx context.Context) error {
 			}
 		}
 		check, w, h, sameFrames = p.Check, p.Width, p.Height, true
+		frames := l.Job.Source.Frames
+		if p.FPS != nil {
+			// v0.2.13: at another rate the file has its own frames, not the source's, so its check
+			// reports no source_frames, and the progress counts the rate's frames.
+			sameFrames, frames = false, p.FPS.frames(l.Job.Source.DurationS)
+		}
 		args, err := rungArgs(r.w.cfg.FFmpeg, p, src, l.Job.Source.Width, l.Job.Source.Height, ass, out, r.w.cfg.CPUThreads)
 		if err != nil {
 			return fail("other", "%v", err)
 		}
 		r.log("info", "worker", strings.Join(args, " "))
-		if err := r.runTool(ctx, args, "ffmpeg", r.ffmpegProgress()); err != nil {
+		if err := r.runTool(ctx, args, "ffmpeg", r.progressOf(frames)); err != nil {
 			return err
 		}
 		tools = r.w.toolsNamed("ffmpeg", "libx265", "libx264")
@@ -580,8 +586,10 @@ var whisperProgressRe = regexp.MustCompile(`progress\s*=\s*(\d+)\s*%`)
 
 // ffmpegProgress reads ffmpeg's -progress blocks into the run's progress, with frames per
 // second over the last 10 s.
-func (r *run) ffmpegProgress() func(map[string]string) {
-	total := r.l.Job.Source.Frames
+func (r *run) ffmpegProgress() func(map[string]string) { return r.progressOf(r.l.Job.Source.Frames) }
+
+// progressOf is ffmpegProgress for a file of total frames; 0 when unknown, and the time decides.
+func (r *run) progressOf(total int64) func(map[string]string) {
 	dur := r.l.Job.Source.DurationS
 	return func(b map[string]string) {
 		now := time.Now()

@@ -1,6 +1,10 @@
 package queue
 
-import "time"
+import (
+	"sort"
+	"strings"
+	"time"
+)
 
 // infraFailure is a failure code that blames the machine, not the worker's tools: a tool the
 // system killed, or one that ran out of memory.
@@ -27,8 +31,15 @@ func (s *Store) waiting(j *Job, now time.Time) *Waiting {
 		return nil
 	}
 	var able, free []*Worker
+	var old []string // workers that run its tools but are too old for it, "name version"
 	for _, w := range s.st.Workers {
-		if acc, _ := s.kinds(w); !contains(acc, j.Spec.Kind) || s.mismatchTools(w, j) != "" {
+		if acc, _ := s.kinds(w); !contains(acc, j.Spec.Kind) {
+			continue
+		}
+		if s.mismatchTools(w, j) != "" {
+			if tooOld(w, j) != "" && s.mismatchRequires(w, j) == "" {
+				old = append(old, w.Name+" "+w.Caps.AppVersion)
+			}
 			continue
 		}
 		able = append(able, w)
@@ -37,6 +48,12 @@ func (s *Store) waiting(j *Job, now time.Time) *Waiting {
 		}
 	}
 	switch {
+	case len(able) == 0 && len(old) > 0:
+		// The Encoder page shows the detail: which version the job waits for, and who is older.
+		sort.Strings(old)
+		v, what := minVersion(j)
+		return &Waiting{Code: WaitNoEligibleWorker, Detail: "it waits for a worker of " + v + " or later, which " + what +
+			" (paired: " + strings.Join(old, ", ") + ")"}
 	case len(able) == 0:
 		return &Waiting{Code: WaitNoEligibleWorker, Detail: "no worker runs the tools, model and fonts it needs"}
 	case len(free) == 0:

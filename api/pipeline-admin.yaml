@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.8.0
+  version: 1.9.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -783,7 +783,12 @@ components:
         fonts: { type: array, items: { type: string } }
 
     RungParams:
-      description: helper.yaml's `RungParams`, unchanged; the worker builds its ffmpeg arguments from it.
+      description: |
+        helper.yaml's `RungParams`, unchanged; the worker builds its ffmpeg arguments from it. A rung
+        with `fps`, `audio.sample_rate`, `audio.channels` or `edit_list: false` (v0.2.13, a clip)
+        goes only to workers of 0.2.13 or later, since an older one would make the file without
+        them. Until one is paired the job waits with `no_eligible_worker`, and its detail names the
+        version and the workers that run older ones.
       $ref: 'helper.yaml#/components/schemas/RungParams'
     WhisperParams:
       description: helper.yaml's `WhisperParams`, unchanged.
@@ -1055,7 +1060,9 @@ components:
           type: string
           enum: [no_eligible_worker, all_excluded, no_worker_available]
           description: |
-            `no_eligible_worker`: no paired worker runs the tools, model and fonts it needs.
+            `no_eligible_worker`: no paired worker runs the tools, model and fonts it needs, or
+            (v0.2.13) those that do are too old for it: the detail then says, e.g. "it waits for a
+            worker of 0.2.13 or later, which sets fps, edit_list (paired: encoder 0.2.12)".
             `all_excluded`: every worker that does failed it or had its result rejected.
             `no_worker_available`: those that may run it are all offline or paused.
         detail: { type: string, description: One line for a person. }
