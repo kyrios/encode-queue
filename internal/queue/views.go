@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/kyrios/encode-queue/internal/aligner"
 )
 
 // WorkerRef names a worker.
@@ -179,6 +181,13 @@ func (s *Store) jobViewWith(j *Job, fc map[string]time.Time) JobView {
 		}
 		v.Quality = strp(q)
 	}
+	if a := j.align; a != nil {
+		q := a.Model
+		if q == "" {
+			q = modelLabel(a.ModelSHA256)
+		}
+		v.Quality = strp(q + " " + a.Language)
+	}
 	v.Waiting = s.waiting(j, s.cfg.Now())
 	v.Cancelled = j.Cancelled
 	if j.Final != "" {
@@ -276,6 +285,9 @@ type LeaseView struct {
 func modelLabel(sha string) string {
 	if m, ok := catalogue[sha]; ok {
 		return m.Name
+	}
+	if sha == aligner.SHA256 {
+		return aligner.Name
 	}
 	if len(sha) >= 12 {
 		return sha[:12]

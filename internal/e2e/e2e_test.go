@@ -196,7 +196,7 @@ func (h *harness) pairWith(name string, adjust func(*worker.Config)) *testWorker
 	}
 	self, _ := os.Executable()
 	wcfg := worker.Config{Version: "0.1.0", StateDir: h.t.TempDir(), FFmpeg: self, WhisperCLI: self,
-		WhisperVersion: "v1.9.5", ModelsDir: h.models, MaxParallel: 1, HighPrioritySlots: 1, ChunkBytes: 1 << 10, Calibrate: h.calibrate, FetchClient: offline,
+		WhisperVersion: "v1.9.5", ModelsDir: h.models, AlignerPython: "off", MaxParallel: 1, HighPrioritySlots: 1, ChunkBytes: 1 << 10, Calibrate: h.calibrate, FetchClient: offline,
 		LongPoll: time.Second, LogEvery: 200 * time.Millisecond, RetryAfter: 200 * time.Millisecond,
 		Log: h.log.With("worker", name), Events: func(ev map[string]any) {
 			h.evMu.Lock()

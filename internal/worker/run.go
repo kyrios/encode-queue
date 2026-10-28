@@ -61,6 +61,7 @@ type run struct {
 	// rate: the rung's fps (v0.2.13), so the check's comparison takes the source at that rate.
 	rate       FPS
 	encodeTime time.Duration
+	env        []string // more for the tool's environment (align.go)
 }
 
 func newRun(w *Worker, l *Lease, high bool) *run {
@@ -469,6 +470,11 @@ func (r *run) work(ctx context.Context) error {
 			return err
 		}
 		tools = r.w.toolsNamed("ffmpeg")
+	case "align":
+		var err error
+		if tools, err = r.workAlign(ctx, src, inputs, out); err != nil {
+			return err
+		}
 	case "whisper":
 		var p WhisperParams
 		if err := json.Unmarshal(l.Params, &p); err != nil {
@@ -673,7 +679,7 @@ func (r *run) runToolTo(ctx context.Context, args []string, source string, onBlo
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = r.dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = append(os.Environ(), "OMP_WAIT_POLICY=passive")
+	cmd.Env = append(append(os.Environ(), "OMP_WAIT_POLICY=passive"), r.env...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -747,7 +753,7 @@ func (r *run) runToolTo(ctx context.Context, args []string, source string, onBlo
 			if errLine != nil {
 				errLine(line)
 			}
-			if source == "whisper" {
+			if source == "whisper" || source == "aligner" {
 				if m := whisperProgressRe.FindStringSubmatch(line); m != nil {
 					pct, _ := strconv.Atoi(m[1])
 					f := float64(pct) / 100

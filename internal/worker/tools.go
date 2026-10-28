@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/kyrios/encode-queue/internal/aligner"
 )
 
 // Tool is a tool and its exact version string (helper.yaml, Tool).
@@ -573,6 +575,19 @@ func DetectCapabilities(ctx context.Context, cfg Config) (Capabilities, []string
 	models, err := DetectModels(dir, filepath.Join(cfg.StateDir, "models-cache.json"))
 	if err != nil {
 		problems = append(problems, "models: "+err.Error())
+	}
+	// The aligner (v0.2.16): its engine as a tool, its model where the engine is.
+	if tool, problem := DetectAligner(ctx, cfg); tool != nil {
+		tools = append(tools, *tool)
+		md, err := DetectAlignerModel(dir, filepath.Join(cfg.StateDir, "models-cache.json"))
+		if err != nil {
+			problems = append(problems, "aligner model: "+err.Error())
+		}
+		if md != "" {
+			models = append(models, Model{Name: aligner.Name, SHA256: aligner.SHA256, path: md})
+		}
+	} else if problem != "" {
+		problems = append(problems, problem)
 	}
 	var fonts []string
 	if hasAss(ctx, cfg.FFmpeg) {

@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -23,6 +24,8 @@ func fakeTool(args []string) int {
 		fmt.Fprintln(os.Stderr, "[warning] fake stderr line")
 	}
 	switch {
+	case len(args) >= 3 && args[0] == "-I" && strings.HasSuffix(args[1], "align.py"):
+		return fakeAligner(args[2:])
 	case strings.HasSuffix(argv, "-filters"): // the filter list: no ass in this ffmpeg
 		fmt.Println(" ... null              V->V       Pass the source unchanged to the output.")
 		return 0
@@ -98,5 +101,47 @@ func fakeTool(args []string) int {
 	if progress {
 		fmt.Printf("frame=%d\nprogress=end\n", frames)
 	}
+	return 0
+}
+
+// fakeAligner stands in for the aligner's Python running align.py (v0.2.16): `version` names
+// FAKE_ALIGNER's engine (qwen-asr without it); `run` gives each word of the words file half a
+// second in whisper-cli's shape, with its arguments, and FAKE_ALIGN_REFUSE=1 refuses with 3.
+func fakeAligner(args []string) int {
+	engine := os.Getenv("FAKE_ALIGNER")
+	if engine == "" {
+		engine = "qwen-asr"
+	}
+	if args[0] == "version" {
+		fmt.Printf(`{"name": %q, "version": "0.0.6", "backend": "torch fake"}`+"\n", engine)
+		return 0
+	}
+	opt := map[string]string{}
+	for i := 1; i+1 < len(args); i += 2 {
+		opt[strings.TrimPrefix(args[i], "--")] = args[i+1]
+	}
+	if os.Getenv("FAKE_ALIGN_REFUSE") == "1" {
+		fmt.Fprintln(os.Stderr, "refused: word 0 is not one token of 1 to 200 characters")
+		return 3
+	}
+	if _, err := os.Stat(opt["wav"]); err != nil {
+		fmt.Fprintln(os.Stderr, "no sound:", err)
+		return 1
+	}
+	var in struct{ Words []struct{ Text string } }
+	data, _ := os.ReadFile(opt["words"])
+	if err := json.Unmarshal(data, &in); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	var segs []map[string]any
+	for i, w := range in.Words {
+		segs = append(segs, map[string]any{"offsets": map[string]int{"from": 500 * i, "to": 500*i + 400}, "text": " " + w.Text})
+	}
+	for p := 0; p <= 100; p += 50 {
+		fmt.Fprintf(os.Stderr, "progress = %d%%\n", p)
+	}
+	out, _ := json.Marshal(map[string]any{"transcription": segs, "argv": opt})
+	os.WriteFile(opt["out"], out, 0o644)
 	return 0
 }
