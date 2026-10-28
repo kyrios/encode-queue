@@ -256,3 +256,22 @@ func TestStripAsVideoPipeline29(t *testing.T) {
 		}
 	}
 }
+
+// TestStripWithoutALength: a video of one keyframe and no duration_s has no length, which
+// Funkhaus would refuse; the job fails instead.
+func TestStripWithoutALength(t *testing.T) {
+	r, ff, _ := realRun(t)
+	src := filepath.Join(r.w.cfg.WorkDir, "one.mp4")
+	if b, err := exec.Command(ff, "-hide_banner", "-v", "error", "-f", "lavfi", "-i", "color=c=red:size=160x90:rate=25:duration=1",
+		"-c:v", "libx264", "-preset", "ultrafast", "-g", "250", "-pix_fmt", "yuv420p", src).CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, b)
+	}
+	_, err := r.workStrip(context.Background(), src, filepath.Join(r.w.cfg.WorkDir, "one.tar"))
+	if f, ok := err.(*failure); !ok || f.code != "decode_failed" || !strings.Contains(f.msg, "no length") {
+		t.Fatalf("%v", err)
+	}
+	r.l.Job.Source.DurationS = 1
+	if _, err := r.workStrip(context.Background(), src, filepath.Join(r.w.cfg.WorkDir, "one.tar")); err != nil {
+		t.Fatalf("with duration_s: %v", err)
+	}
+}

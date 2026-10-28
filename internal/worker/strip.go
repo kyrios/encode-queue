@@ -358,6 +358,10 @@ func (r *run) workStrip(ctx context.Context, src, out string) ([]Tool, error) {
 	if duration <= 0 && len(keys) > 0 {
 		duration = keys[len(keys)-1].T
 	}
+	if duration <= 0 && len(keys) > 0 {
+		// Funkhaus refuses a thumbs.json without a length; one keyframe at 0 gives none.
+		return nil, fail("decode_failed", "the video has no length: send source.duration_s")
+	}
 	fineSheets, err := hashedSheets(dir, "fine")
 	if err != nil {
 		return nil, fail("other", "%v", err)
