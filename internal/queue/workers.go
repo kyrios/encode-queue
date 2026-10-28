@@ -211,6 +211,9 @@ func (s *Store) applyPatch(w *Worker, p WorkerPatch) error {
 		if l.CPUThreads != nil && *l.CPUThreads < 1 {
 			return errf(422, "invalid", "cpu_threads below 1")
 		}
+		if l.HighPrioritySlots != nil && *l.HighPrioritySlots < 0 {
+			return errf(422, "invalid", "high_priority_slots below 0")
+		}
 		w.Limits = l
 	}
 	return nil
@@ -487,7 +490,7 @@ func (s *Store) PutPresence(id string, p Presence) (PresenceAck, error) {
 	w.Presence = p.State
 	w.DiskFree = p.DiskFree
 	if p.MemoryUsed != nil {
-		w.MemoryUsed = p.MemoryUsed
+		w.MemoryUsed, w.memoryAt = p.MemoryUsed, s.cfg.Now()
 	}
 	if p.ThreadsBusy != nil && *p.ThreadsBusy < 0 {
 		return PresenceAck{}, errf(422, "invalid", "threads_busy is 0 or more")

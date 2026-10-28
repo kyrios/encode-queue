@@ -30,7 +30,7 @@ func TestAWorkerOfV024(t *testing.T) {
 	var req LeaseRequest
 	json.Unmarshal([]byte(`{}`), &req)
 	l, err := e.s.Claim(context.Background(), mac, req, 0)
-	if err != nil || l == nil || e.s.st.Leases[l.ID].Extra {
+	if err != nil || l == nil || e.s.st.Leases[l.ID].High {
 		t.Fatalf("claim: %+v %v", l, err)
 	}
 	if _, err := e.s.Renew(mac, l.ID, Progress{Phase: "encoding", FPS: f64(3)}); err != nil {

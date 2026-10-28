@@ -196,7 +196,7 @@ func (h *harness) pairWith(name string, adjust func(*worker.Config)) *testWorker
 	}
 	self, _ := os.Executable()
 	wcfg := worker.Config{Version: "0.1.0", StateDir: h.t.TempDir(), FFmpeg: self, WhisperCLI: self,
-		WhisperVersion: "v1.9.5", ModelsDir: h.models, MaxParallel: 1, ChunkBytes: 1 << 10, Calibrate: h.calibrate, FetchClient: offline,
+		WhisperVersion: "v1.9.5", ModelsDir: h.models, MaxParallel: 1, HighPrioritySlots: 1, ChunkBytes: 1 << 10, Calibrate: h.calibrate, FetchClient: offline,
 		LongPoll: time.Second, LogEvery: 200 * time.Millisecond, RetryAfter: 200 * time.Millisecond,
 		Log: h.log.With("worker", name), Events: func(ev map[string]any) {
 			h.evMu.Lock()
@@ -545,8 +545,9 @@ func TestCalibrationAtPairing(t *testing.T) {
 		t.Fatalf("calibrated classes against the reference: %d of %+v", n, v.SpeedClasses)
 	}
 	// The whisper part (v0.2.7): the model it holds, timed on the speech clip. The test's model
-	// is not the catalogue's small (another sha256), so the queue wants the real one, which the
-	// worker tries to fetch and reports as failed (no internet in tests).
+	// is not the catalogue's small (another sha256), so the queue wants the real one, and
+	// large-v3-turbo on every worker (v0.2.14), which the worker tries to fetch and reports as
+	// failed (no internet in tests).
 	var rep queue.CapabilityReport
 	h.waitFor("whisper timed", 30*time.Second, func() bool {
 		rep, _ = h.store.GetCapabilities(mac.id)
@@ -555,7 +556,7 @@ func TestCalibrationAtPairing(t *testing.T) {
 	if m := rep.Capabilities.Calibration.Whisper[0]; m.Name != "ggml-small.bin" || m.Speed <= 0 || m.Whisper != "v1.9.5" {
 		t.Fatalf("whisper calibration %+v", m)
 	}
-	if len(rep.WantedModels) != 1 || rep.WantedModels[0].SHA256 != queue.SHASmall {
+	if len(rep.WantedModels) != 2 || rep.WantedModels[0].SHA256 != queue.SHASmall || rep.WantedModels[1].SHA256 != queue.SHALargeV3Turbo {
 		t.Fatalf("wanted %+v", rep.WantedModels)
 	}
 	h.waitFor("a failed fetch reported", 30*time.Second, func() bool {
@@ -647,7 +648,8 @@ func TestPreemptionOverTheTunnel(t *testing.T) {
 	h.pipeline()
 	t.Setenv("FAKE_FRAMES", "1000")
 	t.Setenv("FAKE_FRAME_MS", "10")
-	h.pair("encoder")
+	// Without a high-priority slot (v0.2.14) the stage 1 job takes the one slot back.
+	h.pairWith("encoder", func(c *worker.Config) { c.HighPrioritySlots = 0 })
 	h.rungJob("old_1.2160-archive", "archive", nil)
 	// The fake encode reads FAKE_FRAMES when it starts, and "leased" comes before that (the
 	// source is still downloading): wait for its first frames, so the archive encode is the long
@@ -665,6 +667,52 @@ func TestPreemptionOverTheTunnel(t *testing.T) {
 	o := h.waitState("old_1.2160-archive", "done", 30*time.Second)
 	if len(o.Attempts) != 2 || o.Attempts[0].State != "preempted" || o.Attempts[1].Result.Verdict != "accepted" {
 		t.Fatalf("the archive job's attempts: %+v", o.Attempts)
+	}
+}
+
+// A stage 1 job runs in the worker's high-priority slot beside a long archive encode (v0.2.14),
+// which nothing preempts; the worker and the queue say which slot each job is in.
+func TestStage1InTheHighPrioritySlot(t *testing.T) {
+	h := newHarness(t)
+	h.pipeline()
+	t.Setenv("FAKE_FRAMES", "1000")
+	t.Setenv("FAKE_FRAME_MS", "10")
+	enc := h.pair("encoder")
+	h.rungJob("old_1.2160-archive", "archive", nil)
+	h.waitFor("old_1.2160-archive encoding", 30*time.Second, func() bool {
+		p := h.job("old_1.2160-archive").Progress
+		return p != nil && p.Phase == "encoding" && p.FramesDone != nil && *p.FramesDone > 0
+	})
+	os.Setenv("FAKE_FRAMES", "300")
+	// A 720p rung: its 1 GB peak fits beside the encode on any machine CI runs on.
+	h.rungJob("new_2.720-stage1", "stage1", map[string]any{"params": map[string]any{"rung": "720", "codec": "libx264",
+		"preset": "veryfast", "crf": 23, "width": 1280, "height": 720, "audio": map[string]any{"mode": "copy"}},
+		"result": map[string]any{"name": "720.mp4", "max_bytes": 1 << 20}})
+	h.waitFor("both jobs in their slots", 30*time.Second, func() bool {
+		var v queue.WorkerView
+		h.call("GET", "/v1/workers/"+enc.id, adminToken, nil, &v)
+		slots := map[string]string{}
+		for _, j := range v.Jobs {
+			slots[j.JobID] = j.Slot
+		}
+		return slots["old_1.2160-archive"] == "normal" && slots["new_2.720-stage1"] == "high" &&
+			v.Slots.Normal == queue.SlotCount{Slots: 1, Busy: 1} && v.Slots.High == queue.SlotCount{Slots: 1, Busy: 1}
+	})
+	// The worker holds the run once the claim's answer is through the tunnel.
+	h.waitFor("the worker's own slots", 30*time.Second, func() bool {
+		slots := map[string]string{}
+		for _, j := range enc.w.Status().Jobs {
+			slots[j.JobID] = j.Slot
+		}
+		return slots["old_1.2160-archive"] == "normal" && slots["new_2.720-stage1"] == "high"
+	})
+	n := h.waitState("new_2.720-stage1", "done", 30*time.Second)
+	if len(n.Attempts) != 1 || n.Attempts[0].Worker.Name != "encoder" {
+		t.Fatalf("the stage 1 job's attempts: %+v", n.Attempts)
+	}
+	o := h.job("old_1.2160-archive")
+	if o.State != "leased" || len(o.Attempts) != 1 || o.Attempts[0].State != "active" {
+		t.Fatalf("the archive job beside it: %s %+v", o.State, o.Attempts)
 	}
 }
 

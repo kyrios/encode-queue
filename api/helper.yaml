@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue helper API
-  version: 1.5.0
+  version: 1.6.0
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
@@ -264,9 +264,10 @@ paths:
       description: |
         Creates a lease on the next job this worker may run, waiting up to `Prefer: wait`
         seconds for one. `201` with the lease, or `204` when none came; the worker asks again at
-        once. A paused worker gets `409 paused`, one at its `max_parallel_jobs` `409
-        limit_reached`, one that never sent its capabilities `409 no_capabilities`. The queue
-        leases only while its disk has room for the result; until then it answers `204`.
+        once. A paused worker gets `409 paused`, one whose slots of the claim's kind (`slot`) are all
+        taken `409 limit_reached`, one that never sent its capabilities `409 no_capabilities`, an
+        unknown `slot` `422 invalid`. The queue leases only while its disk has room for the result;
+        until then it answers `204`.
       parameters:
         - name: Prefer
           in: header
@@ -613,7 +614,15 @@ components:
       properties:
         cpu_threads: { type: [integer, 'null'], minimum: 1, description: "x265's thread pool (`pools=N`) and whisper.cpp's threads. Null: the tool's own default." }
         gpu: { type: boolean, description: whisper.cpp may use the GPU (Metal on a Mac). }
-        max_parallel_jobs: { type: integer, minimum: 1, default: 1, description: 'What the worker asks for; the queue gives at most EQ_MAX_PARALLEL_JOBS (2) regular slots (1.4.0).' }
+        max_parallel_jobs: { type: integer, minimum: 1, default: 1, description: 'Normal slots, which take every job. What the worker asks for; the queue gives at most EQ_MAX_PARALLEL_JOBS (2) (1.4.0).' }
+        high_priority_slots:
+          type: integer
+          minimum: 0
+          description: |
+            High-priority slots on top of the normal ones (v0.2.14, 1.6.0), which take only jobs of
+            priority `now` and `stage1`, so no archive or stage 2 job ever holds one. What the worker
+            asks for; the queue gives at most EQ_MAX_HIGH_PRIORITY_SLOTS (2). A worker that does not
+            send it (before 0.2.14) has one, its extra slot (v0.2.5). The worker's default is 1.
     Me:
       type: object
       required: [worker_id, name, state]
@@ -770,9 +779,8 @@ components:
           type: array
           description: |
             The whisper models the queue wants this worker to hold (v0.2.7): small for caption
-            timing, and the best model it runs at least `EQ_WHISPER_MIN_SPEED_PCT` (100) per cent
-            of real time by its calibration whose peak fits its RAM with 1 GB to spare (a model
-            not timed yet is guessed from small's speed). The worker fetches each it lacks from
+            timing, and large-v3-turbo, the one caption model on every worker (v0.2.14), whenever
+            its peak fits the worker's RAM with 1 GB to spare. The worker fetches each it lacks from
             `url` (ggerganov/whisper.cpp at a pinned revision, nothing else), checks `sha256`,
             times it and sends its capabilities again.
           items:
@@ -1104,13 +1112,28 @@ components:
           description: Narrow this claim to some of the accepted kinds.
           items: { $ref: '#/components/schemas/JobKind' }
         max_source_bytes: { type: integer }
+        slot:
+          type: string
+          enum: [normal, high]
+          default: normal
+          description: |
+            Which of the worker's slots claims (v0.2.14, 1.6.0). `normal` (one of its
+            `max_parallel_jobs`) takes any job; `high` (one of its `high_priority_slots`) only jobs
+            of priority `now` and `stage1`. Each kind counts only its own leases. A claim beside a
+            lease in the other kind of slot, and a `high` one beside any lease, needs the RAM: the
+            worker's memory less the last presence's `memory_used_bytes`, less the expected peak of
+            each lease claimed since that presence (one the queue took back since included: its tool
+            runs until the worker's next renewal), less 1 GB must hold the job's expected peak.
+            Two normal claims side by side need none: `max_parallel_jobs` says the machine takes
+            them. Where only the RAM keeps a `now` job out of a free high-priority slot and no worker
+            has a slot for it, the queue takes that worker's lowest lease below `stage1` back
+            (`410 preempted` at its next renewal), one at a time, and the worker's claims need the
+            RAM until its next presences have measured it again (90 s).
         extra:
           type: boolean
           description: |
-            The worker's extra slot (v0.2.5): it takes only `now` jobs, one lease at a time, on top
-            of `max_parallel_jobs`; beside other work only while the worker's free RAM (its
-            memory less the last presence's `memory_used_bytes` less 1 GB) holds the job's
-            expected peak. Regular claims count only regular leases.
+            `slot: high`, as a worker before 0.2.14 says it (its extra slot, v0.2.5). A worker of
+            0.2.14 sends both, so that a queue before 0.2.14 reads the claim as its extra slot.
     Lease:
       type: object
       required: [lease_id, attempt, job, state, expires_at, renew_every_s, pause_give_back_s, params]

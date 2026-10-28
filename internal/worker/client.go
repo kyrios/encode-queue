@@ -245,12 +245,13 @@ func (c *Client) PutPresence(ctx context.Context, state string, diskFree, memUse
 	return a, err
 }
 
-// Claim long-polls for a job; nil without an error when none came. `extra` is the extra slot,
-// which takes only Sofort jobs, on top of max_parallel_jobs (v0.2.5).
-func (c *Client) Claim(ctx context.Context, wait time.Duration, extra bool) (*Lease, error) {
+// Claim long-polls for a job; nil without an error when none came. `high` claims in a
+// high-priority slot (v0.2.14), which takes only jobs of priority now and stage1, on top of
+// max_parallel_jobs; "extra" says the same to a queue before 0.2.14 (its extra slot, v0.2.5).
+func (c *Client) Claim(ctx context.Context, wait time.Duration, high bool) (*Lease, error) {
 	body := "{}"
-	if extra {
-		body = `{"extra":true}`
+	if high {
+		body = `{"slot":"high","extra":true}`
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", c.url("/leases"), strings.NewReader(body))
 	if err != nil {

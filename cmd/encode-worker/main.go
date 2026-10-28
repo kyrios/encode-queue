@@ -43,7 +43,7 @@ type flags struct {
 	endpoint, workDir                     string
 	name, appVersion                      string
 	hostAppName, hostAppVersion           string
-	threads, jobs                         int
+	threads, jobs, highSlots              int
 	gpu                                   string
 	calibrate                             string
 	ffmpeg, ffprobe, whisperCLI, models   string
@@ -68,7 +68,8 @@ func main() {
 	flag.StringVar(&f.hostAppVersion, "host-app-version", env.String("EQ_HOST_APP_VERSION", ""), "that app's version (EQ_HOST_APP_VERSION)")
 	flag.IntVar(&f.threads, "threads", env.Int("EQ_CPU_THREADS", 0), "x265's pool and whisper.cpp's threads, 0 for the tools' own (EQ_CPU_THREADS)")
 	flag.StringVar(&f.gpu, "gpu", env.String("EQ_GPU", "false"), "whisper.cpp may use the GPU: true or false (EQ_GPU)")
-	flag.IntVar(&f.jobs, "jobs", env.Int("EQ_MAX_PARALLEL_JOBS", 1), "jobs at once (EQ_MAX_PARALLEL_JOBS)")
+	flag.IntVar(&f.jobs, "jobs", env.Int("EQ_MAX_PARALLEL_JOBS", 1), "normal slots, which take every job (EQ_MAX_PARALLEL_JOBS)")
+	flag.IntVar(&f.highSlots, "high-slots", env.Int("EQ_HIGH_PRIORITY_SLOTS", 1), "high-priority slots on top, for jobs of priority now and stage1 only; 0 none (EQ_HIGH_PRIORITY_SLOTS)")
 	flag.StringVar(&f.calibrate, "calibrate", env.String("EQ_CALIBRATE", "true"), "encode the calibration clip at pairing and on a tools change: true or false (EQ_CALIBRATE)")
 	flag.StringVar(&f.ffmpeg, "ffmpeg", env.String("EQ_FFMPEG", "ffmpeg"), "ffmpeg (EQ_FFMPEG)")
 	flag.StringVar(&f.ffprobe, "ffprobe", env.String("EQ_FFPROBE", "ffprobe"), "ffprobe, for the toolchain's set (EQ_FFPROBE)")
@@ -136,6 +137,7 @@ func run(cmd string, f flags, env *config.Env) error {
 		CPUThreads:        f.threads,
 		GPU:               f.gpu == "true" || f.gpu == "1" || f.gpu == "yes",
 		MaxParallel:       f.jobs,
+		HighPrioritySlots: f.highSlots,
 		Calibrate:         f.calibrate == "true",
 		Log:               log,
 	}
@@ -254,7 +256,7 @@ func run(cmd string, f flags, env *config.Env) error {
 }
 
 // readCommands reads Slipstream's JSON lines: pause, resume, limits, quit; the end of input
-// quits too.
+// quits too. A limits line without high_slots (Slipstream before the setting) keeps them.
 func readCommands(r *bufio.Reader, w *worker.Worker, log *slog.Logger) {
 	dec := json.NewDecoder(r)
 	for {
@@ -264,6 +266,7 @@ func readCommands(r *bufio.Reader, w *worker.Worker, log *slog.Logger) {
 			Threads int        `json:"threads"`
 			GPU     bool       `json:"gpu"`
 			Jobs    int        `json:"jobs"`
+			High    *int       `json:"high_slots"`
 		}
 		if err := dec.Decode(&c); err != nil {
 			if !errors.Is(err, io.EOF) {
@@ -280,7 +283,7 @@ func readCommands(r *bufio.Reader, w *worker.Worker, log *slog.Logger) {
 		case "resume":
 			w.Resume()
 		case "limits":
-			w.SetLimits(c.Threads, c.GPU, c.Jobs)
+			w.SetLimits(c.Threads, c.GPU, c.Jobs, c.High)
 		case "quit":
 			w.Quit()
 			return

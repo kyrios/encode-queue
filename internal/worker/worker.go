@@ -35,7 +35,10 @@ type Config struct {
 	Fonts             []string
 	CPUThreads        int // 0: the tools' own
 	GPU               bool
-	MaxParallel       int
+	MaxParallel       int // normal slots, which take every job
+	// HighPrioritySlots: slots on top of MaxParallel for jobs of priority now and stage1 only
+	// (v0.2.14; 0 none). The command's default is 1.
+	HighPrioritySlots int
 	Calibrate         bool // the calibration clip at pairing and on a tools change (calibrate.go)
 	// FetchClient fetches the whisper models the queue wants (fetch.go); nil: the default client.
 	FetchClient *http.Client
@@ -65,6 +68,7 @@ func (c *Config) defaults() {
 	if c.MaxParallel < 1 {
 		c.MaxParallel = 1
 	}
+	c.HighPrioritySlots = min(max(c.HighPrioritySlots, 0), maxSlots)
 	if c.ChunkBytes == 0 {
 		c.ChunkBytes = 16 << 20
 	}
@@ -89,6 +93,7 @@ type JobStatus struct {
 	Title    string    `json:"title,omitempty"`
 	Kind     string    `json:"kind"`
 	Rung     string    `json:"rung,omitempty"`
+	Slot     string    `json:"slot"` // normal or high (v0.2.14)
 	Attempt  int       `json:"attempt"`
 	Started  time.Time `json:"started_at"`
 	Progress Progress  `json:"progress"`
@@ -132,6 +137,7 @@ type Worker struct {
 	pausedUntil *time.Time
 	pausePatch  bool // the pause changed here and the queue does not know yet
 	lastContact *time.Time
+	saidContact time.Time // the last answer the last connection event named
 	lastErr     string
 	refused     []string
 	refusedKind []map[string]string
@@ -139,7 +145,8 @@ type Worker struct {
 	healthAt    time.Time
 	limitsPatch bool
 	jobLimit    int
-	limitCh     chan struct{} // closed and replaced when the job limit changes
+	highLimit   int
+	limitCh     chan struct{} // closed and replaced when a job limit changes
 	runs        map[string]*run
 	recent      []Finished
 	today       int
@@ -159,7 +166,7 @@ func New(cfg Config, api *Client) (*Worker, error) {
 		return nil, err
 	}
 	return &Worker{cfg: cfg, api: api, runs: map[string]*run{}, pauseCh: make(chan struct{}), quit: make(chan struct{}),
-		jobLimit: cfg.MaxParallel, limitCh: make(chan struct{}), busy: newBusySampler(), machine: newMachineSampler()}, nil
+		jobLimit: cfg.MaxParallel, highLimit: cfg.HighPrioritySlots, limitCh: make(chan struct{}), busy: newBusySampler(), machine: newMachineSampler()}, nil
 }
 
 // emit sends an event to cfg.Events.
@@ -195,7 +202,10 @@ func (w *Worker) contact(err error) {
 		}
 	}
 	up := w.lastContact != nil && time.Since(*w.lastContact) < 90*time.Second
-	if up != w.up {
+	// The event again once the last answer's minute changed (v0.2.14): Slipstream's menu says
+	// "letzte Antwort 9:01" from it, which stayed 9:01 all afternoon while the tunnel stayed up.
+	newMinute := w.lastContact != nil && !w.lastContact.Truncate(time.Minute).Equal(w.saidContact.Truncate(time.Minute))
+	if up != w.up || newMinute {
 		w.up = up
 		w.emitConnectionLocked()
 	}
@@ -206,24 +216,24 @@ func (w *Worker) emitConnectionLocked() {
 	refused = append(refused, w.refusedKind...)
 	f := map[string]any{"up": w.up, "refused": refused, "last_answer_at": nil}
 	if w.lastContact != nil {
+		w.saidContact = *w.lastContact
 		f["last_answer_at"] = w.lastContact.UTC().Format(time.RFC3339)
 	}
 	go w.emit("connection", f)
 }
 
-// SetLimits changes the threads, the GPU and the jobs at once (Slipstream's settings); the
-// queue hears it with the next presence.
-func (w *Worker) SetLimits(threads int, gpu bool, jobs int) {
-	if jobs < 1 {
-		jobs = 1
-	}
-	if jobs > maxSlots {
-		jobs = maxSlots
-	}
+// SetLimits changes the threads, the GPU, the normal slots and, unless high is nil, the
+// high-priority slots at once (Slipstream's settings); the queue hears it with the next presence.
+func (w *Worker) SetLimits(threads int, gpu bool, jobs int, high *int) {
+	jobs = min(max(jobs, 1), maxSlots)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.cfg.CPUThreads, w.cfg.GPU, w.cfg.MaxParallel = threads, gpu, jobs
 	w.jobLimit = jobs
+	if high != nil {
+		w.cfg.HighPrioritySlots = min(max(*high, 0), maxSlots)
+		w.highLimit = w.cfg.HighPrioritySlots
+	}
 	w.limitsPatch = true
 	close(w.limitCh)
 	w.limitCh = make(chan struct{})
@@ -232,14 +242,14 @@ func (w *Worker) SetLimits(threads int, gpu bool, jobs int) {
 }
 
 func (w *Worker) limits() map[string]any {
-	l := map[string]any{"gpu": w.cfg.GPU, "max_parallel_jobs": w.cfg.MaxParallel}
+	l := map[string]any{"gpu": w.cfg.GPU, "max_parallel_jobs": w.cfg.MaxParallel, "high_priority_slots": w.cfg.HighPrioritySlots}
 	if w.cfg.CPUThreads > 0 {
 		l["cpu_threads"] = w.cfg.CPUThreads
 	}
 	return l
 }
 
-// maxSlots is the most jobs at once a worker runs.
+// maxSlots is the most slots of each kind a worker runs.
 const maxSlots = 16
 
 func ptrTime(t time.Time) *time.Time { return &t }
@@ -432,14 +442,13 @@ func (w *Worker) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() { defer wg.Done(); w.calibrateAll(ctx, &wg) }()
 	}
+	// The normal slots and, beside them, the high-priority ones (v0.2.14), which the queue gives
+	// only jobs of priority now and stage1, beside other work only while this machine's RAM allows.
 	for i := 0; i < maxSlots; i++ {
-		wg.Add(1)
-		go func(slot int) { defer wg.Done(); w.claimLoop(ctx, slot) }(i)
+		wg.Add(2)
+		go func(slot int) { defer wg.Done(); w.claimLoop(ctx, slot, false) }(i)
+		go func(slot int) { defer wg.Done(); w.claimLoop(ctx, slot, true) }(i)
 	}
-	// The extra slot (v0.2.5): one Sofort job beside the others, whatever the job limit; the
-	// queue hands it one only while this machine's RAM allows.
-	wg.Add(1)
-	go func() { defer wg.Done(); w.claimLoop(ctx, extraSlot) }()
 	wg.Wait()
 	return nil
 }
@@ -621,9 +630,6 @@ func (w *Worker) modelLoop(ctx context.Context, c *Calibration, wanted []WantedM
 	}
 }
 
-// extraSlot is the claim loop of the extra slot, which no job limit holds back.
-const extraSlot = -1
-
 // toolGroups are the process groups of the tools running now, one per run.
 func (w *Worker) toolGroups() []int {
 	w.mu.Lock()
@@ -643,13 +649,16 @@ func (w *Worker) toolGroups() []int {
 	return out
 }
 
-// claimLoop is one job slot; slots at or above the job limit wait.
-func (w *Worker) claimLoop(ctx context.Context, slot int) {
+// claimLoop is one slot, normal or high-priority; slots at or above their kind's limit wait.
+func (w *Worker) claimLoop(ctx context.Context, slot int, high bool) {
 	for ctx.Err() == nil {
 		w.mu.Lock()
 		limit, ch := w.jobLimit, w.limitCh
+		if high {
+			limit = w.highLimit
+		}
 		w.mu.Unlock()
-		if slot != extraSlot && slot >= limit {
+		if slot >= limit {
 			select {
 			case <-ctx.Done():
 				return
@@ -660,7 +669,7 @@ func (w *Worker) claimLoop(ctx context.Context, slot int) {
 		if err := w.waitUnpaused(ctx); err != nil {
 			return
 		}
-		l, err := w.api.Claim(ctx, w.cfg.LongPoll, slot == extraSlot)
+		l, err := w.api.Claim(ctx, w.cfg.LongPoll, high)
 		w.contact(err)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -690,7 +699,7 @@ func (w *Worker) claimLoop(ctx context.Context, slot int) {
 		if l == nil {
 			continue
 		}
-		w.runLease(ctx, l)
+		w.runLease(ctx, l, high)
 	}
 }
 
@@ -716,8 +725,8 @@ func (w *Worker) sweepWork() {
 	}
 }
 
-func (w *Worker) runLease(ctx context.Context, l *Lease) {
-	r := newRun(w, l)
+func (w *Worker) runLease(ctx context.Context, l *Lease, high bool) {
+	r := newRun(w, l, high)
 	w.mu.Lock()
 	w.runs[l.ID] = r
 	w.mu.Unlock()

@@ -303,27 +303,35 @@ func eta(j *Job, p *Progress) *int64 {
 	return &n
 }
 
-// freeAt is when the worker has a free slot: now, or when its earliest attempt finishes
-// encoding; nil when unknown, offline or paused. except is a job whose attempt does not count.
-func (s *Store) freeAt(w *Worker, now time.Time, except string) *time.Time {
+// freeAt is when the worker has a free normal slot, or with `high` a free slot of either kind (a
+// job of priority now or stage1, slots.go): now, or when the earliest attempt in such a slot
+// finishes encoding; nil when unknown, offline or paused. except is a job whose attempt does not
+// count.
+func (s *Store) freeAt(w *Worker, now time.Time, except string, high bool) *time.Time {
 	if !s.connected(w, now) || s.paused(w, now) {
 		return nil
 	}
-	max := s.maxJobs(w)
 	var ends []time.Time
-	busy := 0
+	normal, hi := 0, 0
 	for _, l := range s.activeLeases(w.ID) {
-		if l.JobID == except || l.Extra {
-			continue // a Sofort job in the extra slot holds no regular slot
+		if l.JobID == except {
+			continue
 		}
-		busy++
+		if l.High {
+			hi++
+			if !high {
+				continue // a high-priority slot frees nothing for a normal job
+			}
+		} else {
+			normal++
+		}
 		if j := s.st.Jobs[l.JobID]; j != nil {
 			if e := eta(j, l.Progress); e != nil {
 				ends = append(ends, now.Add(time.Duration(*e)*time.Second))
 			}
 		}
 	}
-	if busy < max {
+	if normal < s.maxJobs(w) || (high && hi < s.highSlots(w)) {
 		return &now
 	}
 	if len(ends) == 0 {
@@ -331,6 +339,21 @@ func (s *Store) freeAt(w *Worker, now time.Time, except string) *time.Time {
 	}
 	sort.Slice(ends, func(a, b int) bool { return ends[a].Before(ends[b]) })
 	return &ends[0]
+}
+
+// nextEnd is when the worker's first active attempt should finish encoding; nil when none says.
+func (s *Store) nextEnd(w *Worker, now time.Time) *time.Time {
+	var first *time.Time
+	for _, l := range s.activeLeases(w.ID) {
+		if j := s.st.Jobs[l.JobID]; j != nil {
+			if e := eta(j, l.Progress); e != nil {
+				if t := now.Add(time.Duration(*e) * time.Second); first == nil || t.Before(*first) {
+					first = &t
+				}
+			}
+		}
+	}
+	return first
 }
 
 // forecast is when each unfinished job should finish: an active attempt at now plus its eta;
@@ -341,6 +364,7 @@ func (s *Store) forecast(now time.Time) map[string]time.Time {
 	type slot struct {
 		w    *Worker
 		free time.Time
+		high bool // a high-priority slot, for jobs of priority now and stage1 only
 	}
 	var slots []*slot
 	var ws []*Worker
@@ -350,9 +374,7 @@ func (s *Store) forecast(now time.Time) map[string]time.Time {
 	sort.Slice(ws, func(a, b int) bool { return ws[a].Name < ws[b].Name })
 	for _, w := range ws {
 		usable := s.connected(w, now) && !s.paused(w, now) && w.Caps != nil
-		max := s.maxJobs(w)
-		active := s.activeLeases(w.ID)
-		for _, l := range active {
+		for _, l := range s.activeLeases(w.ID) {
 			j := s.st.Jobs[l.JobID]
 			if j == nil {
 				continue
@@ -360,20 +382,18 @@ func (s *Store) forecast(now time.Time) map[string]time.Time {
 			if e := eta(j, l.Progress); e != nil {
 				end := now.Add(time.Duration(*e) * time.Second)
 				out[j.ID] = end
-				if usable && !l.Extra {
-					slots = append(slots, &slot{w, end})
+				if usable {
+					slots = append(slots, &slot{w, end, l.High})
 				}
 			}
 		}
-		regular := 0
-		for _, l := range active {
-			if !l.Extra {
-				regular++
-			}
-		}
+		normal, high := s.slotsBusy(w)
 		if usable {
-			for i := regular; i < max; i++ {
-				slots = append(slots, &slot{w, now})
+			for i := normal; i < s.maxJobs(w); i++ {
+				slots = append(slots, &slot{w, now, false})
+			}
+			for i := high; i < s.highSlots(w); i++ {
+				slots = append(slots, &slot{w, now, true})
 			}
 		}
 	}
@@ -384,7 +404,7 @@ func (s *Store) forecast(now time.Time) map[string]time.Time {
 		var best *slot
 		var bestEnd time.Time
 		for _, sl := range slots {
-			if j.Pin != nil && j.Pin.WorkerID != sl.w.ID {
+			if (j.Pin != nil && j.Pin.WorkerID != sl.w.ID) || (sl.high && !highPriority(j.Priority)) {
 				continue
 			}
 			if acc, _ := s.kinds(sl.w); !contains(acc, j.Spec.Kind) || s.mismatch(sl.w, j) != "" {

@@ -11,9 +11,10 @@ import (
 //
 //	ECT(j, V) = busy(V) + T_in + T_run + T_out
 //
-// busy is when V has a free slot (0 for the asking worker), T_in the source's bytes over V's
-// measured download rate, T_run the job's work over V's measured or calibrated speed, scaled to
-// the threads free on it now and corrected by how its earlier jobs of the kind went, and T_out
+// busy is when V has a free slot for the job (0 for the asking worker), T_in the source's bytes
+// over V's measured download rate, T_run the job's work over V's measured or calibrated speed,
+// scaled to its share of the threads (those free of other programs, split with the jobs that run
+// beside it) and corrected by how its earlier jobs of the kind went, and T_out
 // the expected result's bytes over its upload rate. The asking worker takes the job when its ECT
 // is at most ectSlack times the best, or when the job waited longer than maxWait for its
 // priority, so no job waits forever for an ideal worker. Thorsten's example: 50 GB of
@@ -66,23 +67,20 @@ func (s *Store) runSeconds(w *Worker, j *Job) (float64, bool) {
 	return 0, false
 }
 
-// threadShare is how much slower w runs a job now than calibrated: the threads it may use over
-// those free of other programs (other_load) and of its own running jobs.
-func (s *Store) threadShare(w *Worker, asking bool) float64 {
+// threadShare is how much slower w runs a job than calibrated: the threads it may use over the
+// job's share of those free of other programs (other_load), split evenly with `beside`, the
+// worker's own jobs that run beside it (v0.2.14: in either kind of slot, slots.go).
+func (s *Store) threadShare(w *Worker, beside int) float64 {
 	sys := s.system(w)
 	if sys.ThreadsInUse == nil || *sys.ThreadsInUse <= 0 {
 		return 1
 	}
 	allowed := float64(*sys.ThreadsInUse)
-	busy := 0.0
+	free := allowed
 	if w.OtherLoad != nil {
-		busy += *w.OtherLoad
+		free -= *w.OtherLoad
 	}
-	if asking {
-		// Its own running jobs share the machine with the new one.
-		busy += allowed * float64(len(s.activeLeases(w.ID))) / float64(s.maxJobs(w)+1)
-	}
-	free := allowed - busy
+	free /= float64(beside + 1)
 	if free < allowed/8 {
 		free = allowed / 8 // never assume a machine as good as stopped
 	}
@@ -105,12 +103,21 @@ func (s *Store) ect(w *Worker, j *Job, asking bool, now time.Time) (ECT, bool) {
 	if !ok {
 		return e, false
 	}
-	if !asking && !s.free(w, now) {
-		f := s.freeAt(w, now, "")
+	beside := len(s.activeLeases(w.ID))
+	if !asking && !s.freeFor(w, j, now) {
+		// A high-priority slot the RAM keeps it out of frees nothing: a normal one must.
+		f := s.freeAt(w, now, "", highPriority(j.Priority) && !s.ramKeepsOut(w, j, now))
+		if f != nil && !f.After(now) {
+			// A slot is free but not its RAM: the job waits for one of the worker's leases to end.
+			f = s.nextEnd(w, now)
+		}
 		if f == nil {
 			return e, false // busy until it cannot tell
 		}
 		e.BusyS = math.Max(0, f.Sub(now).Seconds())
+		if e.BusyS > 0 {
+			beside-- // the job it waits for has ended then
+		}
 	}
 	down := w.Download.AvgBps
 	if w.Download.Samples == 0 || down <= 0 {
@@ -121,7 +128,7 @@ func (s *Store) ect(w *Worker, j *Job, asking bool, now time.Time) (ECT, bool) {
 		up = defaultUpBps
 	}
 	e.InS = float64(j.Spec.Source.Bytes) / down
-	e.RunS = run * s.threadShare(w, asking) * correction(w, j.Spec.Kind)
+	e.RunS = run * s.threadShare(w, beside) * correction(w, j.Spec.Kind)
 	e.OutS = float64(j.Spec.Result.ExpectedBytes) / up
 	e.S = e.BusyS + e.InS + e.RunS + e.OutS
 	return e, true
@@ -157,8 +164,9 @@ func (s *Store) verdict(w *Worker, j *Job, now time.Time) (take bool, mine *ECT,
 	}
 	var best *ECT
 	for _, v := range s.st.Workers {
-		// Only a worker that takes work now is a better one (claiming, v0.2.10).
-		if v == w || !s.eligible(v, j, now) || !s.claiming(v, now) {
+		// Only a worker that takes work now is a better one (claiming, v0.2.10), and for a job of
+		// priority now or stage1 none that would first finish a lower job (v0.2.14).
+		if v == w || !s.eligible(v, j, now) || !s.claiming(v, now) || s.waitsBehindLower(v, j, now) {
 			continue
 		}
 		if e, ok := s.ect(v, j, false, now); ok && (best == nil || e.S < best.S) {

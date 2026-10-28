@@ -403,8 +403,24 @@ type WorkerJob struct {
 	FPS      *float64 `json:"fps"`
 	Speed    *float64 `json:"speed"`
 	ETAS     *int64   `json:"eta_s"`
-	// Extra: in the worker's extra slot, beside its max_parallel_jobs (v0.2.5).
-	Extra bool `json:"extra"`
+	// Slot: the slot it runs in, normal or high (v0.2.14). Extra is true in a high-priority slot,
+	// v0.2.5's name for it.
+	Slot  string `json:"slot"`
+	Extra bool   `json:"extra"`
+}
+
+// WorkerSlots is a worker's slots of each kind and how many hold a lease (v0.2.14): the
+// normal ones take every job, the high-priority ones jobs of priority now and stage1 only.
+type WorkerSlots struct {
+	Normal SlotCount `json:"normal"`
+	High   SlotCount `json:"high"`
+}
+
+// SlotCount is a worker's slots of one kind: as many as the queue gives it (what it asked for,
+// capped), and those that hold an active lease.
+type SlotCount struct {
+	Slots int `json:"slots"`
+	Busy  int `json:"busy"`
 }
 
 // WorkerView is a worker as pipeline-admin.yaml shows it.
@@ -427,6 +443,7 @@ type WorkerView struct {
 	Fonts         []string        `json:"fonts"`
 	Hardware      json.RawMessage `json:"hardware"`
 	Limits        Limits          `json:"limits"`
+	Slots         WorkerSlots     `json:"slots"`
 	AcceptedKinds []string        `json:"accepted_kinds"`
 	Refused       []Refusal       `json:"refused"`
 	Jobs          []WorkerJob     `json:"jobs"`
@@ -665,7 +682,9 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 			v.SpeedClasses = append(v.SpeedClasses, sc)
 		}
 	}
-	v.FreeAt = s.freeAt(w, now, "")
+	v.FreeAt = s.freeAt(w, now, "", false)
+	normal, high := s.slotsBusy(w)
+	v.Slots = WorkerSlots{Normal: SlotCount{s.maxJobs(w), normal}, High: SlotCount{s.highSlots(w), high}}
 	v.Corrections = map[string]float64{}
 	for k, c := range w.Corrections {
 		v.Corrections[k] = c
@@ -674,7 +693,10 @@ func (s *Store) workerViewWith(w *Worker, peers map[string]PeerStatus) WorkerVie
 	v.AcceptedKinds = acc
 	v.Refused = append(v.Refused, ref...)
 	for _, l := range s.activeLeases(w.ID) {
-		wj := WorkerJob{JobID: l.JobID, LeaseID: l.ID, Attempt: l.Attempt, Extra: l.Extra}
+		wj := WorkerJob{JobID: l.JobID, LeaseID: l.ID, Attempt: l.Attempt, Slot: SlotNormal, Extra: l.High}
+		if l.High {
+			wj.Slot = SlotHigh
+		}
 		if j := s.st.Jobs[l.JobID]; j != nil {
 			wj.Title = strp(j.Spec.Title)
 			if j.rung != nil {

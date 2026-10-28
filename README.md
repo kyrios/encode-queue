@@ -36,10 +36,26 @@ All three are OpenAPI 3.1.
 - **Priorities**: `now`, then `stage1`, then `stage2`, then `archive`, and a place within each,
   which the Encoder page can change. A worker gets the first job in that order it may run and
   would finish about as soon as any other (**Which worker gets a job**, below). `now` (the Encoder
-  page's "Sofort") is for a job someone in Funkhaus waits for: it never preempts, and a worker
-  takes one in its **extra slot** beside other work, on top of `max_parallel_jobs`, while its free
-  RAM (memory less the last presence's use less 1 GB) holds the job's expected peak (a 4K
-  `slower` encode 5.5 GB, whisper medium 2.5 GB). Without the RAM it simply waits first in line.
+  page's "Sofort") is for a job someone in Funkhaus waits for, and runs, as `stage1` does, in a
+  worker's **high-priority slots** beside other work (below).
+- **Normal and high-priority slots** (v0.2.14; Thorsten, 2026-10-28, after a `now` whisper job
+  waited over 40 minutes while every worker's one slot held a 2160 archive encode). A worker's
+  normal slots (`max_parallel_jobs`, `EQ_MAX_PARALLEL_JOBS`) take every job; its high-priority
+  slots (`high_priority_slots`, `EQ_HIGH_PRIORITY_SLOTS`, on top of them) take only `now` and
+  `stage1`, so no archive or stage 2 job ever holds one. Both are 1 by default; Slipstream's
+  settings set them. A worker before 0.2.14 has one high-priority slot, its v0.2.5 extra slot. A
+  claim beside a job in the other kind of slot, and a high-priority one beside any, needs the RAM:
+  memory less the last presence's use, less the expected peak of each lease claimed since (one
+  taken back since included, as its tool runs until the next renewal), less 1 GB, must hold the
+  job's expected peak (a 4K `slower` encode 5.5 GB, whisper medium 2.5 GB).
+  Two normal slots side by side need none. Where only the RAM keeps a `now` job out of a free
+  high-priority slot and no worker has a slot for it, it takes that worker's lowest lease below
+  `stage1` back, one at a time, and the worker's claims wait for its next measured presence:
+  on `encoder` (8 GB) a 4K `slower` archive encode and whisper medium do not fit together. A
+  `stage1` job does not wait for a worker busy with a lower job, and the expected completion time
+  splits a worker's threads evenly among the jobs that run on it. A worker's `slots` and each
+  job's `slot` are in `GET /v1/workers` for the Encoder page, and in `encode_queue_worker_slots`
+  and `_slots_busy` for the console.
 - **Exact tool versions**: a worker gets a job only if its tools match the job's `requires`
   exactly, as text. Without `requires` a job requires the tools of the reference worker
   (`EQ_REFERENCE_WORKER`, `encoder`'s own worker container): ffmpeg, libx265 and libx264 for a
@@ -47,7 +63,9 @@ All three are OpenAPI 3.1.
   sha256 and the captions' font. A job with burnt-in captions also requires the reference's
   libass (v0.2.7; toolchain 3 builds it on both platforms, reported from its versions.txt), and
   the worker lists fonts with the toolchain's fc-list and points `FONTCONFIG_FILE` at its
-  fonts.conf (Inter only) unless something set it. Until the reference worker has said what it
+  fonts.conf (Inter only) unless something set it. libass gets the captions by their name in the
+  lease's folder, where ffmpeg runs, so any work dir works (v0.2.14: a Mac's sits under
+  "Application Support"). Until the reference worker has said what it
   runs, only it gets jobs.
 - **Which worker gets a job** (v0.2.7): when a worker asks, the queue estimates for each eligible
   worker the expected completion time, ECT = until it has a free slot + the source's bytes over
@@ -72,11 +90,10 @@ All three are OpenAPI 3.1.
   needs a result or a calibration of the class first, and the others' speed is relative to it).
 - **Whisper models** (v0.2.7): a job may list `models` best first. A worker holding one may take
   it unless a connected worker holds a better one; the lease names the one chosen. The queue
-  tells each worker which models to hold (`wanted_models`): small for caption timing and the
-  best one it runs at least `EQ_WHISPER_MIN_SPEED_PCT` per cent of real time by its calibration.
-  A model it has not timed is guessed from small's speed, but not wanted while a model below it
-  measured too slow; when none clears the threshold, the best model it holds stays wanted as its
-  fallback (encoder's medium at 0.96×). The speed never keeps a held model from a job.
+  tells each worker which models to hold (`wanted_models`): small for caption timing and
+  large-v3-turbo, the one caption model on every worker (v0.2.14; Thorsten, 2026-10-28), wherever
+  its RAM holds turbo's 3 GB peak with 1 GB to spare. The speed decides only which worker gets a
+  job, never what it holds.
   The worker fetches those from ggerganov/whisper.cpp at a pinned revision only, checks their
   sha256 and times them on the calibration's speech clip.
 - **Leases** last 120 s and are renewed every 30 s with the progress; the long poll waits 25 s;
@@ -107,7 +124,8 @@ All three are OpenAPI 3.1.
   every worker for the move menu, and `DELETE /v1/jobs/{id}/assign` ends a pin.
 - **One worker cannot hold the queue** (v0.2.9; the security review, 2026-10-27, M2): a worker
   sets its own `max_parallel_jobs` and reports its own calibration, so the queue caps both.
-  Regular slots are at most `EQ_MAX_PARALLEL_JOBS` (2; the Sofort slot comes on top). A
+  Normal slots are at most `EQ_MAX_PARALLEL_JOBS` (2), high-priority ones on top at most
+  `EQ_MAX_HIGH_PRIORITY_SLOTS` (2, v0.2.14). A
   calibrated speed counts as at most four times the reference's until measured results show
   more, and a measured sample is never faster than the frames over the time the queue saw the
   lease held. A lease may be renewed up to `hold_until`: `EQ_HOLD_FACTOR` (3) times its
@@ -161,10 +179,10 @@ Every address, port, subnet and path comes from the environment; the image has n
 | `EQ_WG_PRIVATE_KEY_FILE` | the queue's WireGuard private key (base64, as `wg genkey` prints it); default `$EQ_STATE_DIR/wireguard.key`, made on first start when missing |
 | `EQ_WG_KEEPALIVE_S` | the keepalive workers get; default 25 |
 | `EQ_REFERENCE_WORKER` | the name of the worker whose tools jobs require by default |
-| `EQ_WHISPER_MIN_SPEED_PCT` | how fast a worker must transcribe with a model, in per cent of real time, for the queue to want it there; default 100 |
 | `EQ_MIN_APP_VERSION` | workers below it get `426` |
 | `EQ_MAX_FAILURES` | default 3 |
-| `EQ_MAX_PARALLEL_JOBS` | the most regular slots any worker gets, whatever it asks for; default 2 (v0.2.9) |
+| `EQ_MAX_PARALLEL_JOBS` | the most normal slots any worker gets, whatever it asks for; default 2 (v0.2.9) |
+| `EQ_MAX_HIGH_PRIORITY_SLOTS` | the most high-priority slots any worker gets on top; default 2 (v0.2.14) |
 | `EQ_HOLD_FACTOR`, `EQ_HOLD_MIN_S`, `EQ_HOLD_MAX_S` | how long a lease may be held: the factor times its expected completion time, between the two; defaults 3, 1800 and 43200 (v0.2.9) |
 | `EQ_EXCLUDE_BACKOFF_S` | default 600: how long a job that every able worker is excluded from waits before the reference worker gets it again |
 | `EQ_RESULT_RESERVE_BYTES` | default 2 GiB |
@@ -214,7 +232,8 @@ docker run --rm -p 8090:8090 -p 51821:51821/udp -v /srv/eq:/data \
 | `EQ_HOST_APP_NAME`, `EQ_HOST_APP_VERSION` | the app the worker runs inside (Slipstream and its version), shown on the Encoder page; never compared with the queue's minimum |
 | `EQ_CPU_THREADS` | x265's pool (`pools=N`) and whisper.cpp's threads; default the tools' own |
 | `EQ_GPU` | whisper.cpp may use the GPU; default false |
-| `EQ_MAX_PARALLEL_JOBS` | default 1 |
+| `EQ_MAX_PARALLEL_JOBS` | normal slots, which take every job; default 1 |
+| `EQ_HIGH_PRIORITY_SLOTS` | high-priority slots on top, which take only `now` and `stage1` jobs; default 1, 0 none (v0.2.14) |
 | `EQ_CONTROL_SOCKET` | a Unix socket for [worker-control.yaml](api/worker-control.yaml) |
 | `EQ_WORKER_KEY_FILE` | the private key; default `$EQ_WORKER_STATE_DIR/wireguard.key`, made only when missing, so a key Ansible puts there keeps the worker's identity |
 | `EQ_LOG_LEVEL` | as the queue's |
@@ -227,17 +246,19 @@ as uid 10001 (`worker`) with its scratch space in `/var/lib/encode-worker/work`.
 
 ```
 nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name … --app-version x.y.z \
-  --threads N --gpu true|false --jobs N --ffmpeg … --ffprobe … --whisper-cli … \
+  --threads N --gpu true|false --jobs N [--high-slots N] --ffmpeg … --ffprobe … --whisper-cli … \
   --whisper-models … --control stdio
 ```
 
 - **Standard input**: the first line is the WireGuard private key in base64 (the app keeps it
   in the keychain). Then one JSON object per line: `{"cmd":"pause","until":"<RFC 3339>"}`,
-  `{"cmd":"resume"}`, `{"cmd":"limits","threads":N,"gpu":bool,"jobs":N}`, `{"cmd":"quit"}`
-  (give every lease back with `reason=quit`, exit 0). The end of input quits too.
+  `{"cmd":"resume"}`, `{"cmd":"limits","threads":N,"gpu":bool,"jobs":N,"high_slots":N}`,
+  `{"cmd":"quit"}` (give every lease back with `reason=quit`, exit 0). The end of input quits too.
+  A `limits` line without `high_slots` keeps them; a worker before 0.2.14 ignores the field (and
+  `EQ_HIGH_PRIORITY_SLOTS`), so an app may send both to any worker.
 - **Standard output**: one JSON object per line, `event` naming it: `connection` (`up`,
   `last_answer_at`, `refused: [{kind, reason}]`), `job` (`lease_id`, `title`, `kind`, `rung`,
-  `phase`, `fraction`, `fps`, `speed`, `eta_s`; at every phase change and once a second),
+  `slot`: `normal` or `high`, `phase`, `fraction`, `fps`, `speed`, `eta_s`; at every phase change and once a second),
   `idle`, `result` (`lease_id`, `title`, `verdict`: `accepted`, `rejected` or `given_back`,
   `check`), `paused` (`until` or null), `update` (`latest`, when the queue wants a newer app),
   `tools` (`tools: [{name, version}]`), `log` (`lease_id`, `line`), `calibrating` (`classes`,
@@ -305,6 +326,8 @@ otherwise). Per-worker series carry `worker_id` and
 | `encode_queue_worker_connected` | gauge | 1 while the worker called within three presence intervals. |
 | `encode_queue_worker_paused` | gauge | 1 while the worker is paused. |
 | `encode_queue_worker_jobs` | gauge | The worker's jobs now: leased (an active lease) and checking (a result waiting for the pipeline). |
+| `encode_queue_worker_slots` | gauge | The worker's slots by kind: normal (every job) and high (priority now and stage1 only), as the queue gives them. |
+| `encode_queue_worker_slots_busy` | gauge | The worker's slots that hold an active lease, by kind. |
 | `encode_queue_worker_attempts_total` | counter | Attempts the worker ended, by outcome: accepted, rejected, superseded, failed, given_back, expired, preempted, cancelled. |
 | `encode_queue_worker_leases_expired_total` | counter | Leases of the worker that ran out or whose worker went offline. |
 | `encode_queue_worker_results_rejected_total` | counter | Results of the worker that the pipeline rejected. |

@@ -23,7 +23,7 @@ func SelfTest(ctx context.Context, cfg Config) (map[string]any, []string) {
 	w := &Worker{cfg: cfg}
 	l := &Lease{ID: "selftest"}
 	l.Job.Source.Width, l.Job.Source.Height = 1280, 720
-	r := newRun(w, l)
+	r := newRun(w, l, false)
 	if err := os.MkdirAll(r.dir, 0o700); err != nil {
 		return nil, []string{err.Error()}
 	}

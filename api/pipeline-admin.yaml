@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.9.0
+  version: 1.10.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -757,9 +757,12 @@ components:
       description: |
         ADR-0005's order, stage 1 of a new upload first, and before it `now` (v0.2.5, the Encoder
         page's "Sofort"): a job someone in Funkhaus waits for, such as captions from the audio or
-        a Loop. A `now` job is first in line and may run in a worker's extra slot beside other
-        work, on top of `max_parallel_jobs`, while the worker's free RAM holds the job's expected
-        peak with 1 GB to spare. It never preempts a lease.
+        a Loop. A `now` or `stage1` job may run in one of a worker's high-priority slots (v0.2.14,
+        `Worker.slots`) beside other work, while the worker's free RAM holds the job's expected
+        peak with 1 GB to spare. A `stage1` or `stage2` job no free worker may run preempts the
+        lowest lower lease of a worker that may run it. A `now` job preempts only where the RAM is
+        all that keeps it out of a free high-priority slot: that worker's lowest lease below
+        `stage1`, one at a time.
     LeaseState:
       type: string
       enum: [active, delivered, given_back, expired, preempted, cancelled, failed]
@@ -1084,6 +1087,12 @@ components:
 
     Limits:
       $ref: 'helper.yaml#/components/schemas/Limits'
+    SlotCount:
+      type: object
+      required: [slots, busy]
+      properties:
+        slots: { type: integer, minimum: 0 }
+        busy: { type: integer, minimum: 0 }
     WorkerCounts:
       $ref: 'helper.yaml#/components/schemas/WorkerCounts'
     Worker:
@@ -1111,6 +1120,18 @@ components:
         fonts: { type: array, items: { type: string } }
         hardware: { type: [object, 'null'] }
         limits: { $ref: '#/components/schemas/Limits' }
+        slots:
+          type: object
+          required: [normal, high]
+          description: |
+            Its slots of each kind and how many hold a lease (v0.2.14, 1.10.0): `slots` is what the
+            queue gives it (what it asked for in `limits`, capped by EQ_MAX_PARALLEL_JOBS and
+            EQ_MAX_HIGH_PRIORITY_SLOTS), `busy` how many hold an active lease. Normal slots take
+            every job, high-priority ones only `now` and `stage1`. A worker before 0.2.14 has one
+            high-priority slot, its extra slot.
+          properties:
+            normal: { $ref: '#/components/schemas/SlotCount' }
+            high: { $ref: '#/components/schemas/SlotCount' }
         accepted_kinds: { type: array, items: { $ref: '#/components/schemas/JobKind' } }
         refused:
           type: array
@@ -1137,7 +1158,8 @@ components:
               fps: { type: [number, 'null'] }
               speed: { type: [number, 'null'] }
               eta_s: { type: [integer, 'null'] }
-              extra: { type: boolean, description: 'In the worker''s extra slot, beside its `max_parallel_jobs` (v0.2.5): a `now` job.' }
+              slot: { type: string, enum: [normal, high], description: 'The slot it runs in (v0.2.14, 1.10.0): one of the normal ones or a high-priority one, beside them.' }
+              extra: { type: boolean, description: 'True in a high-priority slot: `slot` is `high` (v0.2.5''s name, from its extra slot).' }
         last_seen: { type: [string, 'null'], format: date-time, description: '"Zuletzt".' }
         claiming: { type: boolean, description: 'It asked for work within two presence intervals or works on a lease (1.8.0).' }
         added_at: { type: string, format: date-time }

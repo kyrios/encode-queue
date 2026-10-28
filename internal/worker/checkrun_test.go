@@ -20,7 +20,7 @@ func realRun(t *testing.T) (*run, string, string) {
 	w.cfg.defaults()
 	l := &Lease{ID: "ls_TEST"}
 	l.Job.Source.Width, l.Job.Source.Height = 640, 360
-	r := newRun(w, l)
+	r := newRun(w, l, false)
 	if err := os.MkdirAll(r.dir, 0o700); err != nil { // execute makes it
 		t.Fatal(err)
 	}
