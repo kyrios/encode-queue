@@ -41,6 +41,18 @@ func fakeTool(args []string) int {
 	case strings.Contains(argv, "-f lavfi") && strings.Contains(argv, "libx264"):
 		fmt.Print("\x00\x00\x01x264 - core 164 r3108 31e19f9 - H.264/MPEG-4 AVC codec")
 		return 0
+	case strings.Contains(argv, "-f s16le"): // a peaks job's sound (v0.2.22): a second of a ramp, at once
+		pcm := make([]byte, 2*8000)
+		for i := range 8000 {
+			v := uint16(int16(i*8 - 32000))
+			pcm[2*i], pcm[2*i+1] = byte(v), byte(v>>8)
+		}
+		if err := os.WriteFile(args[len(args)-1], pcm, 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Print("progress=end\n")
+		return 0
 	case strings.Contains(argv, "-oj"): // whisper-cli
 		var base string
 		for i, a := range args {

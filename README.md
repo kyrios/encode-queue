@@ -14,8 +14,9 @@ Linux server or Mac. **Slipstream** is the encoder helper's name on every machin
   source with range requests, runs ffmpeg (libx265, libx264) or whisper.cpp, a normal job's at
   `nice 19` and a realtime job's at the worker's own (below, "Realtime before normal"), reports
   progress and log lines, and uploads the result over tus. Jobs are rungs, whisper runs, from
-  v0.2.8 cuts, remuxes and checks (every encode and every decode runs on a worker), and from
-  v0.2.16 align jobs, which time a text's words in its sound with Qwen3-ForcedAligner.
+  v0.2.8 cuts, remuxes and checks (every encode and every decode runs on a worker), from
+  v0.2.16 align jobs, which time a text's words in its sound with Qwen3-ForcedAligner, and from
+  v0.2.22 the sound's peaks and a video's filmstrip for Funkhaus's timeline.
 - **The worker measures, the pipeline judges** (v0.2.8). After a rung, a cut or a remux the
   same lease checks the result: a full decode, its frames and length, SSIM, PSNR-Y and XPSNR
   (and VMAF when asked) against the source, the packets of a remux. The figures go with the
@@ -120,6 +121,21 @@ All three are OpenAPI 3.1.
   eight files, `qwen3-forced-aligner-0.6b-c7cbfc20`, in the models folder, each file by its
   sha256; its sha256 is their manifest's (`32f47d21…`). A worker fetches it where the folder is
   writable; encoder's is filled by infra.
+- **The peaks and strip jobs** (v0.2.22; Thorsten, 2026-10-28: "0 encoding/calculating/handling
+  of media is happening outside of Slipstream instances. Funkhaus is 'just' the job manager,
+  event manager, file manager and UI"): the two things video-pipeline still decoded itself are
+  worker jobs. `peaks` reads an upload's first sound with ffmpeg, mono at 8 kHz, and writes
+  upload-center's peaks file for its waveform, byte for byte as its `makePeaks` does (the golden
+  file `internal/worker/testdata/peaks-lcg-3s.peaks`); a source without sound fails at once with
+  `decode_failed`. `strip` makes a stage's h264.mp4 into the timeline's filmstrip from its
+  keyframes alone (video-pipeline#29's spec): a `scenes` level of at most 32 pictures at the cuts,
+  a `fine` level every 4 s, JPEG sheets named by their content and thumbs.json with 128
+  placeholder colours, delivered as one tar. Someone in Funkhaus waits for both, so they are
+  realtime: priority `now` when the pipeline names none, first in line and in a worker's
+  high-priority slot beside a long encode, which they never preempt. Each takes seconds for an
+  hour (a two-hour file: peaks 10 s, strip 13 s, 71 and 101 MB at the peak, counted as 512 MiB),
+  at most 64 MiB of result, and earns no points. Only workers of 0.2.22 with the reference's
+  ffmpeg get them.
 - **Leases** last 120 s and are renewed every 30 s with the progress; the long poll waits 25 s;
   presence every 30 s, offline after three missed. A lease that runs out, a worker that goes
   offline, a removed worker: the job goes back to `queued`, the next attempt with the next number.

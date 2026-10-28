@@ -176,6 +176,8 @@ func tooOld(w *Worker, j *Job) string {
 		return "worker " + w.Caps.AppVersion + " runs no cut, remux or check jobs and no check step (0.2.8)"
 	case v == "0.2.16":
 		return "worker " + w.Caps.AppVersion + " runs no align jobs (0.2.16)"
+	case v == "0.2.22":
+		return "worker " + w.Caps.AppVersion + " runs no peaks or strip jobs (0.2.22)"
 	}
 	// v0.2.13: an older worker would not refuse it, it would make the file without them.
 	return "worker " + w.Caps.AppVersion + " would make the file without " + strings.Join(clipFields(j), ", ") + " (0.2.13)"
@@ -294,6 +296,7 @@ func (s *Store) validate(id string, spec *JobSubmit) error {
 	if !jobIDRe.MatchString(id) {
 		return errf(422, "invalid", "job id %q does not match %s", id, jobIDRe)
 	}
+	defaultMediaPriority(spec)
 	if prioIndex(spec.Priority) == len(Priorities) {
 		return errf(422, "invalid", "priority %q is not one of %v", spec.Priority, Priorities)
 	}

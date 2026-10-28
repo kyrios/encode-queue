@@ -498,6 +498,15 @@ func (r *run) work(ctx context.Context) error {
 		if tools, err = r.workAlign(ctx, src, inputs, out); err != nil {
 			return err
 		}
+	case "peaks", "strip": // v0.2.22, peaks.go and strip.go
+		work := r.workPeaks
+		if l.Job.Kind == "strip" {
+			work = r.workStrip
+		}
+		var err error
+		if tools, err = work(ctx, src, out); err != nil {
+			return err
+		}
 	case "whisper":
 		var p WhisperParams
 		if err := json.Unmarshal(l.Params, &p); err != nil {

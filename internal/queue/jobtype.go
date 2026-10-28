@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"cmp"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,6 +17,9 @@ const (
 	TypeCut      = "Cut"
 	TypeRemux    = "Remux"
 	TypeCheck    = "Check"
+	// v0.2.22 (media.go): Funkhaus's Typ column says "Peaks" and "Filmstrip".
+	TypePeaks     = "Peaks"
+	TypeFilmstrip = "Filmstrip"
 )
 
 // jobType is the job's type and its detail; a kind the queue does not know is its own type.
@@ -42,6 +46,11 @@ func jobType(j *Job) (string, string) {
 		return TypeRemux, ""
 	case j.check != nil:
 		return TypeCheck, checkDetail(j.check.Check)
+	case j.peaks != nil:
+		return TypePeaks, ""
+	case j.strip != nil:
+		p := j.strip
+		return TypeFilmstrip, fmt.Sprintf("%dp · every %s s", cmp.Or(p.Height, 90), number(cmp.Or(p.FineEveryS, 4)))
 	}
 	if k := j.Spec.Kind; k != "" {
 		return strings.ToUpper(k[:1]) + k[1:], ""

@@ -132,9 +132,12 @@ func (c *CheckSettings) validate() error {
 	return nil
 }
 
-// validateKind checks the params of the v0.2.8 kinds; nil for the others.
+// validateKind checks the params of the v0.2.8 kinds and v0.2.22's (media.go); nil for the
+// others.
 func validateKind(j *Job, spec *JobSubmit) error {
 	switch {
+	case mediaKind(j):
+		return validateMedia(j, spec)
 	case j.cut != nil:
 		p := j.cut
 		if p.StartS < 0 || p.LengthS <= 0 || p.FadeS < 0 || p.FadeS > p.LengthS {

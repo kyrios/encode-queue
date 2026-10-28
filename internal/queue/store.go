@@ -137,6 +137,8 @@ type Job struct {
 	remux   *RemuxParams // v0.2.8
 	check   *CheckParams // v0.2.8
 	align   *AlignParams // v0.2.16
+	peaks   *PeaksParams // v0.2.22, media.go
+	strip   *StripParams
 }
 
 // Lease is one attempt at a job.
@@ -557,6 +559,7 @@ func ptrTime(t time.Time) *time.Time { return &t }
 
 func (j *Job) parse() error {
 	j.rung, j.whisper, j.cut, j.remux, j.check, j.align = nil, nil, nil, nil, nil, nil
+	j.peaks, j.strip = nil, nil
 	switch j.Spec.Kind {
 	case KindCut:
 		var p CutParams
@@ -594,6 +597,18 @@ func (j *Job) parse() error {
 			return err
 		}
 		j.align = &p
+	case KindPeaks:
+		var p PeaksParams
+		if err := strictUnmarshal(j.Spec.Params, &p); err != nil {
+			return err
+		}
+		j.peaks = &p
+	case KindStrip:
+		var p StripParams
+		if err := strictUnmarshal(j.Spec.Params, &p); err != nil {
+			return err
+		}
+		j.strip = &p
 	default:
 		return fmt.Errorf("unknown kind %q", j.Spec.Kind)
 	}
