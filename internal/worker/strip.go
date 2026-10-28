@@ -115,8 +115,9 @@ func stripCmd(ffmpeg, src, graph, out string, threads int) []string {
 // stripArgs is the first pass: every keyframe's scene score (`metadata@scene`), time and mean
 // colour (`showinfo@all`), and the fine level, keyframes at least FineEveryS apart
 // (`showinfo@fine`), tiled row by row into numbered sheets.
-// The pictures are 8-bit (format=yuv420p, v0.2.23) before showinfo: an upload's 10-bit HEVC
-// would give its means in 10-bit units, white as 937, and the colours would be wrong.
+// The pictures are 8-bit (format=yuv420p, v0.2.23) before showinfo, which measures their means
+// in the picture's own units: a 10-bit HEVC's grey is 499. The JPEG sheets downstream already
+// make ffmpeg choose 8-bit there; the step keeps the colours from hanging on that choice.
 func stripArgs(ffmpeg, src, dir string, p StripParams, threads int) []string {
 	graph := fmt.Sprintf("select@scene='gte(scene,0)',metadata@scene=print:key=lavfi.scene_score,"+
 		"scale=-2:%d,format=yuv420p,showinfo@all,select@fine='isnan(prev_selected_t)+gte(t-prev_selected_t,%s)',"+
