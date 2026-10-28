@@ -55,6 +55,8 @@ type run struct {
 	cancel      context.CancelFunc
 	cmd         *exec.Cmd
 	suspended   bool
+	held        bool // the throttle's SIGSTOP holds the tool (throttle.go)
+	throttled   bool // the throttle runs the tool in a duty cycle now
 	pausedSince *time.Time
 	samples     []sample
 	encodeStart time.Time
@@ -76,7 +78,7 @@ func (r *run) status() JobStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := JobStatus{LeaseID: r.l.ID, JobID: r.l.Job.ID, Title: r.l.Job.Title, Kind: r.l.Job.Kind, Slot: r.slot, Attempt: r.l.Attempt,
-		Started: r.started, Progress: r.report(), Log: append([]string(nil), r.tail...)}
+		Started: r.started, Progress: r.report(), Log: append([]string(nil), r.tail...), Throttled: r.throttled}
 	if r.l.Job.Kind == "rung" {
 		var p RungParams
 		if json.Unmarshal(r.l.Params, &p) == nil {
@@ -169,11 +171,12 @@ func (r *run) execute(parent context.Context) Finished {
 		return r.end(parent, err)
 	}
 	loops, loopsCtx := sync.WaitGroup{}, ctx
-	loops.Add(4)
+	loops.Add(5)
 	go func() { defer loops.Done(); r.eventLoop(loopsCtx) }()
 	go func() { defer loops.Done(); r.renewLoop(loopsCtx) }()
 	go func() { defer loops.Done(); r.logLoop(loopsCtx) }()
 	go func() { defer loops.Done(); r.pauseLoop(loopsCtx) }()
+	go func() { defer loops.Done(); r.throttleLoop(loopsCtx) }()
 	err := r.work(ctx)
 	cancel()
 	loops.Wait()
@@ -434,7 +437,7 @@ func (r *run) work(ctx context.Context) error {
 			// reports no source_frames, and the progress counts the rate's frames.
 			sameFrames, frames, r.rate = false, p.FPS.frames(l.Job.Source.DurationS), *p.FPS
 		}
-		args, err := rungArgs(r.w.cfg.FFmpeg, p, src, l.Job.Source.Width, l.Job.Source.Height, ass, out, r.w.cfg.CPUThreads)
+		args, err := rungArgs(r.w.cfg.FFmpeg, p, src, l.Job.Source.Width, l.Job.Source.Height, ass, out, r.w.threads())
 		if err != nil {
 			return fail("other", "%v", err)
 		}
@@ -497,11 +500,11 @@ func (r *run) work(ctx context.Context) error {
 		if threads <= 0 {
 			threads = 4
 		}
-		if c := r.w.cfg.CPUThreads; c > 0 && threads > c {
+		if c := r.w.threads(); c > 0 && threads > c {
 			threads = c
 		}
 		base := filepath.Join(r.dir, "out", "whisper")
-		args, err := whisperArgs(r.w.cfg.WhisperCLI, model, p, wav, base, threads, r.w.cfg.GPU)
+		args, err := whisperArgs(r.w.cfg.WhisperCLI, model, p, wav, base, threads, r.w.gpu())
 		if err != nil {
 			return fail("other", "%v", err)
 		}
@@ -779,6 +782,7 @@ func (r *run) runToolTo(ctx context.Context, args []string, source string, onBlo
 	r.mu.Lock()
 	r.cmd = nil
 	r.suspended = false
+	r.held = false
 	r.mu.Unlock()
 	if ctx.Err() != nil {
 		return ctx.Err()
