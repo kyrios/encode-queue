@@ -22,7 +22,7 @@ func freeBytes(dir string) (int64, error) {
 var MetricHelp = []struct{ Name, Type, Help string }{
 	{"encode_queue_build_info", "gauge", "The queue's version, as a label; always 1."},
 	{"encode_queue_revision", "gauge", "The queue's revision: every change to a job raises it."},
-	{"encode_queue_result_room_bytes", "gauge", "Bytes of results the queue can still take: for a job below stage1 beside every running lease's max_bytes, for one of priority now or stage1 beside the uploads in flight; the reserve is off both."},
+	{"encode_queue_result_room_bytes", "gauge", "Bytes of results the queue can still take: for a job below stage1 beside every running lease's max_bytes, for one of priority now or stage1 beside the running high-priority leases' max_bytes and the lower ones' uploads in flight; the reserve is off both."},
 	{"encode_queue_jobs", "gauge", "Jobs by priority and state."},
 	{"encode_queue_workers", "gauge", "Workers by state (idle, working, paused, offline)."},
 	{"encode_queue_worker_connected", "gauge", "1 while the worker called within three presence intervals."},

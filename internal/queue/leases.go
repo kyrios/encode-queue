@@ -72,9 +72,10 @@ func (s *Store) roomFor(j *Job) int64 {
 // result's max_bytes until it delivers, and a 2160 archive rung's is 2 × its source or 12.5 MB/s
 // of its length, 22 GB for half an hour: once an upload's sets and the archive's next fetch had
 // landed beside it, encoder's disk had less than that left, and no job of any size could be
-// claimed. A job of priority now or stage1 counts against the disk as it is, free space less
-// the reserve and the bytes uploads still have to write, as it does not wait for a lower job's
-// slot either (slots.go). A job below it keeps the whole reservation.
+// claimed. A job of priority now or stage1 counts the max_bytes of the running high-priority
+// leases only, and of a lower lease what its upload still has to write, as it does not wait for
+// a lower job's slot either (slots.go): so three stage-1 rungs of one upload still fit the disk
+// together. A job below it keeps the whole reservation.
 func (s *Store) rooms() (full, high int64) {
 	free, err := s.cfg.FreeBytes(s.cfg.ResultDir)
 	if err != nil {
@@ -82,19 +83,30 @@ func (s *Store) rooms() (full, high int64) {
 		return 0, 0
 	}
 	full, high = free, free
+	held := func(l *Lease) (active, hi bool) {
+		if l == nil || l.State != LeaseActive {
+			return false, false
+		}
+		j := s.st.Jobs[l.JobID]
+		return true, j != nil && highPriority(j.Priority)
+	}
 	for _, l := range s.st.Leases {
-		if l.State == LeaseActive {
-			if j := s.st.Jobs[l.JobID]; j != nil {
-				full -= j.Spec.Result.MaxBytes
+		if active, hi := held(l); active {
+			full -= s.st.Jobs[l.JobID].Spec.Result.MaxBytes
+			if hi {
+				high -= s.st.Jobs[l.JobID].Spec.Result.MaxBytes
 			}
 		}
 	}
+	// What uploads still have to write, where no max_bytes above holds it.
 	for _, u := range s.st.Uploads {
 		left := u.Length - u.Offset
-		high -= left
-		// An active lease's upload is in its max_bytes above.
-		if l := s.st.Leases[u.LeaseID]; l == nil || l.State != LeaseActive {
+		active, hi := held(s.st.Leases[u.LeaseID])
+		if !active {
 			full -= left
+		}
+		if !hi {
+			high -= left
 		}
 	}
 	return full - s.cfg.ResultReserve, high - s.cfg.ResultReserve

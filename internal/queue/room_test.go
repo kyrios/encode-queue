@@ -146,6 +146,29 @@ func TestAHighPriorityResultStillNeedsTheDiskAsItIs(t *testing.T) {
 	if l := e.anySlot(enc); l == nil {
 		t.Fatal("encoder took nothing with room for the result")
 	}
+	// High-priority leases still count each other's worst case: two stage 1 rungs of 10 GiB do
+	// not both fit 16 GiB of room, whatever the archive holds. Free: the Mac's 15 GiB to come,
+	// the reserve, the now lease's 64 MiB and 16 GiB.
+	*free = (33 << 30) + (64 << 20)
+	vimes := e.workerID("vimes")
+	e.as(vimes, "0.2.18", 16*gib, ptrInt64(3*gib), map[string]float64{SHASmall: 8})
+	e.limits(vimes, 1, 1)
+	for _, id := range []string{"up1.2160-stage1", "up1.1080-stage1"} {
+		e.rung(id, "stage1")
+		e.s.st.Jobs[id].Spec.Result.MaxBytes = 10 << 30
+	}
+	// After stage1's max_wait, as the faster workers' free slots make them the better ones.
+	e.clock.Add(maxWait["stage1"] + time.Second)
+	e.presence(enc, mac, vimes)
+	if l := e.anySlot(vimes); l == nil || l.Job.ID != "up1.2160-stage1" {
+		t.Fatalf("the first stage 1 rung: %+v", l)
+	}
+	if l, err := e.high(vimes); err != nil || l != nil {
+		t.Fatalf("the second stage 1 rung took the room the first holds: %+v %v", l, err)
+	}
+	if jv, _ := e.s.GetJob("up1.1080-stage1"); jv.Waiting == nil || jv.Waiting.Code != WaitNoRoom {
+		t.Fatalf("the second stage 1 rung's waiting: %+v", jv.Waiting)
+	}
 	var b bytes.Buffer
 	e.s.WriteMetrics(&b, "test")
 	for _, want := range []string{`encode_queue_result_room_bytes{for="below_stage1"} `, `encode_queue_result_room_bytes{for="now_stage1"} `} {

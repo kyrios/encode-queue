@@ -296,8 +296,9 @@ All three are OpenAPI 3.1.
 - **Disk**: the queue leases only while its result directory has room for every active lease's
   `max_bytes` plus `EQ_RESULT_RESERVE_BYTES`. **A job of priority now or stage1 counts against the
   disk as it is** (v0.2.19; 2026-10-28, a `now` whisper job of 64 MB waited for hours beside an idle
-  encoder): free space less the reserve and what uploads still have to write, not every running
-  lease's `max_bytes`, which for a 2160 archive rung is 2 × its source or 12.5 MB/s of its length.
+  encoder): free space less the reserve, the running high-priority leases' `max_bytes` and what
+  the lower ones' uploads still have to write, not every running lease's `max_bytes`, which for a
+  2160 archive rung is 2 × its source or 12.5 MB/s of its length.
   A job the room keeps out says so: `waiting.code` `no_room`, and `encode_queue_result_room_bytes`.
 
 ## The queue server
@@ -477,7 +478,7 @@ otherwise). Per-worker series carry `worker_id` and
 |---|---|---|
 | `encode_queue_build_info` | gauge | The queue's version, as a label; always 1. |
 | `encode_queue_revision` | gauge | The queue's revision: every change to a job raises it. |
-| `encode_queue_result_room_bytes` | gauge | Bytes of results the queue can still take: for a job below stage1 beside every running lease's max_bytes, for one of priority now or stage1 beside the uploads in flight; the reserve is off both. |
+| `encode_queue_result_room_bytes` | gauge | Bytes of results the queue can still take: for a job below stage1 beside every running lease's max_bytes, for one of priority now or stage1 beside the running high-priority leases' max_bytes and the lower ones' uploads in flight; the reserve is off both. |
 | `encode_queue_jobs` | gauge | Jobs by priority and state. |
 | `encode_queue_workers` | gauge | Workers by state (idle, working, paused, offline). |
 | `encode_queue_worker_connected` | gauge | 1 while the worker called within three presence intervals. |

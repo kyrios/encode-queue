@@ -1083,8 +1083,8 @@ components:
             `no_worker_available`: those that may run it are all offline or paused.
             `no_room` (v0.2.19): a worker could take it, but the queue's result directory has no
             room for its `max_bytes`: beside every running lease's `max_bytes` for a job below
-            stage1, beside the uploads in flight for one of priority now or stage1, and
-            `EQ_RESULT_RESERVE_BYTES` off both.
+            stage1; for one of priority now or stage1 beside the running high-priority leases'
+            `max_bytes` and the lower ones' uploads in flight; `EQ_RESULT_RESERVE_BYTES` off both.
         detail: { type: string, description: One line for a person. }
         retry_at: { type: [string, 'null'], format: date-time, description: 'For `all_excluded`: when the reference worker gets the job again; null when none will (the reference is not among the excluded).' }
     Pin:
