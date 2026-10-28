@@ -125,7 +125,7 @@ const monoPan = "pan=mono|c0=0.5*c0+0.5*c1"
 
 var (
 	presetRe     = regexp.MustCompile(`^(ultrafast|superfast|veryfast|faster|fast|medium|slow|slower|veryslow)$`)
-	filterPathRe = regexp.MustCompile(`^[A-Za-z0-9/._-]+$`)
+	filterPathRe = regexp.MustCompile(`^[A-Za-z0-9/._-]+$`) // the captions' file: run.go passes its name in the lease's folder
 	languageRe   = regexp.MustCompile(`^[a-z]{2,3}$|^auto$`)
 	fpsRe        = regexp.MustCompile(`^[0-9]{1,6}(\.[0-9]{1,3})?$|^[0-9]{1,6}/[0-9]{1,6}$`)
 	// The sample rates ffmpeg's AAC encoder takes.

@@ -411,10 +411,14 @@ func (r *run) work(ctx context.Context) error {
 		}
 		ass := ""
 		if p.Captions != nil {
-			ass = inputs[p.Captions.Input]
-			if ass == "" {
+			in := inputs[p.Captions.Input]
+			if in == "" {
 				return fail("file_not_found", "input %s", p.Captions.Input)
 			}
+			// libass gets the file by its name in the lease's folder, where ffmpeg runs (runToolTo):
+			// the work dir's own path never goes into the filter graph, so any work dir works. A
+			// Mac's sits under "Application Support" (v0.2.14: Vimes refused every captions job).
+			ass = filepath.Base(in)
 		}
 		if p.Audio != nil && p.Audio.Mono.Measure {
 			var err error

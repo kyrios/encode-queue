@@ -96,7 +96,6 @@ func run(cmd string) error {
 		HoldFactor:           float64(env.Int("EQ_HOLD_FACTOR", 0)),
 		HoldMin:              env.Seconds("EQ_HOLD_MIN_S"),
 		HoldMax:              env.Seconds("EQ_HOLD_MAX_S"),
-		WhisperMinSpeed:      float64(env.Int("EQ_WHISPER_MIN_SPEED_PCT", 100)) / 100,
 		MinAppVersion:        env.String("EQ_MIN_APP_VERSION", ""),
 		Endpoint:             env.Required("EQ_WG_ENDPOINT"),
 		Keepalive:            env.Int("EQ_WG_KEEPALIVE_S", 25),

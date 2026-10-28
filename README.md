@@ -63,7 +63,9 @@ All three are OpenAPI 3.1.
   sha256 and the captions' font. A job with burnt-in captions also requires the reference's
   libass (v0.2.7; toolchain 3 builds it on both platforms, reported from its versions.txt), and
   the worker lists fonts with the toolchain's fc-list and points `FONTCONFIG_FILE` at its
-  fonts.conf (Inter only) unless something set it. Until the reference worker has said what it
+  fonts.conf (Inter only) unless something set it. libass gets the captions by their name in the
+  lease's folder, where ffmpeg runs, so any work dir works (v0.2.14: a Mac's sits under
+  "Application Support"). Until the reference worker has said what it
   runs, only it gets jobs.
 - **Which worker gets a job** (v0.2.7): when a worker asks, the queue estimates for each eligible
   worker the expected completion time, ECT = until it has a free slot + the source's bytes over
@@ -88,11 +90,10 @@ All three are OpenAPI 3.1.
   needs a result or a calibration of the class first, and the others' speed is relative to it).
 - **Whisper models** (v0.2.7): a job may list `models` best first. A worker holding one may take
   it unless a connected worker holds a better one; the lease names the one chosen. The queue
-  tells each worker which models to hold (`wanted_models`): small for caption timing and the
-  best one it runs at least `EQ_WHISPER_MIN_SPEED_PCT` per cent of real time by its calibration.
-  A model it has not timed is guessed from small's speed, but not wanted while a model below it
-  measured too slow; when none clears the threshold, the best model it holds stays wanted as its
-  fallback (encoder's medium at 0.96×). The speed never keeps a held model from a job.
+  tells each worker which models to hold (`wanted_models`): small for caption timing and
+  large-v3-turbo, the one caption model on every worker (v0.2.14; Thorsten, 2026-10-28), wherever
+  its RAM holds turbo's 3 GB peak with 1 GB to spare. The speed decides only which worker gets a
+  job, never what it holds.
   The worker fetches those from ggerganov/whisper.cpp at a pinned revision only, checks their
   sha256 and times them on the calibration's speech clip.
 - **Leases** last 120 s and are renewed every 30 s with the progress; the long poll waits 25 s;
@@ -209,7 +210,6 @@ Every address, port, subnet and path comes from the environment; the image has n
 | `EQ_WG_PRIVATE_KEY_FILE` | the queue's WireGuard private key (base64, as `wg genkey` prints it); default `$EQ_STATE_DIR/wireguard.key`, made on first start when missing |
 | `EQ_WG_KEEPALIVE_S` | the keepalive workers get; default 25 |
 | `EQ_REFERENCE_WORKER` | the name of the worker whose tools jobs require by default |
-| `EQ_WHISPER_MIN_SPEED_PCT` | how fast a worker must transcribe with a model, in per cent of real time, for the queue to want it there; default 100 |
 | `EQ_MIN_APP_VERSION` | workers below it get `426` |
 | `EQ_MAX_FAILURES` | default 3 |
 | `EQ_MAX_PARALLEL_JOBS` | the most normal slots any worker gets, whatever it asks for; default 2 (v0.2.9) |
