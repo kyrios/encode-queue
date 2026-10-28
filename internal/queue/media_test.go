@@ -151,3 +151,15 @@ func TestMediaTypes(t *testing.T) {
 		}
 	}
 }
+
+// TestMediaSecondsByTheSource: a 4K upload's strip takes longer than an h264.mp4's.
+func TestMediaSecondsByTheSource(t *testing.T) {
+	j := &Job{strip: &StripParams{}}
+	j.Spec.Source = SourceIn{DurationS: 7200, Width: 1280, Height: 640}
+	small, _ := mediaSeconds(j)
+	j.Spec.Source.Width, j.Spec.Source.Height = 3840, 2160
+	big, _ := mediaSeconds(j)
+	if small > 20 || big < 250 || big > 350 {
+		t.Errorf("two hours: h264.mp4 %v s, 4K %v s", small, big)
+	}
+}

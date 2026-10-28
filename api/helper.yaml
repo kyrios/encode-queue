@@ -1167,10 +1167,12 @@ components:
       title: strip
       additionalProperties: false
       description: |
-        A video's filmstrip for Funkhaus's timeline (v0.2.22; video-pipeline#29's spec), from a
-        stage's h264.mp4. ffmpeg decodes only its keyframes (`-skip_frame nokey`) in two passes:
-        the first gives each keyframe's time (showinfo's `pts_time`, the edit list applied), its
-        scene score against the keyframe before and its mean colour, and tiles the `fine` level,
+        A video's filmstrip for Funkhaus's timeline (v0.2.22; video-pipeline#29's spec), from the
+        upload itself (v0.2.23: 10-bit HEVC too; its pictures are made 8-bit before their colours
+        are measured, and it decodes with slice threads only, at most four). ffmpeg decodes only
+        its keyframes (`-skip_frame nokey`) in two passes: the first gives each keyframe's time
+        (showinfo's `pts_time`, the edit list applied), its scene score against the keyframe
+        before and its mean colour, and tiles the `fine` level,
         keyframes at least `fine_every_s` apart, 10×10 to a JPEG sheet; the second tiles the
         `scenes` level, at most `scenes` keyframes in one 8×4 sheet: the first, those with the
         highest scene score over 0.3 at least 1/(2·scenes) of the video apart, then the keyframe
