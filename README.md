@@ -223,6 +223,38 @@ All three are OpenAPI 3.1.
   after `max_failures` (3) the job is `failed`.
 - **Pause**: the worker stops its tool (SIGSTOP), keeps renewing with `phase: paused`, and gives
   the job back after 60 s. The queue takes it back itself 30 s later if the worker does not.
+- **The CPU limit** (v0.2.17; Thorsten, 2026-10-28: Slipstream said 3 of 12 cores while a 2160
+  archive encode, started with `pools=12`, ran at 978 % for hours). The worker's `cpu_threads`
+  (`EQ_CPU_THREADS`, Slipstream's `limits` line) is x265's pool and whisper.cpp's threads when a
+  tool starts, and also the cores a running tool may use. A tool that uses more than the limit
+  plus half a core runs in a duty cycle, as cpulimit does: in each 100 ms it runs for a share and
+  stands still for the rest (SIGSTOP and SIGCONT to its process group). The share is the limit
+  over the cores it uses while it runs, from its CPU time; each stop lasts in proportion to the
+  run as it was, so a late wake-up at nice 19 costs no extra share. It then averages the limit
+  and loses no work. A higher limit, or none, frees it within a period; a pause's SIGSTOP wins.
+  A tool started at the limit runs free, and x264, which keeps its own threads, is held the same
+  way. The job's log says when a tool is held and freed, Slipstream's `limits` event says it, and
+  the worker tells the queue a new limit at once, not with its next presence. Measured on the Mac
+  Studio (M2 Max, 8 P and 4 E cores, at nice 19 beside other work at load averages 80 to 140),
+  the 2160 archive rung on the calibration graph as a 3840x2160 master, a minute each
+  (`TestMeasureThrottle`):
+
+  | the encode | ps %cpu each second: median (range) | cores by CPU time | fps |
+  |---|---|---|---|
+  | `pools=3`, free | 296 (276 to 316) | 2.95 | 1.13 |
+  | `pools=12`, held to 3 | 306 (195 to 405) | 2.99 | 0.83 |
+  | `pools=12`, `taskpolicy -b` | 0 (0 to 32) | 0.07 | 0.00 |
+  | `pools=12`, free | 917 (568 to 1099) | 9.11 | 3.01 |
+
+  macOS's own means hold no number of cores: the background policy (`taskpolicy -b`,
+  PRIO_DARWIN_BG) keeps a tool on the efficiency cores and, on a busy Mac, all but stops it. A
+  held encode does less per core than one started at the limit, since x265's twelve frame
+  threads wait on each other; the next job starts with the limit. A 4 s clip encoded whole while
+  held to 3 and freed every 5 s has its 102 frames, decodes without errors and has the free
+  encode's SSIM against the source, 0.98567; its bytes differ, as two free encodes' bytes differ
+  (x265's frame threads and VBV). whisper-cli with 12 threads on the CPU, held to 3, used 2.95
+  cores and wrote the free run's transcript byte for byte; with the GPU it uses under one core and
+  runs free.
 - **Disk**: the queue leases only while its result directory has room for every active lease's
   `max_bytes` plus `EQ_RESULT_RESERVE_BYTES`.
 
@@ -298,7 +330,7 @@ docker run --rm -p 8090:8090 -p 51821:51821/udp -v /srv/eq:/data \
 | `EQ_CALIBRATE` | `false` skips the calibration at pairing (`true` by default) |
 | `EQ_FONTS` | font families to announce besides fontconfig's, comma-separated |
 | `EQ_HOST_APP_NAME`, `EQ_HOST_APP_VERSION` | the app the worker runs inside (Slipstream and its version), shown on the Encoder page; never compared with the queue's minimum |
-| `EQ_CPU_THREADS` | x265's pool (`pools=N`) and whisper.cpp's threads; default the tools' own |
+| `EQ_CPU_THREADS` | x265's pool (`pools=N`) and whisper.cpp's threads, and the cores a running tool may use (v0.2.17, **The CPU limit**); default the tools' own |
 | `EQ_GPU` | whisper.cpp may use the GPU; default false |
 | `EQ_MAX_PARALLEL_JOBS` | normal slots, which take every job; default 1 |
 | `EQ_HIGH_PRIORITY_SLOTS` | high-priority slots on top, which take only `now` and `stage1` jobs; default 1, 0 none (v0.2.14) |
@@ -323,14 +355,18 @@ nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name �
   `{"cmd":"resume"}`, `{"cmd":"limits","threads":N,"gpu":bool,"jobs":N,"high_slots":N}`,
   `{"cmd":"quit"}` (give every lease back with `reason=quit`, exit 0). The end of input quits too.
   A `limits` line without `high_slots` keeps them; a worker before 0.2.14 ignores the field (and
-  `EQ_HIGH_PRIORITY_SLOTS`), so an app may send both to any worker.
+  `EQ_HIGH_PRIORITY_SLOTS`), so an app may send both to any worker. A `limits` line counts at
+  once: the queue hears it, the next tool starts with it, and a running tool is held to its
+  `threads` (v0.2.17, **The CPU limit** above).
 - **Standard output**: one JSON object per line, `event` naming it: `connection` (`up`,
   `last_answer_at`, `refused: [{kind, reason}]`), `job` (`lease_id`, `title`, `kind`, `rung`,
   `slot`: `normal` or `high`, `phase`, `fraction`, `fps`, `speed`, `eta_s`; at every phase change and once a second),
   `idle`, `result` (`lease_id`, `title`, `verdict`: `accepted`, `rejected` or `given_back`,
   `check`), `paused` (`until` or null), `update` (`latest`, when the queue wants a newer app),
   `tools` (`tools: [{name, version}]`), `points` (`table`, `today`, `week`, `total`, `rank`, `of`,
-  when they or the place change; v0.2.15), `log` (`lease_id`, `line`), `calibrating` (`classes`,
+  when they or the place change; v0.2.15), `limits` (`threads` in effect, the machine's
+  `cores`, `throttled`: how many running jobs are held to it; at the start, after each `limits`
+  line and when a job is held or freed; v0.2.17), `log` (`lease_id`, `line`), `calibrating` (`classes`,
   when the calibration clip starts) and `calibrated` (`classes`, when it is done), and `model`
   for each whisper model the queue wants (`name`, `sha256`, `state`: `wanted`, `downloading`,
   `checking`, `calibrating`, `ready`, `failed`, or `unavailable` when the models folder is read-only and the host provides the models; `bytes`, `bytes_done` while downloading,

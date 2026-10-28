@@ -178,7 +178,7 @@ func (w *Worker) calibrate(ctx context.Context) (*Calibration, error) {
 	}
 	c := &Calibration{ClipSHA256: sum, Tools: tools, At: time.Now().UTC()}
 	for i, cc := range calibrationClasses {
-		args, err := calibrationArgs(w.cfg.FFmpeg, cc, clip, filepath.Join(dir, fmt.Sprintf("out%d.mp4", i)), w.cfg.CPUThreads)
+		args, err := calibrationArgs(w.cfg.FFmpeg, cc, clip, filepath.Join(dir, fmt.Sprintf("out%d.mp4", i)), w.threads())
 		if err != nil {
 			return nil, err
 		}
@@ -243,13 +243,14 @@ func (w *Worker) calibrateWhisper(ctx context.Context, c *Calibration) error {
 		return nil
 	}
 	threads := 4 // a whisper job's default (run.go)
-	if t := w.cfg.CPUThreads; t > 0 && threads > t {
+	gpu := w.gpu()
+	if t := w.threads(); t > 0 && threads > t {
 		threads = t
 	}
 	keep := c.Whisper[:0]
 	have := map[string]bool{}
 	for _, m := range c.Whisper {
-		if _, ok := held[m.SHA256]; ok && m.Whisper == version && m.GPU == w.cfg.GPU && m.Threads == threads {
+		if _, ok := held[m.SHA256]; ok && m.Whisper == version && m.GPU == gpu && m.Threads == threads {
 			keep = append(keep, m)
 			have[m.SHA256] = true
 		}
@@ -284,7 +285,7 @@ func (w *Worker) calibrateWhisper(ctx context.Context, c *Calibration) error {
 		path := held[sha]
 		name := filepath.Base(path)
 		timed := func(in string, audio float64) (float64, error) {
-			args, err := whisperArgs(w.cfg.WhisperCLI, path, WhisperParams{Language: "de"}, in, filepath.Join(dir, "out"), threads, w.cfg.GPU)
+			args, err := whisperArgs(w.cfg.WhisperCLI, path, WhisperParams{Language: "de"}, in, filepath.Join(dir, "out"), threads, gpu)
 			if err != nil {
 				return 0, err
 			}
@@ -294,7 +295,7 @@ func (w *Worker) calibrateWhisper(ctx context.Context, c *Calibration) error {
 			}
 			return audio / time.Since(start).Seconds(), nil
 		}
-		m := CalibratedModel{SHA256: sha, Name: name, Whisper: version, GPU: w.cfg.GPU, Threads: threads}
+		m := CalibratedModel{SHA256: sha, Name: name, Whisper: version, GPU: gpu, Threads: threads}
 		w.emitModel(sha, name, "calibrating", nil)
 		speed, err := timed(probe, probeSeconds)
 		if err != nil {

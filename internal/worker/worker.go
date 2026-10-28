@@ -5,10 +5,12 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -102,6 +104,9 @@ type JobStatus struct {
 	Started  time.Time `json:"started_at"`
 	Progress Progress  `json:"progress"`
 	Log      []string  `json:"log,omitempty"`
+
+	// Throttled: its tool runs in a duty cycle, held to the CPU limit (v0.2.17, throttle.go).
+	Throttled bool `json:"throttled,omitempty"`
 }
 
 // Finished is a job this worker ended.
@@ -152,6 +157,7 @@ type Worker struct {
 	jobLimit    int
 	highLimit   int
 	limitCh     chan struct{} // closed and replaced when a job limit changes
+	limitsMu    sync.Mutex    // one limits event at a time (emitLimits)
 	runs        map[string]*run
 	recent      []Finished
 	today       int
@@ -230,22 +236,70 @@ func (w *Worker) emitConnectionLocked() {
 }
 
 // SetLimits changes the threads, the GPU, the normal slots and, unless high is nil, the
-// high-priority slots at once (Slipstream's settings); the queue hears it with the next presence.
+// high-priority slots at once (Slipstream's settings). The next tool starts with the threads, a
+// running one is held to them (throttle.go), and the presence loop tells the queue at once.
 func (w *Worker) SetLimits(threads int, gpu bool, jobs int, high *int) {
 	jobs = min(max(jobs, 1), maxSlots)
+	threads = max(threads, 0)
+	defer w.emitLimits()
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	before := w.limits()
 	w.cfg.CPUThreads, w.cfg.GPU, w.cfg.MaxParallel = threads, gpu, jobs
 	w.jobLimit = jobs
 	if high != nil {
 		w.cfg.HighPrioritySlots = min(max(*high, 0), maxSlots)
 		w.highLimit = w.cfg.HighPrioritySlots
 	}
+	if after := w.limits(); fmt.Sprint(after) != fmt.Sprint(before) {
+		w.cfg.Log.Info("limits", "threads", threads, "gpu", gpu, "jobs", jobs, "high_slots", w.cfg.HighPrioritySlots)
+	}
 	w.limitsPatch = true
 	close(w.limitCh)
 	w.limitCh = make(chan struct{})
 	close(w.pauseCh) // wakes the presence loop
 	w.pauseCh = make(chan struct{})
+}
+
+// threads is the CPU limit now: a new tool's threads and the cores a running one may use; 0 the
+// tools' own.
+func (w *Worker) threads() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.cfg.CPUThreads
+}
+
+// gpu is whether whisper.cpp may use the GPU now.
+func (w *Worker) gpu() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.cfg.GPU
+}
+
+// emitLimits tells Slipstream the CPU limit in effect (v0.2.17): threads, of the machine's cores,
+// and how many runs' tools are held to it now. One at a time, so the last said is the last made.
+func (w *Worker) emitLimits() {
+	w.limitsMu.Lock()
+	defer w.limitsMu.Unlock()
+	w.mu.Lock()
+	threads, cores := w.cfg.CPUThreads, runtime.NumCPU()
+	if threads <= 0 || threads > cores {
+		threads = cores
+	}
+	runs := make([]*run, 0, len(w.runs))
+	for _, r := range w.runs {
+		runs = append(runs, r)
+	}
+	w.mu.Unlock()
+	held := 0
+	for _, r := range runs {
+		r.mu.Lock()
+		if r.throttled {
+			held++
+		}
+		r.mu.Unlock()
+	}
+	w.emit("limits", map[string]any{"threads": threads, "cores": cores, "throttled": held})
 }
 
 func (w *Worker) limits() map[string]any {
@@ -412,6 +466,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 	w.caps = caps
 	w.emit("tools", map[string]any{"tools": caps.Tools})
+	w.emitLimits()
 	w.emit("idle", nil)
 	w.models = map[string]string{}
 	for _, m := range caps.Models {
