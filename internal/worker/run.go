@@ -117,8 +117,22 @@ func (r *run) log(level, source, msg string) {
 	// Only a lease's lines go to the app. A calibration's run has none (v0.2.12: with Events set,
 	// in Slipstream, its first stderr line was a nil dereference, at every start).
 	if r.w.cfg.Events != nil && r.l != nil {
-		go r.w.emit("log", map[string]any{"lease_id": r.l.ID, "line": msg})
+		go r.w.emit("log", map[string]any{"lease_id": r.l.ID, "line": msg, "level": slogLevel(level)})
 	}
+}
+
+// slogLevel is a job line's level in slog's words, as the worker's stderr has them (v0.2.21;
+// Slipstream files each line by it): DEBUG, INFO, WARN or ERROR.
+func slogLevel(level string) string {
+	switch strings.ToLower(level) {
+	case "debug":
+		return "DEBUG"
+	case "warn", "warning":
+		return "WARN"
+	case "error":
+		return "ERROR"
+	}
+	return "INFO"
 }
 
 // eventLoop tells the app about the job once a second.

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue helper API
-  version: 1.9.0
+  version: 1.10.0
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
@@ -438,7 +438,10 @@ paths:
       summary: Start a resumable upload (tus creation)
       description: |
         For a lease's result. `Upload-Metadata` names the lease (`lease_id`, base64 as tus
-        requires); the upload may not exceed the lease's `result.max_bytes`.
+        requires); the upload may not exceed the lease's `result.max_bytes`. **It must fit the
+        queue's disk** (v0.2.21): free space less the reserve, what other uploads still have to
+        write, and the `max_bytes` of the active high-priority leases that have not begun theirs.
+        Otherwise `503 no_room` with `Retry-After`; the lease stays, and the worker asks again.
       parameters:
         - $ref: '#/components/parameters/TusResumable'
         - name: Upload-Length
@@ -458,6 +461,13 @@ paths:
         '403': { $ref: '#/components/responses/NotYourLease' }
         '410': { $ref: '#/components/responses/LeaseGone' }
         '413': { $ref: '#/components/responses/TooLarge' }
+        '503':
+          description: '`no_room`: no room on the queue''s disk for the result yet; ask again after `Retry-After`.'
+          headers:
+            Retry-After: { schema: { type: integer, const: 30 } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
   /files/{file_id}:
     parameters:
       - name: file_id

@@ -5,7 +5,7 @@ import (
 	"runtime"
 )
 
-// **Realtime before normal, by the system's own scheduler** (v0.2.19; Thorsten, 2026-10-28:
+// **Realtime before normal, by the system's own scheduler** (v0.2.20; Thorsten, 2026-10-28:
 // "Instead of throttling manually can we simply use the OS task scheduler and give the realtime
 // jobs a slightly higher CPU priority?"). A job of priority now is realtime; every other job, of
 // stage 1, stage 2 or archive, is normal. A normal job keeps its lease and its progress, and every
@@ -20,7 +20,7 @@ import (
 //     (realtime.go). A realtime job's tools start unclamped.
 //
 // **The worker never renices itself**: an unprivileged process cannot lower a nice value, so a
-// worker at 19 could start no tool at 0. Before v0.2.19 every tool ran at 19, realtime ones too.
+// worker at 19 could start no tool at 0. Before v0.2.20 every tool ran at 19, realtime ones too.
 const Nice = 19
 
 // realtime says whether a job of priority p is realtime.

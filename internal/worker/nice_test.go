@@ -32,7 +32,7 @@ func psNice(t *testing.T, pid int) string {
 }
 
 // A normal job's tool runs at nice 19, from whichever thread the runtime starts it, with the pid
-// it was started with; a realtime job's at the worker's own nice (v0.2.19). Twenty of each,
+// it was started with; a realtime job's at the worker's own nice (v0.2.20). Twenty of each,
 // started from busy goroutines.
 func TestNormalToolsRunAtNice19AndRealtimeOnesAtTheWorkersNice(t *testing.T) {
 	if _, err := exec.LookPath("ps"); err != nil {

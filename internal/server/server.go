@@ -53,7 +53,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		s.Log.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
 		qe = &queue.Error{Status: 500, Code: "internal", Detail: "the queue could not do this; see its log"}
 	}
-	if qe.Code == "draining" {
+	if qe.Code == "draining" || qe.Code == "no_room" {
 		w.Header().Set("Retry-After", "30")
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
@@ -606,7 +606,7 @@ func (s *Server) AdminHandler(withMetrics bool) http.Handler {
 		w.WriteHeader(204)
 		return nil
 	})
-	// **The Encoder page's alone** (v0.2.19): the order inside a priority and the priority itself
+	// **The Encoder page's alone** (v0.2.20): the order inside a priority and the priority itself
 	// are a person's decision on Funkhaus, never the pipeline's, which parses outside files.
 	h("POST /v1/jobs/{job_id}/move", callerAdmin, func(w http.ResponseWriter, r *http.Request) error {
 		var m queue.Move

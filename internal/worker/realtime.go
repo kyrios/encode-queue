@@ -2,7 +2,7 @@ package worker
 
 import "runtime"
 
-// **A realtime job on macOS: the normal jobs beside it go into the background QoS** (v0.2.19,
+// **A realtime job on macOS: the normal jobs beside it go into the background QoS** (v0.2.20,
 // nice.go). Their tools started under the utility clamp; while a realtime job runs on this
 // worker, each normal run's tool is in PRIO_DARWIN_BG, and so is every tool a normal run starts
 // meanwhile. When the last realtime run ends they come out, unless the efficiency mode keeps them

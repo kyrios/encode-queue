@@ -71,7 +71,7 @@ type JobView struct {
 	UploadID *string `json:"upload_id"`
 	Title    *string `json:"title"`
 	Kind     string  `json:"kind"`
-	// Type and Detail: what the job makes, as Funkhaus's Encoder page names it (v0.2.19,
+	// Type and Detail: what the job makes, as Funkhaus's Encoder page names it (v0.2.20,
 	// jobtype.go): "Video" and "1080p · slower CRF 29", "Untertitel" and "turbo".
 	Type            string            `json:"type"`
 	Detail          string            `json:"detail"`

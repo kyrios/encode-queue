@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.13.0
+  version: 1.13.1
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -263,7 +263,7 @@ paths:
         takes that priority; `to: top` and `to: bottom` stay within the job's own priority
         unless `priority` names another, `now` (Realtime) included: `{"to": "bottom",
         "priority": P}` puts it last in its new class. Only `queued` jobs move (`409
-        not_queued`). **The admin token's alone** (v0.2.19): the pipeline's answers 403.
+        not_queued`). **The admin token's alone** (v0.2.20): the pipeline's answers 403.
       requestBody:
         required: true
         content:
@@ -951,14 +951,13 @@ components:
         type:
           type: string
           description: |
-            What the job makes, as the Encoder page names it (v0.2.19): `Video` (rung), `Untertitel`
-            (whisper), `Align`, `Cut`, `Remux`, `Check`. `Audio`, `Thumbnails` and `Peaks` are
-            reserved for jobs the queue does not run yet; a kind it does not know is its own name.
+            What the job makes, as the Encoder page names it (v0.2.20): `Video` (rung), `Untertitel`
+            (whisper), `Align`, `Cut`, `Remux`, `Check`; a kind it does not list is its own name.
           examples: [Video, Untertitel]
         detail:
           type: string
           description: |
-            One line of what the type means for this job (v0.2.19): the short side and the codec
+            One line of what the type means for this job (v0.2.20): the short side and the codec
             settings of a rung, the model of a whisper run, the aligner and the language, a cut's
             range, a remux's tag, a check's measures; empty where there is nothing to say.
           examples: ['1080p · slower CRF 29', '720p H.264 · slow CRF 32', 'turbo', '2.5–7.5 s']
