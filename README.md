@@ -63,7 +63,9 @@ All three are OpenAPI 3.1.
   sha256 and the captions' font. A job with burnt-in captions also requires the reference's
   libass (v0.2.7; toolchain 3 builds it on both platforms, reported from its versions.txt), and
   the worker lists fonts with the toolchain's fc-list and points `FONTCONFIG_FILE` at its
-  fonts.conf (Inter only) unless something set it. Until the reference worker has said what it
+  fonts.conf (Inter only) unless something set it. libass gets the captions by their name in the
+  lease's folder, where ffmpeg runs, so any work dir works (v0.2.14: a Mac's sits under
+  "Application Support"). Until the reference worker has said what it
   runs, only it gets jobs.
 - **Which worker gets a job** (v0.2.7): when a worker asks, the queue estimates for each eligible
   worker the expected completion time, ECT = until it has a free slot + the source's bytes over

@@ -337,3 +337,68 @@ func edtsBoxes(t *testing.T, path string) bool {
 	}
 	return false
 }
+
+// **Captions in any work dir** (v0.2.14; Alex's Vimes, 2026-10-28: "the captions' path …/Library/
+// Application Support/Slipstream/worker/work/…/input-captions cannot go into a filter"). A Mac's
+// work dir sits under "Application Support". The worker gives libass the captions by their name
+// in the lease's folder, where ffmpeg runs, so a work dir with a space, a quote and a colon burns
+// them in like any other: white words on a black clip come out white.
+func TestRealCaptionsInAnyWorkDir(t *testing.T) {
+	ff := realFFmpeg(t)
+	if filters, _ := exec.Command(ff, "-hide_banner", "-filters").Output(); !regexp.MustCompile(`\sass\s`).Match(filters) {
+		if os.Getenv("EQ_REQUIRE_REAL_FFMPEG") == "1" {
+			t.Fatal("ffmpeg without libass (the toolchain has it)")
+		}
+		t.Skip("ffmpeg without libass: run with the toolchain's ffmpeg first on PATH")
+	}
+	h := newHarness(t)
+	h.pipeline()
+	work := filepath.Join(t.TempDir(), "Application Support", `Alex's: work "x"`)
+	h.pairWith("vimes", func(c *worker.Config) {
+		c.Version = "0.2.14"
+		c.ChunkBytes = 4 << 20
+		c.FFmpeg = ff
+		c.WhisperCLI = "no-whisper-cli"
+		c.WorkDir = work
+		c.Fonts = []string{"Inter ExtraBold"}
+	})
+	rel := "caps/master.mov"
+	p := filepath.Join(h.srcDir, rel)
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	if out, err := exec.Command(ff, "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:size=320x180:rate=25:duration=2",
+		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", p).CombinedOutput(); err != nil {
+		t.Fatalf("the source: %v %s", err, out)
+	}
+	data, _ := os.ReadFile(p)
+	sum := sha256.Sum256(data)
+	ass := "[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 180\n\n[V4+ Styles]\n" +
+		"Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n" +
+		"Style: Default,Inter ExtraBold,72,&H00FFFFFF,&H00FFFFFF,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,5,10,10,10,1\n\n" +
+		"[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n" +
+		"Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,HALLO\n"
+	caps := h.source("caps/captions.ass", ass)
+	h.submit("caps.mastodon", map[string]any{"kind": "rung", "priority": "now", "upload_id": "caps",
+		"params": map[string]any{"rung": "mastodon", "codec": "libx264", "preset": "veryfast", "crf": 18, "width": 320, "height": 180,
+			"audio": map[string]any{"mode": "none"}, "captions": map[string]any{"input": "captions", "font": "Inter ExtraBold"},
+			"check": map[string]any{"decode": true, "frames": true}},
+		"source": map[string]any{"path": rel, "bytes": len(data), "sha256": hex.EncodeToString(sum[:]), "container": "mov",
+			"duration_s": 2.0, "frames": 50, "width": 320, "height": 180},
+		"inputs": map[string]any{"captions": map[string]any{"path": caps.Path, "bytes": caps.Bytes, "sha256": caps.SHA256}},
+		"result": map[string]any{"name": "mastodon.mp4", "max_bytes": 50 << 20}})
+	j := h.waitState("caps.mastodon", "done", 240*time.Second)
+	file := filepath.Join(t.TempDir(), "mastodon.mp4")
+	os.WriteFile(file, []byte(h.fetch(j, 1)), 0o644)
+	frame, err := exec.Command(ff, "-hide_banner", "-v", "error", "-ss", "1", "-i", file, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-").Output()
+	if err != nil || len(frame) != 320*180 {
+		t.Fatalf("a frame of the result: %v, %d bytes", err, len(frame))
+	}
+	white := 0
+	for _, v := range frame {
+		if v > 200 {
+			white++
+		}
+	}
+	if white < 500 {
+		t.Fatalf("%d white pixels: the captions are not burnt in", white)
+	}
+}
