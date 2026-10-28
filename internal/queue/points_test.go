@@ -59,9 +59,30 @@ func TestPunkteTabelleV1(t *testing.T) {
 	if got := jobPoints(j, &Lease{Model: SHALargeV3Turbo}); got != 0 {
 		t.Errorf("whisper without duration_s: %v", got)
 	}
-	// Cut, remux and check are not in the table.
-	if got := jobPoints(&Job{remux: &RemuxParams{}}, &Lease{}); got != 0 {
-		t.Errorf("remux: %v", got)
+	// Cut, remux and check earn too (Thorsten, 2026-10-28). A cut is an encode of its frames in
+	// its class: 30 s of a 25 fps 3840x1920 Folge at x264 veryfast, priced from 1280x720.
+	cut := &Job{cut: &CutParams{LengthS: 30, Preset: "veryfast"}}
+	cut.Spec.Source = SourceIn{DurationS: 1800, Frames: 45000, Width: 3840, Height: 1920}
+	if got, want := jobPoints(cut, &Lease{}), 750/(271.00387277325575*1280*720/(3840*1920)*60); !near(got, want) {
+		t.Errorf("a cut: %v, want %v", got, want)
+	}
+	// A remux and a check of a 2-hour 4K master: its frames at the measured speed.
+	remux := &Job{remux: &RemuxParams{}}
+	remux.Spec.Source = SourceIn{DurationS: 7200, Frames: 180000, Width: 3840, Height: 2160}
+	if got := jobPoints(remux, &Lease{}); !near(got, 180000/(39.0*60)) {
+		t.Errorf("a remux: %v", got)
+	}
+	// The score check names no frames: its length at 25 fps; half the pixels, half the price.
+	check := &Job{check: &CheckParams{}}
+	check.Spec.Source = SourceIn{DurationS: 7200, Width: 3840, Height: 1080}
+	if got := jobPoints(check, &Lease{}); !near(got, 180000/(65.8*60)/2) {
+		t.Errorf("a score check: %v", got)
+	}
+	// An audio check names no size and earns nothing.
+	audio := &Job{check: &CheckParams{}}
+	audio.Spec.Source = SourceIn{DurationS: 3600}
+	if got := jobPoints(audio, &Lease{}); got != 0 {
+		t.Errorf("an audio check: %v", got)
 	}
 }
 

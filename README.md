@@ -45,9 +45,11 @@ All three are OpenAPI 3.1.
   `stage1`, so no archive or stage 2 job ever holds one. Both are 1 by default; Slipstream's
   settings set them. A worker before 0.2.14 has one high-priority slot, its v0.2.5 extra slot. A
   claim beside a job in the other kind of slot, and a high-priority one beside any, needs the RAM:
-  memory less the last presence's use, less the expected peak of each lease claimed since (one
+  memory (in a container, its cgroup's limit where that is lower, v0.2.15: encoder's worker runs
+  with `mem_limit` 10g on 14 GiB) less the last presence's use, less the expected peak of each lease claimed since (one
   taken back since included, as its tool runs until the next renewal), less 1 GB, must hold the
-  job's expected peak (a 4K `slower` encode 5.5 GB, whisper medium 2.5 GB).
+  job's expected peak (a 4K `slower` encode 5.5 GB, whisper turbo or medium 2 GB, measured on
+  encoder).
   Two normal slots side by side need none. Where only the RAM keeps a `now` job out of a free
   high-priority slot and no worker has a slot for it, it takes that worker's lowest lease below
   `stage1` back, one at a time, and the worker's claims wait for its next measured presence:
@@ -92,7 +94,7 @@ All three are OpenAPI 3.1.
   it unless a connected worker holds a better one; the lease names the one chosen. The queue
   tells each worker which models to hold (`wanted_models`): small for caption timing and
   large-v3-turbo, the one caption model on every worker (v0.2.14; Thorsten, 2026-10-28), wherever
-  its RAM holds turbo's 3 GB peak with 1 GB to spare. The speed decides only which worker gets a
+  its RAM holds turbo's 2 GB peak with 1 GB to spare. The speed decides only which worker gets a
   job, never what it holds.
   The worker fetches those from ggerganov/whisper.cpp at a pinned revision only, checks their
   sha256 and times them on the calibration's speech clip.
@@ -169,10 +171,17 @@ All three are OpenAPI 3.1.
   | whisper large-v3-turbo | 12.76 × real time | 1 / (speed × 60) a second of audio (an hour: 4.7) |
   | whisper small | 32.34 × | ″ |
   | whisper medium | 12.93 × (2.5 times small's time, not timed there) | ″ |
+  | remux job of a 3840x2160 master (the copy and its check) | 39.0 fps | 1 / (fps × 60) a source frame (2 hours: 77) |
+  | score check job against a 3840x2160 master | 65.8 fps | ″ (2 hours: 46) |
 
   Another size of a codec and preset in the table takes the nearest size's speed scaled by the
-  pixels (the Clip's 1080x1920 at x264 `slow`: 188.31 / 2.25). A codec and preset outside it, and
-  cut, remux and check jobs, earn nothing. The queue prices a job from the pipeline's own figures,
+  pixels (the Clip's 1080x1920 at x264 `slow`: 188.31 / 2.25); a codec and preset outside it earns
+  nothing. A cut is priced as an encode of its frames in its class (libx264 at the source's size
+  and its preset, its length at the source's rate). A remux or check job pays its source's frames
+  at the measured speed, scaled by the source's pixels, both measured on the Mac Studio with the
+  worker's own commands (`TestMeasureRemuxAndCheck`, three runs on 2026-10-28). A job that names
+  no frames counts its length at 25 fps; an audio check names no size and earns nothing. The
+  queue prices a job from the pipeline's own figures,
   the source's `frames` or `duration_s` and the job's settings, never from the worker's (a whisper
   job without `duration_s` earns nothing). Only a result its worker delivered while it held the
   lease earns: nothing for a rejected, failed, given back, expired, preempted or moved attempt,

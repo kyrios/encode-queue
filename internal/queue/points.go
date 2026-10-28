@@ -11,7 +11,8 @@ import (
 // points from a frozen table, "Punkte-Tabelle v1": one point is one minute of the Mac Studio's
 // work, by its calibration of 2026-10-28. A job earns the same on every machine, linear in its
 // frames or its seconds of audio, so a fast machine earns more by doing more, not by doing the
-// same faster. Moving bytes through the tunnel earns nothing. A failed, rejected, given back,
+// same faster. Rungs, cuts, remuxes, checks and whisper all earn. Moving bytes through the tunnel
+// earns nothing. A failed, rejected, given back,
 // expired, preempted or moved attempt earns nothing, and neither does a result that arrives after
 // its lease ended. The queue prices a job from the pipeline's own figures (the source's frames
 // and length) and the job's settings, never from what the worker reports. Points are counted and
@@ -44,6 +45,20 @@ var pointsWhisperSpeed = map[string]float64{
 	SHAMedium:       32.336355149617205 / 2.5,
 }
 
+// pointsRemuxFPS and pointsCheckFPS are the Mac Studio's speed on a remux job and a score check
+// job, in frames of a 3840x2160 master a second (Thorsten, 2026-10-28: "a small per-frame price,
+// measured once"). Measured on 2026-10-28 with toolchain 3's ffmpeg, as the worker's
+// TestMeasureRemuxAndCheck does it on the calibration clip as a 4K HEVC master: the remux and its
+// check (decode, frames, framemd5) 6.26 to 6.47 s for 250 frames, three runs; a 1080p rung's
+// score check (every 5th frame on SSIM, PSNR-Y and VMAF) 3.76 to 3.80 s. Both mostly decode the
+// master, so another size scales by the pixels.
+const (
+	pointsRemuxFPS  = 39.0
+	pointsCheckFPS  = 65.8
+	pointsMasterPx  = 3840 * 2160
+	pointsMasterFPS = 25 // iPhoneblog's masters' rate, for a job that names its length but not its frames
+)
+
 // rungPointsPerFrame is what one frame of a rung earns: 1 / (fps × 60) with its class's fps from
 // the table. A size the table lacks, of a codec and preset it has, takes the nearest size's fps
 // scaled by the pixels (a 3840x1920 master's top rung against 3840x2160). 0 for a codec and preset
@@ -73,12 +88,25 @@ func rungPointsPerFrame(p *RungParams) float64 {
 	return 1 / (best * 60)
 }
 
-// jobPoints is what j earns for its attempt l, by the table; 0 for a kind the table does not price
-// (cut, remux, check) or a job without the figures.
+// jobPoints is what j earns for its attempt l, by the table; 0 for a job without the figures.
 func jobPoints(j *Job, l *Lease) float64 {
+	src := j.Spec.Source
 	switch {
 	case j.rung != nil:
 		return float64(j.outFrames()) * rungPointsPerFrame(j.rung)
+	case j.cut != nil:
+		// A cut is priced like an encode of its frames in its class: libx264 at the source's size
+		// and the cut's preset, its length at the source's rate.
+		fps := float64(pointsMasterFPS)
+		if src.Frames > 0 && src.DurationS > 0 {
+			fps = float64(src.Frames) / src.DurationS
+		}
+		return math.Round(j.cut.LengthS*fps) * rungPointsPerFrame(&RungParams{Codec: "libx264", Width: src.Width, Height: src.Height, Preset: j.cut.Preset})
+	case j.remux != nil:
+		return masterFrames(j) * masterPointsPerFrame(j, pointsRemuxFPS)
+	case j.check != nil:
+		// An audio check names no size and earns nothing: its decode is seconds for an hour.
+		return masterFrames(j) * masterPointsPerFrame(j, pointsCheckFPS)
 	case j.whisper != nil:
 		m := l.Model
 		if m == "" {
@@ -89,6 +117,23 @@ func jobPoints(j *Job, l *Lease) float64 {
 		}
 	}
 	return 0
+}
+
+// masterFrames is a job's source frames, or its length at the masters' rate when it names none
+// (the score check sends duration_s, width and height only).
+func masterFrames(j *Job) float64 {
+	src := j.Spec.Source
+	if src.Frames > 0 {
+		return float64(src.Frames)
+	}
+	return math.Round(src.DurationS * pointsMasterFPS)
+}
+
+// masterPointsPerFrame is a frame's price at fps on a 3840x2160 master, scaled by the job's
+// source pixels; 0 when the job names no size.
+func masterPointsPerFrame(j *Job, fps float64) float64 {
+	px := float64(j.Spec.Source.Width) * float64(j.Spec.Source.Height)
+	return px / pointsMasterPx / (fps * 60)
 }
 
 // PointsLedger is a worker's points: in all and by day (Europe/Berlin), the days of the last two
