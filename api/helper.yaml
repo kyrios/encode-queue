@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue helper API
-  version: 1.6.0
+  version: 1.7.0
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
@@ -810,6 +810,22 @@ components:
         presence_every_s: { type: integer, examples: [30] }
         paused_until: { type: [string, 'null'], format: date-time, description: 'The pause the queue holds for this worker, the upload center''s included.' }
         draining: { type: boolean }
+        points:
+          type: object
+          description: |
+            This worker's points (v0.2.15, 1.7.0; README, "Points"): what its accepted results
+            earned by Punkte-Tabelle v1, one point a minute of the Mac Studio's work, `today` and
+            `week` (from Monday) in Europe/Berlin, and `total`; and its place today among every
+            paired worker, `rank` of `of`, equal points sharing a place. The queue computes them;
+            the worker only shows them (Slipstream's menu).
+          required: [table, today, week, total, rank, of]
+          properties:
+            table: { type: string, examples: [v1] }
+            today: { type: number, minimum: 0 }
+            week: { type: number, minimum: 0 }
+            total: { type: number, minimum: 0 }
+            rank: { type: integer, minimum: 1 }
+            of: { type: integer, minimum: 1 }
 
     JobKind:
       type: string

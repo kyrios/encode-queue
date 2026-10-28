@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-worker control API
-  version: 1.1.0
+  version: 1.2.0
   license: { name: MIT, identifier: MIT }
   summary: How the app that embeds the worker (Slipstream) reads its state and pauses, resumes or stops it.
   description: |
@@ -105,3 +105,13 @@ components:
               reason: { type: string }
               at: { type: string, format: date-time }
         finished_today: { type: integer }
+        points:
+          type: object
+          description: 'This worker''s points and place today, as the queue last said them (v0.2.15, 1.2.0; helper.yaml''s `PresenceAck.points`); absent until it has.'
+          properties:
+            table: { type: string }
+            today: { type: number }
+            week: { type: number }
+            total: { type: number }
+            rank: { type: integer }
+            of: { type: integer }

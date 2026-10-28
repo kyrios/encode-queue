@@ -715,6 +715,33 @@ func TestStage1InTheHighPrioritySlot(t *testing.T) {
 	}
 }
 
+// Points (v0.2.15): the pipeline accepts a 4K slower rung of 10 frames, the queue prices it by
+// Punkte-Tabelle v1, and the worker hears its points and its place with its next presence, as
+// Slipstream's menu shows them.
+func TestPointsReachTheWorker(t *testing.T) {
+	h := newHarness(t)
+	h.pipeline()
+	enc := h.pair("encoder")
+	h.rungJob("one_1.2160-stage2", "stage2", nil)
+	h.waitState("one_1.2160-stage2", "done", 30*time.Second)
+	want := 10 / (2.2835275723167556 * 60)
+	var v queue.WorkerView
+	h.call("GET", "/v1/workers/"+enc.id, adminToken, nil, &v)
+	if d := v.Points.Total - want; d > 1e-9 || d < -1e-9 || v.Points.Today != v.Points.Total {
+		t.Fatalf("the worker's points: %+v, want %v", v.Points, want)
+	}
+	h.waitFor("the points event", 10*time.Second, func() bool {
+		h.evMu.Lock()
+		defer h.evMu.Unlock()
+		for _, ev := range h.events {
+			if ev["event"] == "points" && ev["total"] == v.Points.Total && ev["rank"] == 1 && ev["of"] == 1 {
+				return true
+			}
+		}
+		return false
+	})
+}
+
 func TestAssignOverTheTunnel(t *testing.T) {
 	h := newHarness(t)
 	h.pipeline()

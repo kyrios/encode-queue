@@ -851,6 +851,7 @@ func (s *Store) PutVerdict(id string, attempt int, v Verdict) (JobView, error) {
 		if w != nil {
 			w.Counts.Accepted++
 		}
+		s.award(w, j, l)
 		j.Final = StateDone
 		j.Accepted = attempt
 		j.FinishedAt = ptrTime(now)

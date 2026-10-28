@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.10.0
+  version: 1.11.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -886,6 +886,7 @@ components:
         progress: { oneOf: [{ $ref: '#/components/schemas/Progress' }, { type: 'null' }] }
         model_sha256: { type: [string, 'null'], description: 'The whisper model this attempt ran (v0.2.7), the best of the job''s `models` its worker held.' }
         ect_s: { type: [number, 'null'], description: 'Its worker''s expected completion time at the claim, in seconds (v0.2.7; README, "Which worker gets a job").' }
+        points: { type: number, minimum: 0, description: 'What it earned once accepted (v0.2.15, 1.11.0), by Punkte-Tabelle v1 (README, "Points"); 0 for an attempt not accepted, one whose result came after its lease ended, or a job the table does not price.' }
         scoring:
           type: [string, 'null']
           enum: [scored, waited, assigned, only_worker, not_claiming, speed_unknown, null]
@@ -1132,6 +1133,20 @@ components:
           properties:
             normal: { $ref: '#/components/schemas/SlotCount' }
             high: { $ref: '#/components/schemas/SlotCount' }
+        points:
+          type: object
+          required: [table, today, week, total]
+          description: |
+            What its accepted results earned (v0.2.15, 1.11.0; README, "Points"), by
+            Punkte-Tabelle v1: one point is one minute of the Mac Studio's work, the same job the
+            same points on every machine. `today` and `week` (from Monday) follow Europe/Berlin.
+            Points never steer which worker gets a job.
+          properties:
+            table: { type: string, examples: [v1] }
+            today: { type: number, minimum: 0 }
+            week: { type: number, minimum: 0 }
+            total: { type: number, minimum: 0 }
+        house: { type: boolean, description: 'It is encoder''s own worker (EQ_REFERENCE_WORKER), which counts with the others under a "Haus" badge (1.11.0).' }
         accepted_kinds: { type: array, items: { $ref: '#/components/schemas/JobKind' } }
         refused:
           type: array
