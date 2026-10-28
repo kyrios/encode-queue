@@ -2,7 +2,7 @@ package queue
 
 import "testing"
 
-// What a job makes, as Funkhaus's Encoder page shows it (v0.2.19): a type and one line of detail.
+// What a job makes, as Funkhaus's Encoder page shows it (v0.2.20): a type and one line of detail.
 func TestEveryJobSaysItsTypeAndDetail(t *testing.T) {
 	e := newEnv(t, "")
 	e.rung("a.2160-archive", "archive")
@@ -40,8 +40,8 @@ func TestEveryJobSaysItsTypeAndDetail(t *testing.T) {
 			t.Errorf("%s: %q %q, want %q %q", id, v.Type, v.Detail, want[0], want[1])
 		}
 	}
-	// A kind from a later queue the page does not know is its own type.
-	if typ, _ := jobType(&Job{Spec: JobSubmit{Kind: "peaks"}}); typ != "Peaks" {
+	// A kind this list does not name yet is its own type.
+	if typ, _ := jobType(&Job{Spec: JobSubmit{Kind: "later"}}); typ != "Later" {
 		t.Fatalf("an unknown kind: %q", typ)
 	}
 	for sha, want := range map[string]string{SHALargeV3Turbo: "turbo", SHAMedium: "medium", SHASmall: "small"} {
@@ -51,7 +51,7 @@ func TestEveryJobSaysItsTypeAndDetail(t *testing.T) {
 	}
 }
 
-// The order and the priority on the Encoder page (v0.2.19): a drag before or after a job, To
+// The order and the priority on the Encoder page (v0.2.20): a drag before or after a job, To
 // Top, and a new priority at the end of its class, Realtime too; only a queued job moves.
 func TestTheEncoderPageMovesJobsAndChangesTheirPriority(t *testing.T) {
 	e := newEnv(t, "")

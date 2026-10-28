@@ -6,20 +6,16 @@ import (
 	"strings"
 )
 
-// **What a job makes, for Funkhaus's Encoder page** (v0.2.19; Thorsten, 2026-10-28): its type in
-// the page's words and one line of detail, "Video" and "1080p · slower CRF 29". Thumbnails, Peaks
-// and Audio name jobs the queue does not run yet: Funkhaus makes peaks itself, and nothing
-// submits the other two.
+// **What a job makes, for Funkhaus's Encoder page** (v0.2.20; Thorsten, 2026-10-28): its type in
+// the page's words and one line of detail, "Video" and "1080p · slower CRF 29". Only today's kinds
+// have one; a kind added later gets its own here.
 const (
-	TypeVideo      = "Video"
-	TypeAudio      = "Audio"
-	TypeThumbnails = "Thumbnails"
-	TypeCaptions   = "Untertitel"
-	TypePeaks      = "Peaks"
-	TypeAlign      = "Align"
-	TypeCut        = "Cut"
-	TypeRemux      = "Remux"
-	TypeCheck      = "Check"
+	TypeVideo    = "Video"
+	TypeCaptions = "Untertitel"
+	TypeAlign    = "Align"
+	TypeCut      = "Cut"
+	TypeRemux    = "Remux"
+	TypeCheck    = "Check"
 )
 
 // jobType is the job's type and its detail; a kind the queue does not know is its own type.

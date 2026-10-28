@@ -487,7 +487,7 @@ func TestTokensAreKeptApart(t *testing.T) {
 	if code := h.call("POST", "/v1/jobs/cleanup", pipelineToken, map[string]any{"states": []string{"done"}}, nil); code != 403 {
 		t.Fatalf("the pipeline cleaning up: %d", code)
 	}
-	// v0.2.19: the order and the priority are the Encoder page's, never the pipeline's.
+	// v0.2.20: the order and the priority are the Encoder page's, never the pipeline's.
 	if code := h.call("POST", "/v1/jobs/a.b/move", pipelineToken, map[string]any{"to": "top"}, nil); code != 403 {
 		t.Fatalf("the pipeline moving a job: %d", code)
 	}

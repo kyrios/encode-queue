@@ -204,3 +204,42 @@ func TestANowJobNeverWaitsOnAWorkerThatCannotRunIt(t *testing.T) {
 		t.Fatal("encoder still waits after max_wait")
 	}
 }
+
+// The review of v0.2.19: a stage 1 claim skips an archive lease's worst case, so two results that
+// do not fit together could both be admitted. The upload is where they meet the disk: a lower
+// result waits for the high-priority lease's max_bytes (v0.2.21), and so does one beside the
+// uploads in flight.
+func TestAnUploadKeepsTheHighPriorityLeasesRoom(t *testing.T) {
+	e := newEnv(t, "")
+	e.s.cfg.ResultReserve = 2 << 30
+	free := int64(10 << 30)
+	e.s.cfg.FreeBytes = func(string) (int64, error) { return free, nil }
+	enc, mac := e.worker("encoder", reference), e.worker("mac", reference)
+	e.limits(enc, 1, 1)
+	e.limits(mac, 1, 1)
+	e.rung("old.2160-archive", "archive")
+	e.s.st.Jobs["old.2160-archive"].Spec.Result.MaxBytes = 6 << 30
+	archive := e.claim(mac)
+	e.rung("up1.2160-stage1", "stage1")
+	e.s.st.Jobs["up1.2160-stage1"].Spec.Result.MaxBytes = 6 << 30
+	stage1 := e.claim(enc)
+	if archive == nil || stage1 == nil {
+		t.Fatalf("the claims: %+v %+v", archive, stage1)
+	}
+	// 10 free, 2 reserved, 6 for the stage 1 result: the archive's 6 waits.
+	if _, err := e.s.CreateUpload(mac, archive.ID, 6<<30); code(err) != "no_room" {
+		t.Fatalf("the archive result beside the stage 1 lease: %v", err)
+	}
+	if _, err := e.s.CreateUpload(mac, archive.ID, 1<<30); err != nil {
+		t.Fatalf("a smaller archive result fits: %v", err)
+	}
+	// The stage 1 result goes up beside the archive's upload in flight.
+	if _, err := e.s.CreateUpload(enc, stage1.ID, 6<<30); err != nil {
+		t.Fatalf("the stage 1 result: %v", err)
+	}
+	// Once the stage 1 result is written, the disk itself has less room.
+	free = 4 << 30
+	if _, err := e.s.CreateUpload(mac, archive.ID, 3<<30); code(err) != "no_room" {
+		t.Fatalf("an archive result the disk has no room for: %v", err)
+	}
+}

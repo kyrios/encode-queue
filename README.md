@@ -233,7 +233,7 @@ All three are OpenAPI 3.1.
   itself 30 s later if the worker does not. "Nach diesem Auftrag" (`after_job`) lets the running
   jobs finish; the queue never takes back a lease whose tool runs. A pause that runs out ends as
   "Fortsetzen" does.
-- **Realtime before normal, by the system's scheduler** (v0.2.19; Thorsten, 2026-10-28: "Instead
+- **Realtime before normal, by the system's scheduler** (v0.2.20; Thorsten, 2026-10-28: "Instead
   of throttling manually can we simply use the OS task scheduler and give the realtime jobs a
   slightly higher CPU priority?"). A job of priority `now` is realtime; a job of stage 1, stage 2
   or archive is normal, keeps its lease and its progress, and every idle cycle. On Linux a normal
@@ -312,6 +312,11 @@ All three are OpenAPI 3.1.
   the lower ones' uploads still have to write, not every running lease's `max_bytes`, which for a
   2160 archive rung is 2 × its source or 12.5 MB/s of its length.
   A job the room keeps out says so: `waiting.code` `no_room`, and `encode_queue_result_room_bytes`.
+  **A result then meets the disk when its upload starts** (v0.2.21): it must fit the free space
+  less the reserve, what other uploads still have to write and the `max_bytes` of the active
+  high-priority leases that have not begun theirs, or the upload answers `503 no_room` and the
+  worker asks again every 30 s, its lease held. A worker before 0.2.21 fails that attempt, as it
+  would on a full disk.
 
 ## The queue server
 
@@ -424,7 +429,8 @@ encode-worker --key-stdin --tunnel-file … --state-dir … --name … --app-ver
   `tools` (`tools: [{name, version}]`), `points` (`table`, `today`, `week`, `total`, `rank`, `of`,
   when they or the place change; v0.2.15), `limits` (`threads` in effect, the machine's
   `cores`, `throttled`: how many running jobs are held to it, `efficiency` (v0.2.18); at the
-  start, after each `limits` line and when a job is held or freed; v0.2.17), `log` (`lease_id`, `line`), `calibrating` (`classes`,
+  start, after each `limits` line and when a job is held or freed; v0.2.17), `log` (`lease_id`, `line`, and
+  from v0.2.21 `level`: `DEBUG`, `INFO`, `WARN` or `ERROR`, slog's words), `calibrating` (`classes`,
   when the calibration clip starts) and `calibrated` (`classes`, when it is done), and `model`
   for each whisper model the queue wants (`name`, `sha256`, `state`: `wanted`, `downloading`,
   `checking`, `calibrating`, `ready`, `failed`, or `unavailable` when the models folder is read-only and the host provides the models; `bytes`, `bytes_done` while downloading,
