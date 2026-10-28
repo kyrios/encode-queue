@@ -91,6 +91,7 @@ func TestBusyHelper(t *testing.T) {
 // A tool started with every core keeps a limit lowered while it runs, stands still through a
 // pause, and runs free again once the limit is lifted; the limits event says it is held.
 func TestARunningToolKeepsTheLimit(t *testing.T) {
+	unclamped(t)
 	busy := min(3, runtime.NumCPU()-1)
 	if busy < 2 {
 		t.Skip("needs 3 CPUs")

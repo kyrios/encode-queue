@@ -685,7 +685,8 @@ func (r *run) runTool(ctx context.Context, args []string, source string, onBlock
 // onBlock), and every stderr line to errLine as well as the log.
 func (r *run) runToolTo(ctx context.Context, args []string, source string, onBlock func(map[string]string),
 	outLine, errLine func(string)) error {
-	cmd := exec.Command(args[0], args[1:]...)
+	line := launch(args, r.l != nil && realtime(r.l.Job.Priority))
+	cmd := exec.Command(line[0], line[1:]...)
 	cmd.Dir = r.dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = append(append(os.Environ(), "OMP_WAIT_POLICY=passive"), r.env...)

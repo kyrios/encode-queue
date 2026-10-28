@@ -1,5 +1,6 @@
 // Package worker takes jobs from the queue through its tunnel and runs them: ffmpeg with
-// libx265 or libx264, or whisper.cpp, always at nice 19.
+// libx265 or libx264, or whisper.cpp, a normal job's at nice 19 and a realtime job's above it
+// (nice.go).
 package worker
 
 import (
@@ -167,6 +168,7 @@ type Worker struct {
 	limitCh     chan struct{} // closed and replaced when a job limit changes
 	limitsMu    sync.Mutex    // one limits event at a time (emitLimits)
 	runs        map[string]*run
+	realtimeN   int // realtime runs now (realtime.go)
 	recent      []Finished
 	today       int
 	todayDate   string
@@ -921,6 +923,10 @@ func (w *Worker) runLease(ctx context.Context, l *Lease, high bool) {
 		}
 	}()
 	w.cfg.Log.Info("job", "lease", l.ID, "job", l.Job.ID, "attempt", l.Attempt, "kind", l.Job.Kind)
+	if realtime(l.Job.Priority) {
+		w.realtimeBegins(l)
+		defer w.realtimeEnds(l)
+	}
 	f := r.execute(ctx)
 	f.LeaseID, f.JobID, f.Title = l.ID, l.Job.ID, l.Job.Title
 	w.finished(f)

@@ -112,7 +112,7 @@ func (r *run) throttleLoop(ctx context.Context) {
 			}
 			r.mu.Unlock()
 			ran = time.Since(mark)
-			// The stop lasts in proportion to the run as it was: the worker runs at nice 19, and
+			// The stop lasts in proportion to the run as it was: a normal job's tool runs at nice 19, and
 			// on a busy Mac it wakes late (an x265 held to 3 of 12 cores averaged 3.37 when the stop
 			// lasted the rest of a fixed period).
 			if !sleep(ctx, min(time.Duration(float64(ran)*(1-duty)/duty), throttleMaxStop)) {
