@@ -163,3 +163,34 @@ func TestMediaSecondsByTheSource(t *testing.T) {
 		t.Errorf("two hours: h264.mp4 %v s, 4K %v s", small, big)
 	}
 }
+
+// TestLoudnessJobs (v0.2.24): realtime by default, `{}` only, "Lautheit" on the Encoder page,
+// and only for a worker of 0.2.24.
+func TestLoudnessJobs(t *testing.T) {
+	e := newEnv(t, "")
+	v, err := e.media("recl.loudness", KindLoudness, `{}`, "", 1<<20)
+	if err != nil || v.Priority != PriorityNow || v.Type != "Lautheit" || v.Detail != "EBU R 128" {
+		t.Fatalf("%+v %v", v, err)
+	}
+	if _, err := e.media("recm.loudness", KindLoudness, `{"target":-16}`, "", 1<<20); err == nil {
+		t.Error("an unknown param was taken")
+	}
+	old := e.mediaWorker("old", "0.2.23")
+	cur := e.mediaWorker("encoder", "0.2.24")
+	j := e.s.st.Jobs["recl.loudness"]
+	if why := e.s.mismatch(e.s.st.Workers[old], j); !strings.Contains(why, "no loudness jobs (0.2.24)") {
+		t.Errorf("0.2.23: %q", why)
+	}
+	if why := e.s.mismatch(e.s.st.Workers[cur], j); why != "" {
+		t.Errorf("0.2.24: %q", why)
+	}
+	if acc, _ := e.s.kinds(e.s.st.Workers[old]); contains(acc, KindLoudness) || !contains(acc, KindPeaks) {
+		t.Errorf("0.2.23 kinds %v", acc)
+	}
+	if acc, _ := e.s.kinds(e.s.st.Workers[cur]); !contains(acc, KindLoudness) {
+		t.Errorf("0.2.24 kinds %v", acc)
+	}
+	if s, ok := e.s.runSeconds(e.s.st.Workers[cur], j); !ok || s > 15 {
+		t.Errorf("two hours' loudness: %v s", s)
+	}
+}

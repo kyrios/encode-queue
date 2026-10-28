@@ -178,6 +178,8 @@ func tooOld(w *Worker, j *Job) string {
 		return "worker " + w.Caps.AppVersion + " runs no align jobs (0.2.16)"
 	case v == "0.2.22":
 		return "worker " + w.Caps.AppVersion + " runs no peaks or strip jobs (0.2.22)"
+	case v == "0.2.24":
+		return "worker " + w.Caps.AppVersion + " runs no loudness jobs (0.2.24)"
 	}
 	// v0.2.13: an older worker would not refuse it, it would make the file without them.
 	return "worker " + w.Caps.AppVersion + " would make the file without " + strings.Join(clipFields(j), ", ") + " (0.2.13)"

@@ -742,7 +742,9 @@ components:
       pattern: '^wk_[a-z0-9]{8}$'
     JobKind:
       description: |
-        helper.yaml's: `peaks` and `strip` from v0.2.22 go only to workers of 0.2.22 or later
+        helper.yaml's: `loudness` from v0.2.24 goes only to workers of 0.2.24 or later and is
+        otherwise as `peaks`.
+        `peaks` and `strip` from v0.2.22 go only to workers of 0.2.22 or later
         and match on the reference's ffmpeg; each is realtime, priority `now` when the job names
         none, at most 64 MiB of result, an expected peak of 512 MiB and no points.
         `cut`, `remux` and `check` from v0.2.8. They, a rung's `check` step and
@@ -847,7 +849,7 @@ components:
         kind: { $ref: '#/components/schemas/JobKind' }
         priority:
           $ref: '#/components/schemas/Priority'
-          description: 'Required but for `peaks` and `strip` (v0.2.22), which are `now` without one.'
+          description: 'Required but for `peaks` and `strip` (v0.2.22) and `loudness` (v0.2.24), which are `now` without one.'
         upload_id: { type: string, examples: [one_528] }
         title: { type: string, examples: ['#one 528: Die Vorschau'] }
         stage: { type: [integer, 'null'], enum: [1, 2, null], description: 'The ladder stage the job belongs to, for the Encoder page ("Stufe").' }
@@ -861,7 +863,8 @@ components:
             - $ref: '#/components/schemas/AlignParams'
             - $ref: 'helper.yaml#/components/schemas/PeaksParams'
             - $ref: 'helper.yaml#/components/schemas/StripParams'
-          description: 'The params of its kind: `RungParams`, `WhisperParams`, `CutParams`, `RemuxParams`, `CheckParams`, `AlignParams`, `PeaksParams` or `StripParams`; unknown fields are refused.'
+            - $ref: 'helper.yaml#/components/schemas/LoudnessParams'
+          description: 'The params of its kind: `RungParams`, `WhisperParams`, `CutParams`, `RemuxParams`, `CheckParams`, `AlignParams`, `PeaksParams`, `StripParams` or `LoudnessParams`; unknown fields are refused.'
         source: { $ref: '#/components/schemas/SourceIn' }
         inputs:
           type: object
@@ -959,8 +962,8 @@ components:
           type: string
           description: |
             What the job makes, as the Encoder page names it (v0.2.20): `Video` (rung), `Untertitel`
-            (whisper), `Align`, `Cut`, `Remux`, `Check`, and from v0.2.22 `Peaks` and `Filmstrip`
-            (strip); a kind it does not list is its own name.
+            (whisper), `Align`, `Cut`, `Remux`, `Check`, from v0.2.22 `Peaks` and `Filmstrip`
+            (strip), and from v0.2.24 `Lautheit` (loudness); a kind it does not list is its own name.
           examples: [Video, Untertitel]
         detail:
           type: string

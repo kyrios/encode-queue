@@ -87,7 +87,7 @@ components:
               lease_id: { type: string }
               job_id: { type: string }
               title: { type: string }
-              kind: { type: string, enum: [rung, whisper, cut, remux, check, align, peaks, strip] }
+              kind: { type: string, enum: [rung, whisper, cut, remux, check, align, peaks, strip, loudness] }
               rung: { type: string }
               slot: { type: string, enum: [normal, high], description: 'The slot it runs in (v0.2.14, 1.1.0): a normal one or a high-priority one, which takes only jobs of priority `now` and `stage1`.' }
               attempt: { type: integer }

@@ -853,8 +853,10 @@ components:
 
     JobKind:
       type: string
-      enum: [rung, whisper, cut, remux, check, align, peaks, strip]
+      enum: [rung, whisper, cut, remux, check, align, peaks, strip, loudness]
       description: |
+        `loudness` from v0.2.24 (`LoudnessParams`): a source's loudness by EBU R 128, for
+        Funkhaus's Checks; a worker before 0.2.24 never gets one.
         `peaks` and `strip` from v0.2.22 (`PeaksParams`, `StripParams`): the sound's peaks for
         Funkhaus's waveform and a video's filmstrip for its timeline, which video-pipeline made
         itself before; a worker before 0.2.22 never gets one.
@@ -1162,6 +1164,19 @@ components:
         signed bytes, level 0 first. A sample is a byte as `floor(s / 256 + 0.5)`. An hour of
         sound makes 959 kB. A source without sound fails at once with `decode_failed`. No
         params: `{}`.
+    LoudnessParams:
+      type: object
+      title: loudness
+      additionalProperties: false
+      description: |
+        A source's loudness by EBU R 128 (v0.2.24): ffmpeg's `ebur128=peak=true` over its first
+        sound, one thread. **The result** is JSON:
+        `{"schema": 1, "integrated_lufs", "lra_lu", "true_peak_dbtp", "every_s": 1, "short_term": [...]}`,
+        figures rounded to 0.1; `short_term` is the short-term loudness (a 3 s window) at the end of
+        every second, null below the absolute gate of -70 LUFS and in the first two seconds;
+        `integrated_lufs` is null for silence and `true_peak_dbtp` for a sound of zeros. A stereo
+        1 kHz tone at -23 dBFS reads -23.0 LUFS (EBU Tech 3341, case 1). A source without sound
+        fails at once with `decode_failed`. No params: `{}`.
     StripParams:
       type: object
       title: strip
@@ -1283,7 +1298,8 @@ components:
             - $ref: '#/components/schemas/AlignParams'
             - $ref: '#/components/schemas/PeaksParams'
             - $ref: '#/components/schemas/StripParams'
-          description: 'The params of the job''s kind: `RungParams` for `rung`, `WhisperParams` for `whisper`, `CutParams`, `RemuxParams`, `CheckParams`, `AlignParams` for `align`, `PeaksParams` for `peaks`, `StripParams` for `strip`.'
+            - $ref: '#/components/schemas/LoudnessParams'
+          description: 'The params of the job''s kind: `RungParams` for `rung`, `WhisperParams` for `whisper`, `CutParams`, `RemuxParams`, `CheckParams`, `AlignParams` for `align`, `PeaksParams` for `peaks`, `StripParams` for `strip`, `LoudnessParams` for `loudness`.'
         result:
           type: object
           properties:

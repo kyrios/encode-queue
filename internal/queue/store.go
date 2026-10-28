@@ -139,6 +139,8 @@ type Job struct {
 	align   *AlignParams // v0.2.16
 	peaks   *PeaksParams // v0.2.22, media.go
 	strip   *StripParams
+	// v0.2.24, media.go
+	loudness *LoudnessParams
 }
 
 // Lease is one attempt at a job.
@@ -559,7 +561,7 @@ func ptrTime(t time.Time) *time.Time { return &t }
 
 func (j *Job) parse() error {
 	j.rung, j.whisper, j.cut, j.remux, j.check, j.align = nil, nil, nil, nil, nil, nil
-	j.peaks, j.strip = nil, nil
+	j.peaks, j.strip, j.loudness = nil, nil, nil
 	switch j.Spec.Kind {
 	case KindCut:
 		var p CutParams
@@ -609,6 +611,12 @@ func (j *Job) parse() error {
 			return err
 		}
 		j.strip = &p
+	case KindLoudness:
+		var p LoudnessParams
+		if err := strictUnmarshal(j.Spec.Params, &p); err != nil {
+			return err
+		}
+		j.loudness = &p
 	default:
 		return fmt.Errorf("unknown kind %q", j.Spec.Kind)
 	}

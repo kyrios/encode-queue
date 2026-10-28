@@ -19,6 +19,9 @@ const (
 	KindPeaks = "peaks"
 	// KindStrip is a video's filmstrip: a tar of thumbs.json and its JPEG sheets.
 	KindStrip = "strip"
+	// KindLoudness is a source's loudness by EBU R 128 (v0.2.24): LUFS, LRA, true peak and the
+	// short-term loudness every second, as JSON (internal/worker/loudness.go).
+	KindLoudness = "loudness"
 )
 
 // maxMediaResult is the most max_bytes of a peaks or strip job: a day of sound makes 23 MB of
@@ -33,6 +36,9 @@ const mediaPeakBytes = 1 << 29
 // PeaksParams are a peaks job's settings: none yet, `{}`.
 type PeaksParams struct{}
 
+// LoudnessParams are a loudness job's settings: none yet, `{}` (v0.2.24).
+type LoudnessParams struct{}
+
 // StripParams are a strip job's settings, each optional (internal/worker/strip.go).
 type StripParams struct {
 	Height     int     `json:"height,omitempty"`       // the pictures' height, 90 px
@@ -43,12 +49,12 @@ type StripParams struct {
 
 var stripFromRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
-// mediaKind says whether the job is a peaks or a strip job.
-func mediaKind(j *Job) bool { return j.peaks != nil || j.strip != nil }
+// mediaKind says whether the job is a peaks, a strip or a loudness job.
+func mediaKind(j *Job) bool { return j.peaks != nil || j.strip != nil || j.loudness != nil }
 
 // defaultMediaPriority makes a peaks or strip job without a priority realtime.
 func defaultMediaPriority(spec *JobSubmit) {
-	if spec.Priority == "" && (spec.Kind == KindPeaks || spec.Kind == KindStrip) {
+	if spec.Priority == "" && (spec.Kind == KindPeaks || spec.Kind == KindStrip || spec.Kind == KindLoudness) {
 		spec.Priority = PriorityNow
 	}
 }
@@ -76,8 +82,9 @@ func validateMedia(j *Job, spec *JobSubmit) error {
 	return nil
 }
 
-// mediaSeconds is a peaks or strip job's time: measured on this Mac's ffmpeg, a two-hour
-// h264.mp4's sound in 10 s and its strip in 13 s; ffmpeg's start on top. A strip of a source
+// mediaSeconds is a peaks, strip or loudness job's time: measured on this Mac's ffmpeg, a
+// two-hour h264.mp4's sound in 10 s (its loudness as long) and its strip in 13 s; ffmpeg's start
+// on top. A strip of a source
 // larger than 1080p (v0.2.23: an upload, 4K HEVC with a keyframe a second) takes 21 ms a
 // keyframe in each of its two passes, 5 minutes for two hours.
 func mediaSeconds(j *Job) (float64, bool) {

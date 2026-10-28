@@ -385,12 +385,15 @@ func (s *Store) kinds(w *Worker) (accepted []string, refused []Refusal) {
 	if w.Caps == nil {
 		return accepted, nil
 	}
-	for _, kind := range []string{KindRung, KindWhisper, KindCut, KindRemux, KindCheck, KindAlign, KindPeaks, KindStrip} {
+	for _, kind := range []string{KindRung, KindWhisper, KindCut, KindRemux, KindCheck, KindAlign, KindPeaks, KindStrip, KindLoudness} {
 		if kind != KindRung && kind != KindWhisper && versionLess(w.Caps.AppVersion, "0.2.8") {
 			continue // a worker before 0.2.8 knows no such kind; it neither takes nor refuses it
 		}
 		if (kind == KindPeaks || kind == KindStrip) && versionLess(w.Caps.AppVersion, "0.2.22") {
 			continue // nor one before 0.2.22 these (media.go)
+		}
+		if kind == KindLoudness && versionLess(w.Caps.AppVersion, "0.2.24") {
+			continue
 		}
 		if kind == KindAlign {
 			// v0.2.16: no tools of the reference's, one of the aligner's engines (jobs.go).

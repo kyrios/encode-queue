@@ -41,6 +41,16 @@ func fakeTool(args []string) int {
 	case strings.Contains(argv, "-f lavfi") && strings.Contains(argv, "libx264"):
 		fmt.Print("\x00\x00\x01x264 - core 164 r3108 31e19f9 - H.264/MPEG-4 AVC codec")
 		return 0
+	case strings.Contains(argv, "ebur128"): // a loudness job (v0.2.24): the golden log where FFREPORT says
+		log, err := os.ReadFile(os.Getenv("EQ_FAKE_LOUDNESS_LOG"))
+		if err == nil {
+			err = os.WriteFile(strings.TrimPrefix(strings.Split(os.Getenv("FFREPORT"), ":")[0], "file="), log, 0o644)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
 	case strings.Contains(argv, "-f s16le"): // a peaks job's sound (v0.2.22): a second of a ramp, at once
 		pcm := make([]byte, 2*8000)
 		for i := range 8000 {

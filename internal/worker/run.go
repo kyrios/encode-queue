@@ -498,10 +498,13 @@ func (r *run) work(ctx context.Context) error {
 		if tools, err = r.workAlign(ctx, src, inputs, out); err != nil {
 			return err
 		}
-	case "peaks", "strip": // v0.2.22, peaks.go and strip.go
+	case "peaks", "strip", "loudness": // v0.2.22, peaks.go and strip.go; v0.2.24, loudness.go
 		work := r.workPeaks
-		if l.Job.Kind == "strip" {
+		switch l.Job.Kind {
+		case "strip":
 			work = r.workStrip
+		case "loudness":
+			work = r.workLoudness
 		}
 		var err error
 		if tools, err = work(ctx, src, out); err != nil {
