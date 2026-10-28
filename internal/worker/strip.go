@@ -19,20 +19,21 @@ import (
 )
 
 // **The strip job** (v0.2.22; Thorsten, 2026-10-28, "Server strip + local bonus"; the spec was
-// video-pipeline#29's): the pictures Funkhaus's timeline shows along a video, as Final Cut does,
-// from a stage's h264.mp4. ffmpeg decodes only the keyframes (`-skip_frame nokey`), so each
-// picture is one decode, and gives each its time, its scene score against the keyframe before and
-// its mean colour. Two levels, Height px tall at the video's aspect, in JPEG sheets named by
-// their content, so a page may keep them for good:
-//   - `scenes`: at most Scenes keyframes where the picture changes most (scene score over 0.3, x264
-//     puts a keyframe at a cut), at least 1/(2·Scenes) of the video apart, filled with the keyframe
-//     nearest the middle of each even stretch that has none; one 8×4 sheet;
+// video-pipeline#29's): the pictures Funkhaus's timeline shows along a video, as Final Cut does.
+// Since v0.2.23 its source is the upload itself, an iPhone's 10-bit HEVC as well as an 8-bit
+// H.264, so Alex sees them while he trims. ffmpeg decodes only the keyframes (`-skip_frame
+// nokey`), so each picture is one decode, and gives each its time, its scene score against the
+// keyframe before and its mean colour. Two levels, Height px tall at the video's aspect, in JPEG
+// sheets named by their content, so a page may keep them for good:
+//   - `scenes`: at most Scenes keyframes where the picture changes most (scene score over 0.3, an
+//     encoder puts a keyframe at a cut), at least 1/(2·Scenes) of the video apart, filled with
+//     the keyframe nearest the middle of each even stretch that has none; one 8×4 sheet;
 //   - `fine`: the keyframes at least FineEveryS apart, 10×10 to a sheet.
 //
 // thumbs.json names each level's pictures' times (showinfo's pts_time, the edit list applied)
 // and sheets, and the colours of 128 even stretches, which a page draws before any picture. The
-// result is an uncompressed tar of thumbs.json and the sheets, which the pipeline unpacks into
-// the set.
+// result is an uncompressed tar of thumbs.json and the sheets, which the pipeline unpacks for
+// Funkhaus.
 
 // StripParams are a strip job's settings; zero is the default.
 type StripParams struct {
@@ -99,9 +100,14 @@ type StripIndex struct {
 
 var stripSheetRe = regexp.MustCompile(`^thumbs-(scenes|fine)-[0-9a-f]{16}\.jpg$`)
 
-func stripCmd(ffmpeg, src, graph, out string) []string {
+// stripCmd decodes the keyframes with slice threads only (v0.2.23): frame threads hold a picture
+// for each thread and gain nothing when every picture is a keyframe. A 4K 10-bit HEVC upload
+// peaked at 737 MB with ffmpeg's default and at 272 MB so, in half the time (21 ms a keyframe
+// with four threads, measured 2026-10-28). Four threads, or the worker's CPU limit when lower.
+func stripCmd(ffmpeg, src, graph, out string, threads int) []string {
 	return []string{ffmpeg, "-hide_banner", "-nostdin", "-nostats", "-y", "-v", "error",
-		"-protocol_whitelist", "file", "-skip_frame", "nokey", "-i", src, "-an", "-sn", "-dn",
+		"-protocol_whitelist", "file", "-skip_frame", "nokey", "-threads", strconv.Itoa(threads), "-thread_type", "slice",
+		"-i", src, "-an", "-sn", "-dn",
 		"-vf", graph, "-fps_mode", "passthrough", "-q:v", stripQuality, "-start_number", "0",
 		"-f", "image2", out}
 }
@@ -109,21 +115,24 @@ func stripCmd(ffmpeg, src, graph, out string) []string {
 // stripArgs is the first pass: every keyframe's scene score (`metadata@scene`), time and mean
 // colour (`showinfo@all`), and the fine level, keyframes at least FineEveryS apart
 // (`showinfo@fine`), tiled row by row into numbered sheets.
-func stripArgs(ffmpeg, src, dir string, p StripParams) []string {
+// The pictures are 8-bit (format=yuv420p, v0.2.23) before showinfo, which measures their means
+// in the picture's own units: a 10-bit HEVC's grey is 499. The JPEG sheets downstream already
+// make ffmpeg choose 8-bit there; the step keeps the colours from hanging on that choice.
+func stripArgs(ffmpeg, src, dir string, p StripParams, threads int) []string {
 	graph := fmt.Sprintf("select@scene='gte(scene,0)',metadata@scene=print:key=lavfi.scene_score,"+
-		"scale=-2:%d,showinfo@all,select@fine='isnan(prev_selected_t)+gte(t-prev_selected_t,%s)',"+
+		"scale=-2:%d,format=yuv420p,showinfo@all,select@fine='isnan(prev_selected_t)+gte(t-prev_selected_t,%s)',"+
 		"showinfo@fine,tile=%dx%d", p.Height, strconv.FormatFloat(p.FineEveryS, 'f', -1, 64), stripFineCols, stripFineRows)
-	return stripCmd(ffmpeg, src, graph, filepath.Join(dir, ".thumbs-fine-%03d.jpg"))
+	return stripCmd(ffmpeg, src, graph, filepath.Join(dir, ".thumbs-fine-%03d.jpg"), threads)
 }
 
 // scenesArgs is the second pass: the keyframes numbered picks into the scenes sheet.
-func scenesArgs(ffmpeg, src, dir string, p StripParams, picks []int) []string {
+func scenesArgs(ffmpeg, src, dir string, p StripParams, picks []int, threads int) []string {
 	eqs := make([]string, len(picks))
 	for i, k := range picks {
 		eqs[i] = fmt.Sprintf("eq(n,%d)", k)
 	}
-	graph := fmt.Sprintf("select='%s',scale=-2:%d,tile=%dx%d", strings.Join(eqs, "+"), p.Height, stripSceneCols, stripSceneRows)
-	return stripCmd(ffmpeg, src, graph, filepath.Join(dir, ".thumbs-scenes-%03d.jpg"))
+	graph := fmt.Sprintf("select='%s',scale=-2:%d,format=yuv420p,tile=%dx%d", strings.Join(eqs, "+"), p.Height, stripSceneCols, stripSceneRows)
+	return stripCmd(ffmpeg, src, graph, filepath.Join(dir, ".thumbs-scenes-%03d.jpg"), threads)
 }
 
 var (
@@ -340,11 +349,15 @@ func (r *run) workStrip(ctx context.Context, src, out string) ([]Tool, error) {
 		}
 	}
 	p = p.withDefaults()
+	threads := 4
+	if c := r.w.threads(); c > 0 && c < threads {
+		threads = c
+	}
 	dir := filepath.Join(r.dir, "strip")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fail("other", "%v", err)
 	}
-	logPath, err := r.runStripPass(ctx, stripArgs(r.w.cfg.FFmpeg, src, dir, p), "strip-keyframes.log")
+	logPath, err := r.runStripPass(ctx, stripArgs(r.w.cfg.FFmpeg, src, dir, p, threads), "strip-keyframes.log")
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +388,7 @@ func (r *run) workStrip(ctx context.Context, src, out string) ([]Tool, error) {
 		times[i], scores[i] = k.T, k.Score
 	}
 	picks := ScenePicks(times, scores, duration, p.Scenes)
-	if _, err := r.runStripPass(ctx, scenesArgs(r.w.cfg.FFmpeg, src, dir, p, picks), "strip-scenes.log"); err != nil {
+	if _, err := r.runStripPass(ctx, scenesArgs(r.w.cfg.FFmpeg, src, dir, p, picks, threads), "strip-scenes.log"); err != nil {
 		return nil, err
 	}
 	sceneSheets, err := hashedSheets(dir, "scenes")

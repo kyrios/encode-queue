@@ -275,3 +275,41 @@ func TestStripWithoutALength(t *testing.T) {
 		t.Fatalf("with duration_s: %v", err)
 	}
 }
+
+// TestStripOf10BitHEVC: an iPhone's upload is 10-bit HEVC; its colours are still 8-bit means.
+// Grey, since a 10-bit white read as 8-bit clips to white all the same.
+func TestStripOf10BitHEVC(t *testing.T) {
+	r, ff, _ := realRun(t)
+	src := filepath.Join(r.w.cfg.WorkDir, "hevc10.mp4")
+	if b, err := exec.Command(ff, "-hide_banner", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:size=640x360:rate=25:duration=4",
+		"-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p10le", "-c:v", "libx265",
+		"-x265-params", "log-level=error:keyint=50", src).CombinedOutput(); err != nil {
+		t.Skipf("no 10-bit libx265: %v %s", err, b)
+	}
+	r.l.Job.Source.DurationS = 4
+	out := filepath.Join(r.w.cfg.WorkDir, "hevc10.tar")
+	if _, err := r.workStrip(context.Background(), src, out); err != nil {
+		t.Fatal(err)
+	}
+	var idx StripIndex
+	if err := json.Unmarshal(readTar(t, out)[0].body, &idx); err != nil {
+		t.Fatal(err)
+	}
+	if !closeColour(idx.Colors[:6], "808080") || idx.Width != 160 || idx.Height != 90 {
+		t.Errorf("grey 10-bit: %s, %dx%d", idx.Colors[:6], idx.Width, idx.Height)
+	}
+}
+
+// TestStripArgs: keyframes only, slice threads (never frame threads, which hold a 4K picture
+// each), and the pictures 8-bit before showinfo.
+func TestStripArgs(t *testing.T) {
+	p := StripParams{}.withDefaults()
+	for _, a := range [][]string{stripArgs("ffmpeg", "/w/up", "/w", p, 3), scenesArgs("ffmpeg", "/w/up", "/w", p, []int{0, 7}, 3)} {
+		line := strings.Join(a, " ")
+		for _, want := range []string{"-skip_frame nokey -threads 3 -thread_type slice -i /w/up", "scale=-2:90,format=yuv420p,"} {
+			if !strings.Contains(line, want) {
+				t.Errorf("%q not in %s", want, line)
+			}
+		}
+	}
+}

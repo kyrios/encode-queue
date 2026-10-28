@@ -26,7 +26,8 @@ const (
 const maxMediaResult = 64 << 20
 
 // mediaPeakBytes is what either takes at its peak: ffmpeg measured 71 MB (peaks) and 101 MB
-// (strip) on a two-hour h264.mp4, 2026-10-28.
+// (strip) on a two-hour h264.mp4, and 272 MB for the strip of a 4K 10-bit HEVC with slice
+// threads (v0.2.23), 2026-10-28.
 const mediaPeakBytes = 1 << 29
 
 // PeaksParams are a peaks job's settings: none yet, `{}`.
@@ -76,13 +77,19 @@ func validateMedia(j *Job, spec *JobSubmit) error {
 }
 
 // mediaSeconds is a peaks or strip job's time: measured on this Mac's ffmpeg, a two-hour
-// h264.mp4's sound in 10 s and its strip in 13 s; ffmpeg's start on top.
+// h264.mp4's sound in 10 s and its strip in 13 s; ffmpeg's start on top. A strip of a source
+// larger than 1080p (v0.2.23: an upload, 4K HEVC with a keyframe a second) takes 21 ms a
+// keyframe in each of its two passes, 5 minutes for two hours.
 func mediaSeconds(j *Job) (float64, bool) {
-	d := j.Spec.Source.DurationS
+	src := j.Spec.Source
+	d := src.DurationS
 	if d <= 0 {
 		return 0, false
 	}
-	if j.strip != nil {
+	switch {
+	case j.strip != nil && src.Width*src.Height > 1920*1080:
+		return 1 + d/25, true
+	case j.strip != nil:
 		return 1 + d/550, true
 	}
 	return 1 + d/700, true
