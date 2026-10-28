@@ -118,7 +118,7 @@ func TestExtraSlotBesideAnEncode(t *testing.T) {
 func TestExtraSlotOnlyWhenTheRAMAllows(t *testing.T) {
 	e := newEnv(t, "")
 	w := e.worker("encoder", reference)
-	// encoder: 8 GB, a 4K slower encode in use takes 5.3 of it. 8 - 5.3 - 1 GB headroom < 2.5 GB.
+	// encoder: 8 GB, a 4K slower encode in use takes 5.3 of it. 8 - 5.3 - 1 GB headroom < 2 GB.
 	e.machine(w, 8*gib, 53*gib/10)
 	e.rung("old.2160-archive", "archive")
 	e.claim(w)
