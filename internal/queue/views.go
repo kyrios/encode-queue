@@ -274,6 +274,7 @@ type LeaseView struct {
 	HoldUntil      *time.Time        `json:"hold_until,omitempty"` // v0.2.9: no renewal past it
 	RenewEveryS    int               `json:"renew_every_s"`
 	PauseGiveBackS int               `json:"pause_give_back_s"`
+	PauseHold      bool              `json:"pause_hold"` // v0.2.18: a pause keeps the lease (pauseHolds)
 	PausedUntil    *time.Time        `json:"paused_until"`
 	Params         json.RawMessage   `json:"params"`
 	Result         ResultSpec        `json:"result"`
@@ -320,6 +321,7 @@ func (s *Store) leaseView(l *Lease) LeaseView {
 	}
 	if j != nil {
 		src := j.Spec.Source
+		v.PauseHold = pauseHolds(j)
 		v.Job = LeaseJob{ID: j.ID, UploadID: j.Spec.UploadID, Title: j.Spec.Title, Kind: j.Spec.Kind, Priority: j.Priority,
 			Source: LeaseSource{FileRef: FileRef{URL: "/jobs/" + j.ID + "/source", Bytes: src.Bytes, SHA256: src.SHA256},
 				Container: src.Container, DurationS: src.DurationS, Frames: src.Frames, Width: src.Width, Height: src.Height}}

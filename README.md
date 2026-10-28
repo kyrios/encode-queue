@@ -221,8 +221,42 @@ All three are OpenAPI 3.1.
 - **Late results** are taken and judged while the job is not done; the first accepted wins,
   later ones are `superseded`. A rejected or failed result excludes its worker from that job;
   after `max_failures` (3) the job is `failed`.
-- **Pause**: the worker stops its tool (SIGSTOP), keeps renewing with `phase: paused`, and gives
-  the job back after 60 s. The queue takes it back itself 30 s later if the worker does not.
+- **Pause** (v0.2.18; Thorsten, 2026-10-28: "Pause also wasn't working"): a paused worker claims
+  nothing from that moment (a claim's long poll ends with the pause, and a lease whose answer
+  crosses it goes back unstarted), and the queue hears it at once. "Sofort pausieren" (`now`)
+  stops the running tools (SIGSTOP) and renews with `phase: paused`. A job of priority archive or
+  stage 2, which nobody waits for, stays (`pause_hold`): x265 cannot resume elsewhere, and a 2160
+  archive encode given back after three of its five hours on the Mac Studio loses three hours.
+  Its hold time stops meanwhile, up to 24 h of pause, and the tool goes on where it stood. A now
+  or stage 1 job goes back after 60 s as before, for another worker; the queue takes it back
+  itself 30 s later if the worker does not. "Nach diesem Auftrag" (`after_job`) lets the running
+  jobs finish; the queue never takes back a lease whose tool runs. A pause that runs out ends as
+  "Fortsetzen" does.
+- **The efficiency cores** (v0.2.18; Thorsten, 2026-10-28: "Run archive encodes only on
+  efficiency cores"). A Mac's worker may run every job (`efficiency: all`, Slipstream's "Nur
+  Effizienzkerne") or only archive jobs (`archive`) in macOS's background QoS (PRIO_DARWIN_BG, as
+  `taskpolicy -b`), which keeps all their threads on the efficiency cores, so the performance
+  cores stay with the person at the Mac. It reaches a running tool at once and goes the same way;
+  the tool keeps the limit's threads, so it has every core again once taken out. The worker sends
+  the mode and its estimate of the speed there, `efficiency_speed` = e·r / (p + e·r) for p
+  performance and e efficiency cores, r the ratio measured below. The ECT divides such a job's run
+  time by it, and the lease's hold grows with it: a job on the efficiency cores is neither left to
+  the Mac by mistake nor taken back as overdue. A lowered `cpu_threads` lengthens the holds of the
+  worker's running leases too (by the ratio of the threads), since the throttle slows them. The
+  points do not change: they price the job, not the time. Measured on the Mac Studio (M2 Max,
+  8 P and 4 E cores) with nothing else heavy running, Slipstream's ffmpeg 9.0.2 at nice 19, x265
+  slower CRF 29 with `pools=12`, 180 frames of the calibration graph at 1920x1080, by turns:
+
+  | run | normal | `taskpolicy -b` |
+  |---|---|---|
+  | 1 | 26.2 s | 296.7 s |
+  | 2 | 30.2 s | 282.3 s |
+  | 3 | 28.2 s | 314.5 s |
+  | mean | 28.2 s, 6.4 fps | 297.8 s, 0.60 fps |
+
+  10.6 times as long, so r = 0.21 and the Mac Studio's `efficiency_speed` is 0.095. The
+  efficiency cores are macOS's own too: its background daemons ran beside the encode, which used
+  between 0 and 310 % of a core from second to second. Every run's file has its 180 frames.
 - **The CPU limit** (v0.2.17; Thorsten, 2026-10-28: Slipstream said 3 of 12 cores while a 2160
   archive encode, started with `pools=12`, ran at 978 % for hours). The worker's `cpu_threads`
   (`EQ_CPU_THREADS`, Slipstream's `limits` line) is x265's pool and whisper.cpp's threads when a
@@ -333,6 +367,7 @@ docker run --rm -p 8090:8090 -p 51821:51821/udp -v /srv/eq:/data \
 | `EQ_CPU_THREADS` | x265's pool (`pools=N`) and whisper.cpp's threads, and the cores a running tool may use (v0.2.17, **The CPU limit**); default the tools' own |
 | `EQ_GPU` | whisper.cpp may use the GPU; default false |
 | `EQ_MAX_PARALLEL_JOBS` | normal slots, which take every job; default 1 |
+| `EQ_EFFICIENCY` | `all` or `archive`: those jobs run on the efficiency cores only (macOS's background QoS, v0.2.18); default `off` |
 | `EQ_HIGH_PRIORITY_SLOTS` | high-priority slots on top, which take only `now` and `stage1` jobs; default 1, 0 none (v0.2.14) |
 | `EQ_CONTROL_SOCKET` | a Unix socket for [worker-control.yaml](api/worker-control.yaml) |
 | `EQ_WORKER_KEY_FILE` | the private key; default `$EQ_WORKER_STATE_DIR/wireguard.key`, made only when missing, so a key Ansible puts there keeps the worker's identity |
@@ -346,15 +381,17 @@ as uid 10001 (`worker`) with its scratch space in `/var/lib/encode-worker/work`.
 
 ```
 nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name … --app-version x.y.z \
-  --threads N --gpu true|false --jobs N [--high-slots N] --ffmpeg … --ffprobe … --whisper-cli … \
+  --threads N --gpu true|false --jobs N [--high-slots N] [--efficiency off|all|archive] --ffmpeg … --ffprobe … --whisper-cli … \
   --whisper-models … --control stdio
 ```
 
 - **Standard input**: the first line is the WireGuard private key in base64 (the app keeps it
-  in the keychain). Then one JSON object per line: `{"cmd":"pause","until":"<RFC 3339>"}`,
-  `{"cmd":"resume"}`, `{"cmd":"limits","threads":N,"gpu":bool,"jobs":N,"high_slots":N}`,
+  in the keychain). Then one JSON object per line: `{"cmd":"pause","until":"<RFC 3339>","mode":"now"}`
+  (`mode` `now` or `after_job`, v0.2.18; `now` without one), `{"cmd":"resume"}`,
+  `{"cmd":"limits","threads":N,"gpu":bool,"jobs":N,"high_slots":N,"efficiency":"off"}`
+  (`efficiency` `off`, `all` or `archive`, v0.2.18),
   `{"cmd":"quit"}` (give every lease back with `reason=quit`, exit 0). The end of input quits too.
-  A `limits` line without `high_slots` keeps them; a worker before 0.2.14 ignores the field (and
+  A `limits` line without `high_slots` or `efficiency` keeps them; a worker before 0.2.14 ignores the field (and
   `EQ_HIGH_PRIORITY_SLOTS`), so an app may send both to any worker. A `limits` line counts at
   once: the queue hears it, the next tool starts with it, and a running tool is held to its
   `threads` (v0.2.17, **The CPU limit** above).
@@ -362,11 +399,11 @@ nice -n 19 encode-worker --key-stdin --tunnel-file … --state-dir … --name �
   `last_answer_at`, `refused: [{kind, reason}]`), `job` (`lease_id`, `title`, `kind`, `rung`,
   `slot`: `normal` or `high`, `phase`, `fraction`, `fps`, `speed`, `eta_s`; at every phase change and once a second),
   `idle`, `result` (`lease_id`, `title`, `verdict`: `accepted`, `rejected` or `given_back`,
-  `check`), `paused` (`until` or null), `update` (`latest`, when the queue wants a newer app),
+  `check`), `paused` (`until` or null, `mode`; v0.2.18), `update` (`latest`, when the queue wants a newer app),
   `tools` (`tools: [{name, version}]`), `points` (`table`, `today`, `week`, `total`, `rank`, `of`,
   when they or the place change; v0.2.15), `limits` (`threads` in effect, the machine's
-  `cores`, `throttled`: how many running jobs are held to it; at the start, after each `limits`
-  line and when a job is held or freed; v0.2.17), `log` (`lease_id`, `line`), `calibrating` (`classes`,
+  `cores`, `throttled`: how many running jobs are held to it, `efficiency` (v0.2.18); at the
+  start, after each `limits` line and when a job is held or freed; v0.2.17), `log` (`lease_id`, `line`), `calibrating` (`classes`,
   when the calibration clip starts) and `calibrated` (`classes`, when it is done), and `model`
   for each whisper model the queue wants (`name`, `sha256`, `state`: `wanted`, `downloading`,
   `checking`, `calibrating`, `ready`, `failed`, or `unavailable` when the models folder is read-only and the host provides the models; `bytes`, `bytes_done` while downloading,

@@ -45,7 +45,10 @@ type Config struct {
 	// HighPrioritySlots: slots on top of MaxParallel for jobs of priority now and stage1 only
 	// (v0.2.14; 0 none). The command's default is 1.
 	HighPrioritySlots int
-	Calibrate         bool // the calibration clip at pairing and on a tools change (calibrate.go)
+	// Efficiency: which jobs run on the efficiency cores, off, all or archive (v0.2.18,
+	// efficiency.go).
+	Efficiency string
+	Calibrate  bool // the calibration clip at pairing and on a tools change (calibrate.go)
 	// FetchClient fetches the whisper models the queue wants (fetch.go); nil: the default client.
 	FetchClient *http.Client
 	ChunkBytes  int64
@@ -75,6 +78,7 @@ func (c *Config) defaults() {
 		c.MaxParallel = 1
 	}
 	c.HighPrioritySlots = min(max(c.HighPrioritySlots, 0), maxSlots)
+	c.Efficiency = normalEfficiency(c.Efficiency)
 	if c.ChunkBytes == 0 {
 		c.ChunkBytes = 16 << 20
 	}
@@ -106,7 +110,9 @@ type JobStatus struct {
 	Log      []string  `json:"log,omitempty"`
 
 	// Throttled: its tool runs in a duty cycle, held to the CPU limit (v0.2.17, throttle.go).
-	Throttled bool `json:"throttled,omitempty"`
+	// EfficiencyCores: its tool runs in the background QoS (v0.2.18, efficiency.go).
+	Throttled       bool `json:"throttled,omitempty"`
+	EfficiencyCores bool `json:"efficiency_cores,omitempty"`
 }
 
 // Finished is a job this worker ended.
@@ -124,6 +130,7 @@ type Status struct {
 	State         string      `json:"state"` // idle, working, paused, offline, unpaired
 	Name          string      `json:"name,omitempty"`
 	PausedUntil   *time.Time  `json:"paused_until"`
+	PauseMode     string      `json:"pause_mode,omitempty"` // now or after_job (v0.2.18), while paused
 	Connected     bool        `json:"connected"`
 	LastContact   *time.Time  `json:"last_contact"`
 	LastError     string      `json:"last_error,omitempty"`
@@ -145,7 +152,8 @@ type Worker struct {
 	mu          sync.Mutex
 	name        string
 	pausedUntil *time.Time
-	pausePatch  bool // the pause changed here and the queue does not know yet
+	pauseMode   string // PauseNow or PauseAfterJob
+	pausePatch  bool   // the pause changed here and the queue does not know yet
 	lastContact *time.Time
 	saidContact time.Time // the last answer the last connection event named
 	lastErr     string
@@ -282,7 +290,7 @@ func (w *Worker) emitLimits() {
 	w.limitsMu.Lock()
 	defer w.limitsMu.Unlock()
 	w.mu.Lock()
-	threads, cores := w.cfg.CPUThreads, runtime.NumCPU()
+	threads, cores, eff := w.cfg.CPUThreads, runtime.NumCPU(), w.cfg.Efficiency
 	if threads <= 0 || threads > cores {
 		threads = cores
 	}
@@ -299,13 +307,17 @@ func (w *Worker) emitLimits() {
 		}
 		r.mu.Unlock()
 	}
-	w.emit("limits", map[string]any{"threads": threads, "cores": cores, "throttled": held})
+	w.emit("limits", map[string]any{"threads": threads, "cores": cores, "throttled": held, "efficiency": eff})
 }
 
 func (w *Worker) limits() map[string]any {
 	l := map[string]any{"gpu": w.cfg.GPU, "max_parallel_jobs": w.cfg.MaxParallel, "high_priority_slots": w.cfg.HighPrioritySlots}
 	if w.cfg.CPUThreads > 0 {
 		l["cpu_threads"] = w.cfg.CPUThreads
+	}
+	if e := w.cfg.Efficiency; e == EfficiencyAll || e == EfficiencyArchive {
+		l["efficiency"] = e
+		l["efficiency_speed"] = efficiencySpeed()
 	}
 	return l
 }
@@ -315,15 +327,37 @@ const maxSlots = 16
 
 func ptrTime(t time.Time) *time.Time { return &t }
 
-// paused is whether the worker is paused now.
+// paused is whether the worker is paused now: it claims nothing.
 func (w *Worker) paused() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.pausedUntil != nil && w.pausedUntil.After(time.Now())
 }
 
-// setPause changes the pause; fromQueue is a pause the queue reported.
-func (w *Worker) setPause(until *time.Time, fromQueue bool) {
+// **Two ways to pause** (v0.2.18; Thorsten, 2026-10-28: "Pause also wasn't working"). Either
+// way the worker claims nothing from the moment the pause starts, and the queue hears it at once.
+//   - PauseNow stops the running tools (SIGSTOP). The queue says in each lease whether the pause
+//     holds it (pause_hold: archive and stage 2, which nobody waits for); such a lease stays,
+//     suspended, and the tool goes on where it stood when the pause ends. Any other lease goes
+//     back after pause_give_back_s, as before.
+//   - PauseAfterJob lets the running jobs finish, then claims nothing until the pause ends.
+//
+// The queue's own pause (the Encoder page's) is PauseNow.
+const (
+	PauseNow      = "now"
+	PauseAfterJob = "after_job"
+)
+
+// suspends is whether the running tools stand still now: a pause of PauseNow.
+func (w *Worker) suspends() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.pausedUntil != nil && w.pausedUntil.After(time.Now()) && w.pauseMode != PauseAfterJob
+}
+
+// setPause changes the pause; fromQueue is a pause the queue reported, which keeps the mode of
+// the same pause here and is PauseNow otherwise.
+func (w *Worker) setPause(until *time.Time, fromQueue bool, mode string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if fromQueue && w.pausePatch {
@@ -332,29 +366,40 @@ func (w *Worker) setPause(until *time.Time, fromQueue bool) {
 	if until != nil && !until.After(time.Now()) {
 		until = nil
 	}
-	same := (until == nil && w.pausedUntil == nil) || (until != nil && w.pausedUntil != nil && until.Equal(*w.pausedUntil))
-	if same {
+	// To the second: the queue hears it in RFC 3339, and its echo must not count as a new pause.
+	same := (until == nil && w.pausedUntil == nil) ||
+		(until != nil && w.pausedUntil != nil && until.Truncate(time.Second).Equal(w.pausedUntil.Truncate(time.Second)))
+	if mode != PauseAfterJob {
+		mode = PauseNow
+	}
+	if same && (fromQueue || until == nil || mode == w.pauseMode) {
 		return
 	}
-	w.pausedUntil = until
-	if !fromQueue {
-		w.pausePatch = true
+	if !same {
+		w.pausedUntil = until
+		if !fromQueue {
+			w.pausePatch = true
+		}
 	}
+	w.pauseMode = mode
 	close(w.pauseCh)
 	w.pauseCh = make(chan struct{})
-	w.cfg.Log.Info("pause", "until", until)
+	w.cfg.Log.Info("pause", "until", until, "mode", mode)
 	var u any
 	if until != nil {
 		u = until.UTC().Format(time.RFC3339)
 	}
-	go w.emit("paused", map[string]any{"until": u})
+	go w.emit("paused", map[string]any{"until": u, "mode": mode})
 }
 
-// Pause pauses until the given time (from the control socket or the menu bar).
-func (w *Worker) Pause(until time.Time) { w.setPause(&until, false) }
+// Pause pauses until the given time (from the control socket or the menu bar), PauseNow.
+func (w *Worker) Pause(until time.Time) { w.setPause(&until, false, PauseNow) }
+
+// PauseWith pauses until the given time, PauseNow or PauseAfterJob.
+func (w *Worker) PauseWith(until time.Time, mode string) { w.setPause(&until, false, mode) }
 
 // Resume ends the pause.
-func (w *Worker) Resume() { w.setPause(nil, false) }
+func (w *Worker) Resume() { w.setPause(nil, false, PauseNow) }
 
 // Quit gives every job back and stops the worker.
 func (w *Worker) Quit() { w.quitOnce.Do(func() { close(w.quit) }) }
@@ -366,6 +411,9 @@ func (w *Worker) Status() Status {
 	st := Status{Name: w.name, PausedUntil: w.pausedUntil, LastContact: w.lastContact, LastError: w.lastErr,
 		Refused: w.refused, Tools: w.caps.Tools, Jobs: []JobStatus{}, Recent: append([]Finished(nil), w.recent...), FinishedToday: w.today, Points: w.points}
 	st.Connected = w.lastContact != nil && time.Since(*w.lastContact) < 90*time.Second
+	if w.pausedUntil != nil && w.pausedUntil.After(time.Now()) {
+		st.PauseMode = w.pauseMode
+	}
 	for _, r := range w.runs {
 		st.Jobs = append(st.Jobs, r.status())
 	}
@@ -425,11 +473,18 @@ func (w *Worker) emitResult(f Finished) {
 	go w.emit("result", map[string]any{"lease_id": f.LeaseID, "title": f.Title, "verdict": verdict, "check": f.Reason})
 }
 
-// waitUnpaused blocks while the worker is paused, until ctx ends.
-func (w *Worker) waitUnpaused(ctx context.Context) error {
+// waitUnpaused blocks while the worker is paused, until ctx ends: a claim waits for the end of
+// any pause.
+func (w *Worker) waitUnpaused(ctx context.Context) error { return w.waitPause(ctx, false) }
+
+// waitUnsuspended blocks while a pause suspends the running jobs (PauseNow): a job's transfers
+// go on through a pause after the job.
+func (w *Worker) waitUnsuspended(ctx context.Context) error { return w.waitPause(ctx, true) }
+
+func (w *Worker) waitPause(ctx context.Context, suspendsOnly bool) error {
 	for {
 		w.mu.Lock()
-		p := w.pausedUntil != nil && w.pausedUntil.After(time.Now())
+		p := w.pausedUntil != nil && w.pausedUntil.After(time.Now()) && (!suspendsOnly || w.pauseMode != PauseAfterJob)
 		ch := w.pauseCh
 		var until time.Duration
 		if p {
@@ -557,7 +612,7 @@ func (w *Worker) hello(ctx context.Context) error {
 	}
 	w.emitConnectionLocked()
 	w.mu.Unlock()
-	w.setPause(me.PausedUntil, true)
+	w.setPause(me.PausedUntil, true, PauseNow)
 	w.contact(nil)
 	w.cfg.Log.Info("paired", "name", me.Name, "address", me.Address, "accepted", rep.Accepted, "refused", w.refused)
 	leases, err := w.api.MyLeases(ctx)
@@ -620,7 +675,7 @@ func (w *Worker) presenceLoop(ctx context.Context) {
 		ack, err := w.api.PutPresence(ctx, state, free, memoryUsed(), own, otherLoad(w.machine.sample(), own))
 		w.contact(err)
 		if err == nil {
-			w.setPause(ack.PausedUntil, true)
+			w.setPause(ack.PausedUntil, true, PauseNow)
 			if ack.PresenceEveryS > 0 {
 				every = time.Duration(ack.PresenceEveryS) * time.Second
 			}
@@ -757,11 +812,14 @@ func (w *Worker) claimLoop(ctx context.Context, slot int, high bool) {
 		if err := w.waitUnpaused(ctx); err != nil {
 			return
 		}
-		l, err := w.api.Claim(ctx, w.cfg.LongPoll, high)
+		l, err := w.claimUnlessPaused(ctx, high)
 		w.contact(err)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
+			}
+			if errors.Is(err, context.Canceled) {
+				continue // a pause began during the long poll
 			}
 			var ae *APIError
 			wait := w.cfg.RetryAfter
@@ -787,8 +845,42 @@ func (w *Worker) claimLoop(ctx context.Context, slot int, high bool) {
 		if l == nil {
 			continue
 		}
+		if w.paused() {
+			// The answer crossed the pause: the job goes back unstarted.
+			w.cfg.Log.Info("a lease that came with the pause goes back", "lease", l.ID, "job", l.Job.ID)
+			w.api.Release(ctx, l.ID, "paused")
+			continue
+		}
 		w.runLease(ctx, l, high)
 	}
+}
+
+// claimUnlessPaused is a claim's long poll, ended when a pause begins (v0.2.18): the worker
+// takes nothing from that moment, not after the poll's 25 s.
+func (w *Worker) claimUnlessPaused(ctx context.Context, high bool) (*Lease, error) {
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		for {
+			w.mu.Lock()
+			ch := w.pauseCh
+			w.mu.Unlock()
+			select {
+			case <-cctx.Done():
+				return
+			case <-ch:
+				if w.paused() {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	l, err := w.api.Claim(cctx, w.cfg.LongPoll, high)
+	if err != nil && ctx.Err() == nil && cctx.Err() != nil {
+		return nil, context.Canceled
+	}
+	return l, err
 }
 
 // sweepWork deletes the lease folders (`ls_…`) in the work directory that no run of this

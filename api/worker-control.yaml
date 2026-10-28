@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-worker control API
-  version: 1.4.0
+  version: 1.5.0
   license: { name: MIT, identifier: MIT }
   summary: How the app that embeds the worker (Slipstream) reads its state and pauses, resumes or stops it.
   description: |
@@ -27,7 +27,7 @@ paths:
     post:
       operationId: pause
       summary: Pause for some minutes, or until a time
-      description: The tool stops at once (SIGSTOP); a pause that still holds after the queue's `pause_give_back_s` (60 s) gives the job back.
+      description: The worker claims nothing from now on. With `mode` now (the default) the tool stops at once (SIGSTOP); a pause that still holds after the queue's `pause_give_back_s` (60 s) gives the job back, unless the lease says `pause_hold` (archive, stage 2), which goes on where it stood when the pause ends. With `after_job` the running jobs finish first.
       requestBody:
         required: true
         content:
@@ -37,6 +37,7 @@ paths:
               properties:
                 minutes: { type: integer, minimum: 1, examples: [30, 120, 1440] }
                 until: { type: string, format: date-time }
+                mode: { type: string, enum: [now, after_job], default: now, description: '`now` suspends the running jobs; `after_job` lets them finish (v0.2.18, 1.5.0). Either way the worker claims nothing until the pause ends.' }
       responses:
         '200':
           description: The state after the pause.
@@ -72,6 +73,7 @@ components:
         state: { type: string, enum: [idle, working, paused, offline], description: For the menu bar's icon. }
         name: { type: string, description: The name the queue knows this worker by. }
         paused_until: { type: [string, 'null'], format: date-time }
+        pause_mode: { type: string, enum: [now, after_job], description: 'How the pause treats the running jobs (v0.2.18, 1.5.0); absent when not paused.' }
         connected: { type: boolean, description: The queue answered within the last 90 s. }
         last_contact: { type: [string, 'null'], format: date-time }
         last_error: { type: string, description: The last error reaching the queue. }
@@ -92,6 +94,7 @@ components:
               started_at: { type: string, format: date-time }
               progress: { $ref: '#/components/schemas/Progress' }
               log: { type: array, items: { type: string }, description: 'The last 50 log lines, for "Show log".' }
+              efficiency_cores: { type: boolean, description: 'Its tool runs in the background QoS, on the efficiency cores only (v0.2.18, 1.5.0).' }
               throttled: { type: boolean, description: 'Its tool runs in a duty cycle (SIGSTOP and SIGCONT), held to a CPU limit lowered after it started (v0.2.17, 1.4.0); absent when free.' }
         recent:
           type: array

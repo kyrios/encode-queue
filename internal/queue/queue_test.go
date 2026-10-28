@@ -426,10 +426,12 @@ func TestPreemptionForNewUploads(t *testing.T) {
 	}
 }
 
+// A stage 1 job goes back from a paused worker; an archive or stage 2 one stays (v0.2.18,
+// pause_test.go), and so does any whose tool runs on.
 func TestPauseGivesBack(t *testing.T) {
 	e := newEnv(t, "")
 	w := e.worker("mac", reference)
-	e.rung("x.rung", "archive")
+	e.rung("x.rung", "stage1")
 	l := e.claim(w)
 	until := e.clock.Now().Add(30 * time.Minute)
 	up := &until
@@ -452,13 +454,13 @@ func TestPauseGivesBack(t *testing.T) {
 	if st := e.state("x.rung"); st != StateQueued {
 		t.Fatalf("after giving back %s", st)
 	}
-	// A worker that does not give back loses the lease 30 s after the minute.
+	// A worker that suspends but does not give back loses the lease 30 s after the minute.
 	e.s.PatchMe(w, WorkerPatch{PausedUntil: new(*time.Time)})
 	l2 := e.claim(w)
 	e.s.PatchMe(w, WorkerPatch{PausedUntil: &up})
 	for i := 0; i < 4; i++ {
 		e.clock.Add(25 * time.Second)
-		e.s.Renew(w, l2.ID, Progress{Phase: "encoding"})
+		e.s.Renew(w, l2.ID, Progress{Phase: "paused"})
 		e.presence(w)
 		e.s.Tick()
 	}

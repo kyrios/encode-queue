@@ -44,7 +44,7 @@ type flags struct {
 	name, appVersion                      string
 	hostAppName, hostAppVersion           string
 	threads, jobs, highSlots              int
-	gpu                                   string
+	gpu, efficiency                       string
 	calibrate                             string
 	ffmpeg, ffprobe, whisperCLI, models   string
 	whisperVersion, fonts, control        string
@@ -69,6 +69,7 @@ func main() {
 	flag.IntVar(&f.threads, "threads", env.Int("EQ_CPU_THREADS", 0), "x265's pool and whisper.cpp's threads, 0 for the tools' own (EQ_CPU_THREADS)")
 	flag.StringVar(&f.gpu, "gpu", env.String("EQ_GPU", "false"), "whisper.cpp may use the GPU: true or false (EQ_GPU)")
 	flag.IntVar(&f.jobs, "jobs", env.Int("EQ_MAX_PARALLEL_JOBS", 1), "normal slots, which take every job (EQ_MAX_PARALLEL_JOBS)")
+	flag.StringVar(&f.efficiency, "efficiency", env.String("EQ_EFFICIENCY", "off"), "jobs whose tools run on the efficiency cores only (macOS's background QoS): off, all, or archive (EQ_EFFICIENCY)")
 	flag.IntVar(&f.highSlots, "high-slots", env.Int("EQ_HIGH_PRIORITY_SLOTS", 1), "high-priority slots on top, for jobs of priority now and stage1 only; 0 none (EQ_HIGH_PRIORITY_SLOTS)")
 	flag.StringVar(&f.calibrate, "calibrate", env.String("EQ_CALIBRATE", "true"), "encode the calibration clip at pairing and on a tools change: true or false (EQ_CALIBRATE)")
 	flag.StringVar(&f.ffmpeg, "ffmpeg", env.String("EQ_FFMPEG", "ffmpeg"), "ffmpeg (EQ_FFMPEG)")
@@ -140,6 +141,7 @@ func run(cmd string, f flags, env *config.Env) error {
 		GPU:               f.gpu == "true" || f.gpu == "1" || f.gpu == "yes",
 		MaxParallel:       f.jobs,
 		HighPrioritySlots: f.highSlots,
+		Efficiency:        f.efficiency,
 		Calibrate:         f.calibrate == "true",
 		Log:               log,
 	}
@@ -257,18 +259,21 @@ func run(cmd string, f flags, env *config.Env) error {
 	return w.Run(ctx)
 }
 
-// readCommands reads Slipstream's JSON lines: pause, resume, limits, quit; the end of input
-// quits too. A limits line without high_slots (Slipstream before the setting) keeps them.
+// readCommands reads Slipstream's JSON lines: pause (mode now or after_job; now without one),
+// resume, limits, quit; the end of input quits too. A limits line without high_slots or
+// efficiency (Slipstream before the setting) keeps them.
 func readCommands(r *bufio.Reader, w *worker.Worker, log *slog.Logger) {
 	dec := json.NewDecoder(r)
 	for {
 		var c struct {
 			Cmd     string     `json:"cmd"`
 			Until   *time.Time `json:"until"`
+			Mode    string     `json:"mode"`
 			Threads int        `json:"threads"`
 			GPU     bool       `json:"gpu"`
 			Jobs    int        `json:"jobs"`
 			High    *int       `json:"high_slots"`
+			Eff     *string    `json:"efficiency"`
 		}
 		if err := dec.Decode(&c); err != nil {
 			if !errors.Is(err, io.EOF) {
@@ -280,12 +285,15 @@ func readCommands(r *bufio.Reader, w *worker.Worker, log *slog.Logger) {
 		switch c.Cmd {
 		case "pause":
 			if c.Until != nil {
-				w.Pause(*c.Until)
+				w.PauseWith(*c.Until, c.Mode)
 			}
 		case "resume":
 			w.Resume()
 		case "limits":
 			w.SetLimits(c.Threads, c.GPU, c.Jobs, c.High)
+			if c.Eff != nil {
+				w.SetEfficiency(*c.Eff)
+			}
 		case "quit":
 			w.Quit()
 			return

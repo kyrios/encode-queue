@@ -166,17 +166,25 @@ func (s *Store) canClaim(w *Worker, now time.Time, high bool) error {
 	return nil
 }
 
-// holdUntil is the latest a lease claimed now may be renewed to: HoldFactor times the expected
-// completion time, between HoldMin and HoldMax; HoldMax when nothing is expected.
-func (s *Store) holdUntil(now time.Time, e *ECT) time.Time {
-	d := s.cfg.HoldMax
+// holdUntil is the latest a lease of j claimed now by w may be renewed to: HoldFactor times the
+// expected completion time, between HoldMin and HoldMax; HoldMax when nothing is expected. The
+// time and HoldMax grow by the job's share of w's speed (v0.2.18, speedShare): a lowered thread
+// limit, which the ECT does not count, and the efficiency cores, which it does.
+func (s *Store) holdUntil(now time.Time, e *ECT, w *Worker, j *Job) time.Time {
+	share := s.speedShare(w, w.Limits, j)
+	slow := 1 / share
+	if efficient(w.Limits, j) {
+		slow = 1 // in the ECT already
+	}
+	most := time.Duration(float64(s.cfg.HoldMax) / share)
+	d := most
 	if e != nil && e.S > 0 && !math.IsInf(e.S, 0) {
-		d = time.Duration(e.S * s.cfg.HoldFactor * float64(time.Second))
+		d = time.Duration(e.S * slow * s.cfg.HoldFactor * float64(time.Second))
 		if d < s.cfg.HoldMin {
 			d = s.cfg.HoldMin
 		}
-		if d > s.cfg.HoldMax || d <= 0 {
-			d = s.cfg.HoldMax
+		if d > most || d <= 0 {
+			d = most
 		}
 	}
 	return now.Add(d)
@@ -330,7 +338,7 @@ func (s *Store) Claim(ctx context.Context, workerID string, req LeaseRequest, wa
 			} else {
 				l.Scoring = s.scoringNote(w, j, e, runnerUp, now)
 			}
-			l.HoldUntil = s.holdUntil(now, e)
+			l.HoldUntil = s.holdUntil(now, e, w, j)
 			if e != nil {
 				l.EstRunS = e.RunS
 			}
@@ -448,12 +456,19 @@ func (s *Store) Renew(workerID, leaseID string, p Progress) (LeaseView, error) {
 		return LeaseView{}, errf(422, "invalid", "phase %q unknown", p.Phase)
 	}
 	now := s.cfg.Now()
+	prevAt := l.ExpiresAt.Add(-s.cfg.Lease)
+	// A suspended tool's time does not count against its hold (v0.2.18): only while its worker
+	// is paused, which PauseHoldMax bounds (tick.go).
+	if p.Phase == "paused" && l.Progress != nil && l.Progress.Phase == "paused" && s.paused(w, now) &&
+		!l.HoldUntil.IsZero() && now.After(prevAt) {
+		l.HoldUntil = l.HoldUntil.Add(now.Sub(prevAt))
+	}
 	if s.overdue(l, now) {
 		s.takeOverdue(l)
 		s.touch(true)
 		return LeaseView{}, s.goneErr(l)
 	}
-	s.noteLive(w, l.Progress, l.ExpiresAt.Add(-s.cfg.Lease), p)
+	s.noteLive(w, l.Progress, prevAt, p)
 	l.Progress = &p
 	l.ExpiresAt = now.Add(s.cfg.Lease)
 	if j := s.st.Jobs[l.JobID]; j != nil {

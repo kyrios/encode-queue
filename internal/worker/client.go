@@ -165,10 +165,11 @@ type Lease struct {
 	ID      string `json:"lease_id"`
 	Attempt int    `json:"attempt"`
 	Job     struct {
-		ID     string `json:"job_id"`
-		Title  string `json:"title"`
-		Kind   string `json:"kind"`
-		Source struct {
+		ID       string `json:"job_id"`
+		Title    string `json:"title"`
+		Kind     string `json:"kind"`
+		Priority string `json:"priority"`
+		Source   struct {
 			FileRef
 			Container string  `json:"container"`
 			DurationS float64 `json:"duration_s"`
@@ -178,12 +179,14 @@ type Lease struct {
 		} `json:"source"`
 		Inputs map[string]FileRef `json:"inputs"`
 	} `json:"job"`
-	ExpiresAt      time.Time       `json:"expires_at"`
-	RenewEveryS    int             `json:"renew_every_s"`
-	PauseGiveBackS int             `json:"pause_give_back_s"`
-	PausedUntil    *time.Time      `json:"paused_until"`
-	Params         json.RawMessage `json:"params"`
-	Result         struct {
+	ExpiresAt      time.Time `json:"expires_at"`
+	RenewEveryS    int       `json:"renew_every_s"`
+	PauseGiveBackS int       `json:"pause_give_back_s"`
+	// PauseHold: a pause keeps this lease, suspended, until it ends (v0.2.18; archive and stage 2).
+	PauseHold   bool            `json:"pause_hold"`
+	PausedUntil *time.Time      `json:"paused_until"`
+	Params      json.RawMessage `json:"params"`
+	Result      struct {
 		Name     string `json:"name"`
 		MaxBytes int64  `json:"max_bytes"`
 	} `json:"result"`
