@@ -132,7 +132,9 @@ All three are OpenAPI 3.1.
   (video-pipeline#29's spec); since v0.2.23 the upload itself, so the frames are there while Alex
   trims: an iPhone's 10-bit HEVC too, its pictures 8-bit before their colours are measured, and
   decoded with slice threads only (a 4K keyframe in 21 ms at 272 MB, where ffmpeg's frame
-  threads took 737 MB): a `scenes` level of at most 32 pictures at the cuts,
+  threads took 737 MB), and since v0.2.27 over every frame when an HEVC with an open GOP and
+  keyframes far apart (a screen recording that hardly moves) decodes them out of order: a
+  `scenes` level of at most 32 pictures at the cuts,
   a `fine` level every 4 s, JPEG sheets named by their content and thumbs.json with 128
   placeholder colours, delivered as one tar. Someone in Funkhaus waits for both, so they are
   realtime: priority `now` when the pipeline names none, first in line and in a worker's

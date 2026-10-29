@@ -1193,7 +1193,11 @@ components:
         `scenes` level, at most `scenes` keyframes in one 8×4 sheet: the first, those with the
         highest scene score over 0.3 at least 1/(2·scenes) of the video apart, then the keyframe
         nearest the middle of each even stretch still without one. Sheets are named by their
-        content, `thumbs-<level>-<sha256, 16 hex>.jpg`.
+        content, `thumbs-<level>-<sha256, 16 hex>.jpg`. An HEVC with an open GOP whose keyframes
+        lie far apart (a screen recording that hardly moves) decodes out of order by its
+        keyframes alone, one lost ("Duplicate POC"); when the first pass shows it, both run again
+        over every frame and take the keyframes with `select=key` (v0.2.27; a five-minute 1080p
+        recording: 5 s instead of 0.1 s, the same memory).
 
         **The result** is an uncompressed tar: `thumbs.json` first, then the sheets, scenes
         first. thumbs.json: `{"schema": 1, "from", "width", "height", "duration", "colors",
