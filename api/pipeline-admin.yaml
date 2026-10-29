@@ -11,7 +11,7 @@ info:
 
     **Two callers, two tokens** (bearer, each from a file the queue reads at start):
 
-    - **The pipeline** (`iPhoneblog-web/video-pipeline`, token `EQ_PIPELINE_TOKEN_FILE`)
+    - **The pipeline** (`Philipp-solutions-de/video-pipeline`, token `EQ_PIPELINE_TOKEN_FILE`)
       submits jobs, watches them, fetches each result and **accepts or rejects it against
       ADR-0005's floors**. The queue never judges quality: it only moves files and states.
     - **The upload center's Encoder page** (token `EQ_ADMIN_TOKEN_FILE`) lists the queue and

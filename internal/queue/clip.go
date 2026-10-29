@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// **A clip's rung** (v0.2.13; video-pipeline v0.2.10, iPhoneblog-web/video-pipeline#20): one 9:16
+// **A clip's rung** (v0.2.13; video-pipeline v0.2.10, Philipp-solutions-de/video-pipeline#20): one 9:16
 // file for Instagram Reels, YouTube Shorts, Mastodon, Threads and Bluesky, at 23 to 60 frames per
 // second, AAC at most 48 kHz and two channels, and without edit lists. So a rung may set `fps`,
 // `audio.sample_rate`, `audio.channels` and `edit_list: false`. A worker before 0.2.13 reads its
