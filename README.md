@@ -4,7 +4,7 @@ One queue for video encodes and whisper runs, and the worker that takes jobs fro
 Linux server or Mac. **Slipstream** is the encoder helper's name on every machine: the Mac app
 ([kyrios/slipstream](https://github.com/kyrios/slipstream)) and the Linux container
 `ghcr.io/kyrios/slipstream`. Both run this repository's worker, whose binary is
-`encode-worker`. Built for iPhoneblog's `encoder` ([ADR-0007](https://github.com/iPhoneblog-web/iphoneblog-wordpress/blob/main/docs/adr/0007-encode-helpers.md)).
+`encode-worker`. Built for iPhoneblog's `encoder` (ADR-0007, in Funkhaus' own repository, which is private).
 
 - **The queue server** (`encode-queue`) keeps the jobs, their priorities (stage 1, stage 2,
   archive), leases, attempts and the workers, on disk. It brings its own WireGuard: wireguard-go

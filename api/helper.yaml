@@ -5,7 +5,7 @@ info:
   license: { name: MIT, identifier: MIT }
   summary: How a worker takes jobs from the queue through its WireGuard tunnel.
   description: |
-    The worker side of [ADR-0007](https://github.com/iPhoneblog-web/iphoneblog-wordpress/blob/main/docs/adr/0007-encode-helpers.md)
+    The worker side of ADR-0007 (in Funkhaus' private repository)
     (iphoneblog-wordpress). The queue server (`encode-queue`) serves it **only inside its own
     WireGuard tunnel**; the pipeline and the upload center use the other API,
     [pipeline-admin.yaml](pipeline-admin.yaml), on the queue's Docker network.
