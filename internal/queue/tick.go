@@ -54,6 +54,9 @@ func (s *Store) Tick() {
 	if s.liftExclusions(now) {
 		changed = true
 	}
+	if s.expireChecks(now) {
+		changed = true
+	}
 	if s.dropPins(now) {
 		changed = true
 	}

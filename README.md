@@ -334,6 +334,13 @@ All three are OpenAPI 3.1.
   (x265's frame threads and VBV). whisper-cli with 12 threads on the CPU, held to 3, used 2.95
   cores and wrote the free run's transcript byte for byte; with the GPU it uses under one core and
   runs free.
+- **A result does not wait for its verdict forever** (v0.2.26; 2026-10-29: three strip jobs sat in
+  `checking` from 23:16 on, after the pipeline restarted and lost the threads that waited for
+  them). A job whose last result has waited `EQ_CHECK_TIMEOUT` (2 hours) for its verdict is
+  cancelled by the queue, `by: queue` with `code: check_timeout` ("verfallen" on Funkhaus, under
+  Abgebrochen): its result files go and free their room, a verdict that comes later answers
+  `409 not_checking`, and the submitter may send the job again under its id.
+  `encode_queue_check_timeouts_total` counts them.
 - **Disk**: the queue leases only while its result directory has room for every active lease's
   `max_bytes` plus `EQ_RESULT_RESERVE_BYTES`. **A claim counts the leases of its own priority and
   higher; a lower one gets what is left** (v0.2.25; v0.2.19 did it for now and stage1 alone, after a
@@ -379,6 +386,7 @@ Every address, port, subnet and path comes from the environment; the image has n
 | `EQ_EXCLUDE_BACKOFF_S` | default 600: how long a job that every able worker is excluded from waits before the reference worker gets it again |
 | `EQ_RESULT_RESERVE_BYTES` | default 2 GiB |
 | `EQ_LEASE_S`, `EQ_RENEW_EVERY_S`, `EQ_LONG_POLL_S`, `EQ_PRESENCE_EVERY_S`, `EQ_PAUSE_GIVE_BACK_S` | the timings, defaults 120, 30, 25, 30 and 60 |
+| `EQ_CHECK_TIMEOUT` | how long a result waits for its verdict before the queue cancels its job (`check_timeout`): seconds or `2h`; default 2 hours |
 | `EQ_JOB_RETENTION` | how long done, cancelled and failed jobs stay, with their result files: seconds, `7d` or `36h`; default 7 days. `EQ_DONE_KEEP_S`, its older name, still works |
 | `EQ_LOG_LEVEL` | `debug`, `info` (default), `warn`, `error` |
 
@@ -529,6 +537,7 @@ otherwise). Per-worker series carry `worker_id` and
 |---|---|---|
 | `encode_queue_build_info` | gauge | The queue's version, as a label; always 1. |
 | `encode_queue_revision` | gauge | The queue's revision: every change to a job raises it. |
+| `encode_queue_check_timeouts_total` | counter | Jobs the queue cancelled because their result waited longer than EQ_CHECK_TIMEOUT for a verdict (check_timeout). |
 | `encode_queue_result_room_bytes` | gauge | Bytes of results a job of the priority can still claim: beside the max_bytes of the running leases of its priority and higher, the lower ones' uploads in flight and the reserve. |
 | `encode_queue_jobs` | gauge | Jobs by priority and state. |
 | `encode_queue_workers` | gauge | Workers by state (idle, working, paused, offline). |

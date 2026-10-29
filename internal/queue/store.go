@@ -32,6 +32,7 @@ type Config struct {
 	DoneKeep       time.Duration // 7 days
 	MaxFailures    int           // 3
 	ExcludeBackoff time.Duration // 10 min: then a job no worker may run lets the reference worker back
+	CheckTimeout   time.Duration // 2 h: a result with no verdict for this long ends its job (v0.2.26)
 	ResultReserve  int64         // bytes the result directory keeps free beyond every lease's max_bytes
 
 	ReferenceWorker string // the worker whose tools jobs require by default; "" requires none
@@ -80,6 +81,7 @@ func (c *Config) Defaults() {
 	set(&c.PauseHoldMax, 24*time.Hour)
 	set(&c.DoneKeep, 7*24*time.Hour)
 	set(&c.ExcludeBackoff, 10*time.Minute)
+	set(&c.CheckTimeout, 2*time.Hour)
 	set(&c.HoldMin, 30*time.Minute)
 	set(&c.HoldMax, 12*time.Hour)
 	if c.MaxParallelJobs == 0 {
@@ -273,6 +275,8 @@ type state struct {
 	Workers   map[string]*Worker `json:"workers"`
 	Uploads   map[string]*Upload `json:"uploads"`
 	Forgotten []forgotten        `json:"forgotten,omitempty"`
+	// CheckTimeouts: jobs whose result waited longer than CheckTimeout for a verdict (v0.2.26).
+	CheckTimeouts int64 `json:"check_timeouts,omitempty"`
 }
 
 // Store is the queue. Every method is safe for concurrent use.

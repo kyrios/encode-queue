@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: encode-queue pipeline and admin API
-  version: 1.13.2
+  version: 1.14.0
   license: { name: MIT, identifier: MIT }
   summary: How the pipeline submits and judges jobs, and how the upload center's Encoder page shows and steers the queue and its workers.
   description: |
@@ -494,7 +494,9 @@ paths:
       operationId: putVerdict
       summary: Accept or reject an attempt's result (pipeline)
       description: |
-        Only for an attempt whose result is `checking`. **`accepted`** makes the job `done`
+        Only for an attempt whose result is `checking`: one that waited longer than
+        `EQ_CHECK_TIMEOUT` answers `409 not_checking`, its job cancelled (`code: check_timeout`,
+        v0.2.26). **`accepted`** makes the job `done`
         with this attempt's file; every other waiting result becomes `superseded`, every other
         active lease ends (`410 job_done`). **`rejected`** deletes the file, counts against the
         worker (`encode_queue_worker_results_rejected_total`), and puts the job back to
@@ -1024,9 +1026,17 @@ components:
           description: 'Who cancelled the job, why and when; null for a job never cancelled, and again after `retry`.'
           required: [by, reason, at]
           properties:
-            by: { type: string, examples: [thorsten, admin, pipeline] }
+            by: { type: string, examples: [thorsten, admin, pipeline, queue] }
             reason: { type: [string, 'null'], examples: [von Hand, neue Datei hochgeladen] }
             at: { type: string, format: date-time }
+            code:
+              type: string
+              enum: [check_timeout]
+              description: |
+                Present when the queue itself cancelled the job (`by: queue`; v0.2.26).
+                `check_timeout`: its result waited longer than `EQ_CHECK_TIMEOUT` (2 h by default)
+                for a verdict; the result's file is gone. Funkhaus shows it as "verfallen". The
+                job may be submitted again under its id.
         waiting:
           oneOf: [{ $ref: '#/components/schemas/Waiting' }, { type: 'null' }]
           description: 'For a `queued` job that no worker could take now, why; null when one could and the job waits only for its turn or a free slot, and for every job not queued.'
