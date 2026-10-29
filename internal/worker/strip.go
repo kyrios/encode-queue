@@ -3,6 +3,7 @@ package worker
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -29,6 +30,12 @@ import (
 //     encoder puts a keyframe at a cut), at least 1/(2·Scenes) of the video apart, filled with
 //     the keyframe nearest the middle of each even stretch that has none; one 8×4 sheet;
 //   - `fine`: the keyframes at least FineEveryS apart, 10×10 to a sheet.
+//
+// An HEVC with an open GOP whose keyframes are more than half its POC range apart (a static
+// screen recording, one keyframe in seconds) cannot be decoded by its keyframes alone: the decoder
+// derives each picture's POC from the reference pictures it skipped, puts keyframes out of order
+// and drops one ("Duplicate POC"; 2026-10-29, three strips refused as "out of order"). The first
+// pass shows it, and both passes run again over every frame, the keyframes taken by `select=key`.
 //
 // thumbs.json names each level's pictures' times (showinfo's pts_time, the edit list applied)
 // and sheets, and the colours of 128 even stretches, which a page draws before any picture. The
@@ -104,12 +111,18 @@ var stripSheetRe = regexp.MustCompile(`^thumbs-(scenes|fine)-[0-9a-f]{16}\.jpg$`
 // for each thread and gain nothing when every picture is a keyframe. A 4K 10-bit HEVC upload
 // peaked at 737 MB with ffmpeg's default and at 272 MB so, in half the time (21 ms a keyframe
 // with four threads, measured 2026-10-28). Four threads, or the worker's CPU limit when lower.
-func stripCmd(ffmpeg, src, graph, out string, threads int) []string {
-	return []string{ffmpeg, "-hide_banner", "-nostdin", "-nostats", "-y", "-v", "error",
-		"-protocol_whitelist", "file", "-skip_frame", "nokey", "-threads", strconv.Itoa(threads), "-thread_type", "slice",
+// With every it decodes every frame and the graph takes the keyframes itself.
+func stripCmd(ffmpeg, src, graph, out string, threads int, every bool) []string {
+	skip := []string{"-skip_frame", "nokey"}
+	if every {
+		skip, graph = nil, "select@key='key',"+graph
+	}
+	args := append([]string{ffmpeg, "-hide_banner", "-nostdin", "-nostats", "-y", "-v", "error",
+		"-protocol_whitelist", "file"}, skip...)
+	return append(args, "-threads", strconv.Itoa(threads), "-thread_type", "slice",
 		"-i", src, "-an", "-sn", "-dn",
 		"-vf", graph, "-fps_mode", "passthrough", "-q:v", stripQuality, "-start_number", "0",
-		"-f", "image2", out}
+		"-f", "image2", out)
 }
 
 // stripArgs is the first pass: every keyframe's scene score (`metadata@scene`), time and mean
@@ -118,21 +131,21 @@ func stripCmd(ffmpeg, src, graph, out string, threads int) []string {
 // The pictures are 8-bit (format=yuv420p, v0.2.23) before showinfo, which measures their means
 // in the picture's own units: a 10-bit HEVC's grey is 499. The JPEG sheets downstream already
 // make ffmpeg choose 8-bit there; the step keeps the colours from hanging on that choice.
-func stripArgs(ffmpeg, src, dir string, p StripParams, threads int) []string {
+func stripArgs(ffmpeg, src, dir string, p StripParams, threads int, every bool) []string {
 	graph := fmt.Sprintf("select@scene='gte(scene,0)',metadata@scene=print:key=lavfi.scene_score,"+
 		"scale=-2:%d,format=yuv420p,showinfo@all,select@fine='isnan(prev_selected_t)+gte(t-prev_selected_t,%s)',"+
 		"showinfo@fine,tile=%dx%d", p.Height, strconv.FormatFloat(p.FineEveryS, 'f', -1, 64), stripFineCols, stripFineRows)
-	return stripCmd(ffmpeg, src, graph, filepath.Join(dir, ".thumbs-fine-%03d.jpg"), threads)
+	return stripCmd(ffmpeg, src, graph, filepath.Join(dir, ".thumbs-fine-%03d.jpg"), threads, every)
 }
 
 // scenesArgs is the second pass: the keyframes numbered picks into the scenes sheet.
-func scenesArgs(ffmpeg, src, dir string, p StripParams, picks []int, threads int) []string {
+func scenesArgs(ffmpeg, src, dir string, p StripParams, picks []int, threads int, every bool) []string {
 	eqs := make([]string, len(picks))
 	for i, k := range picks {
 		eqs[i] = fmt.Sprintf("eq(n,%d)", k)
 	}
 	graph := fmt.Sprintf("select='%s',scale=-2:%d,format=yuv420p,tile=%dx%d", strings.Join(eqs, "+"), p.Height, stripSceneCols, stripSceneRows)
-	return stripCmd(ffmpeg, src, graph, filepath.Join(dir, ".thumbs-scenes-%03d.jpg"), threads)
+	return stripCmd(ffmpeg, src, graph, filepath.Join(dir, ".thumbs-scenes-%03d.jpg"), threads, every)
 }
 
 var (
@@ -339,6 +352,40 @@ func (r *run) runStripPass(ctx context.Context, args []string, logName string) (
 	return filepath.Join(r.dir, logName), nil
 }
 
+// stripKeyframes runs the first pass, every frame decoded or the keyframes alone, over a folder
+// without the sheets of a pass before, and reads its log: the keyframes, the fine level's times,
+// the pictures' size and whether the decoder found a duplicate POC.
+func (r *run) stripKeyframes(ctx context.Context, src, dir string, p StripParams, threads int, every bool) ([]StripKey, []float64, int, int, bool, error) {
+	old, _ := filepath.Glob(filepath.Join(dir, ".thumbs-fine-*.jpg"))
+	for _, n := range old {
+		os.Remove(n)
+	}
+	logName := "strip-keyframes.log"
+	if every {
+		logName = "strip-every-frame.log"
+	}
+	logPath, err := r.runStripPass(ctx, stripArgs(r.w.cfg.FFmpeg, src, dir, p, threads, every), logName)
+	if err != nil {
+		return nil, nil, 0, 0, false, err
+	}
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		return nil, nil, 0, 0, false, fail("decode_failed", "ffmpeg wrote no log: %v", err)
+	}
+	keys, fine, w, h := KeyframesFromLog(bytes.NewReader(b))
+	return keys, fine, w, h, bytes.Contains(b, []byte("Duplicate POC")), nil
+}
+
+// stripOrdered: the keyframes' and the fine level's times never go back.
+func stripOrdered(keys []StripKey, fine []float64) bool {
+	for i := 1; i < len(keys); i++ {
+		if keys[i].T < keys[i-1].T {
+			return false
+		}
+	}
+	return sort.Float64sAreSorted(fine)
+}
+
 // workStrip runs a strip job: the two passes in a folder of the lease's directory, thumbs.json,
 // and the tar of both into out.
 func (r *run) workStrip(ctx context.Context, src, out string) ([]Tool, error) {
@@ -357,16 +404,21 @@ func (r *run) workStrip(ctx context.Context, src, out string) ([]Tool, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fail("other", "%v", err)
 	}
-	logPath, err := r.runStripPass(ctx, stripArgs(r.w.cfg.FFmpeg, src, dir, p, threads), "strip-keyframes.log")
+	every := false
+	keys, fine, width, height, pocs, err := r.stripKeyframes(ctx, src, dir, p, threads, every)
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.Open(logPath)
-	if err != nil {
-		return nil, fail("decode_failed", "ffmpeg wrote no log: %v", err)
+	if pocs || !stripOrdered(keys, fine) {
+		r.log("warn", "worker", fmt.Sprintf("strip: the keyframes alone decode out of order (%d, duplicate POC: %t); decoding every frame", len(keys), pocs))
+		every = true
+		if keys, fine, width, height, _, err = r.stripKeyframes(ctx, src, dir, p, threads, every); err != nil {
+			return nil, err
+		}
+		if !stripOrdered(keys, fine) {
+			return nil, fail("decode_failed", "keyframes: their times are out of order")
+		}
 	}
-	keys, fine, width, height := KeyframesFromLog(f)
-	f.Close()
 	duration := r.l.Job.Source.DurationS
 	if duration <= 0 && len(keys) > 0 {
 		duration = keys[len(keys)-1].T
@@ -388,7 +440,7 @@ func (r *run) workStrip(ctx context.Context, src, out string) ([]Tool, error) {
 		times[i], scores[i] = k.T, k.Score
 	}
 	picks := ScenePicks(times, scores, duration, p.Scenes)
-	if _, err := r.runStripPass(ctx, scenesArgs(r.w.cfg.FFmpeg, src, dir, p, picks, threads), "strip-scenes.log"); err != nil {
+	if _, err := r.runStripPass(ctx, scenesArgs(r.w.cfg.FFmpeg, src, dir, p, picks, threads, every), "strip-scenes.log"); err != nil {
 		return nil, err
 	}
 	sceneSheets, err := hashedSheets(dir, "scenes")

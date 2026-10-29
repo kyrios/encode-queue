@@ -300,15 +300,64 @@ func TestStripOf10BitHEVC(t *testing.T) {
 	}
 }
 
+// TestStripOfAStaticScreenRecording: an HEVC with an open GOP and a keyframe every 250 frames,
+// as a screen recording that hardly moves, decodes out of order by its keyframes alone
+// (2026-10-29: three strips refused, their times out of order). Each stretch between keyframes
+// has its own colour, so a picture shown at another's time shows too.
+func TestStripOfAStaticScreenRecording(t *testing.T) {
+	r, ff, _ := realRun(t)
+	src := filepath.Join(r.w.cfg.WorkDir, "static.mp4")
+	colours := []string{"red", "green", "blue", "white"}
+	var in, cat string
+	for i, c := range colours {
+		in += fmt.Sprintf("color=c=%s:size=320x180:rate=30:duration=%s[c%d];", c, "8.3333333", i)
+		cat += fmt.Sprintf("[c%d]", i)
+	}
+	if b, err := exec.Command(ff, "-hide_banner", "-v", "error", "-filter_complex", in+cat+"concat=n=4:v=1:a=0,format=yuv420p",
+		"-c:v", "libx265", "-x265-params", "log-level=error:keyint=250:min-keyint=250:scenecut=0:open-gop=1",
+		"-frames:v", "1000", src).CombinedOutput(); err != nil {
+		t.Skipf("no libx265: %v %s", err, b)
+	}
+	r.l.Job.Source.DurationS = 1000.0 / 30
+	out := filepath.Join(r.w.cfg.WorkDir, "static.tar")
+	if _, err := r.workStrip(context.Background(), src, out); err != nil {
+		t.Fatal(err)
+	}
+	var idx StripIndex
+	if err := json.Unmarshal(readTar(t, out)[0].body, &idx); err != nil {
+		t.Fatal(err)
+	}
+	want := "[0 8.333 16.667 25]"
+	for _, lv := range idx.Levels {
+		if got := fmt.Sprint(lv.Times); got != want || len(lv.Sheets) != 1 {
+			t.Errorf("%s: %s in %d sheets, want %s in one", lv.Name, got, len(lv.Sheets), want)
+		}
+	}
+	// a stretch's colour is the keyframe's at or before its middle: 128 stretches of 0.26 s
+	for i, c := range []string{"ff0000", "008000", "0000ff", "ffffff"} {
+		at := (i*250 + 125) * 128 / 1000
+		if got := idx.Colors[at*6 : at*6+6]; !closeColour(got, c) {
+			t.Errorf("stretch %d: %s, want %s (%s)", at, got, c, colours[i])
+		}
+	}
+}
+
 // TestStripArgs: keyframes only, slice threads (never frame threads, which hold a 4K picture
-// each), and the pictures 8-bit before showinfo.
+// each), and the pictures 8-bit before showinfo; every frame decoded, the graph takes the
+// keyframes first.
 func TestStripArgs(t *testing.T) {
 	p := StripParams{}.withDefaults()
-	for _, a := range [][]string{stripArgs("ffmpeg", "/w/up", "/w", p, 3), scenesArgs("ffmpeg", "/w/up", "/w", p, []int{0, 7}, 3)} {
-		line := strings.Join(a, " ")
-		for _, want := range []string{"-skip_frame nokey -threads 3 -thread_type slice -i /w/up", "scale=-2:90,format=yuv420p,"} {
-			if !strings.Contains(line, want) {
-				t.Errorf("%q not in %s", want, line)
+	for _, every := range []bool{false, true} {
+		for _, a := range [][]string{stripArgs("ffmpeg", "/w/up", "/w", p, 3, every), scenesArgs("ffmpeg", "/w/up", "/w", p, []int{0, 7}, 3, every)} {
+			line := strings.Join(a, " ")
+			wants := []string{"-protocol_whitelist file -skip_frame nokey -threads 3 -thread_type slice -i /w/up", "scale=-2:90,format=yuv420p,"}
+			if every {
+				wants = []string{"-protocol_whitelist file -threads 3 -thread_type slice -i /w/up", "-vf select@key='key',select", "scale=-2:90,format=yuv420p,"}
+			}
+			for _, want := range wants {
+				if !strings.Contains(line, want) {
+					t.Errorf("every %t: %q not in %s", every, want, line)
+				}
 			}
 		}
 	}
