@@ -814,12 +814,17 @@ func (s *Store) removeResultFile(l *Lease) {
 // CancelJob cancels a job that is not finished.
 func (s *Store) CancelJob(id string) (JobView, error) { return s.CancelJobBy(id, "admin", "") }
 
-// Cancelled is who cancelled a job, why and when.
+// Cancelled is who cancelled a job, why and when; Code says the queue did, and for what
+// (check_timeout, v0.2.26).
 type Cancelled struct {
 	By     string    `json:"by"`
 	Reason *string   `json:"reason"`
 	At     time.Time `json:"at"`
+	Code   string    `json:"code,omitempty"`
 }
+
+// Why the queue itself cancels a job.
+const CancelCheckTimeout = "check_timeout"
 
 // CancelJobBy cancels a job that is not finished and notes who did and why.
 func (s *Store) CancelJobBy(id, by, reason string) (JobView, error) {
@@ -832,6 +837,12 @@ func (s *Store) CancelJobBy(id, by, reason string) (JobView, error) {
 	if j.Final != "" {
 		return JobView{}, errf(409, "finished", "%s is %s already", id, j.Final)
 	}
+	s.cancel(j, &Cancelled{By: oneLine(by, 64), Reason: strp(oneLine(reason, 200)), At: s.cfg.Now().UTC()})
+	return s.jobView(j), nil
+}
+
+// cancel ends a job: its active leases, and its results waiting for a verdict, whose files go.
+func (s *Store) cancel(j *Job, c *Cancelled) {
 	for _, lid := range j.Attempts {
 		l := s.st.Leases[lid]
 		if l == nil {
@@ -847,10 +858,38 @@ func (s *Store) CancelJobBy(id, by, reason string) (JobView, error) {
 	j.Final = StateCancelled
 	j.FinishedAt = ptrTime(s.cfg.Now())
 	j.Pin = nil
-	j.Cancelled = &Cancelled{By: oneLine(by, 64), Reason: strp(oneLine(reason, 200)), At: s.cfg.Now().UTC()}
+	j.Cancelled = c
 	s.bump(j)
 	s.touch(true)
-	return s.jobView(j), nil
+}
+
+// **A result does not wait for its verdict forever** (v0.2.26; 2026-10-29: three strip jobs sat
+// in checking from 23:16 on, after the pipeline restarted and lost the threads that waited for
+// them). A job whose last result has waited CheckTimeout for its verdict is cancelled by the
+// queue with the code check_timeout ("verfallen" on Funkhaus, under Abgebrochen): its result files
+// go, so their room is free, and the submitter may submit it again under its id.
+func (s *Store) expireChecks(now time.Time) bool {
+	changed := false
+	for _, j := range s.st.Jobs {
+		if s.jobState(j) != StateChecking {
+			continue
+		}
+		var last time.Time
+		for _, lid := range j.Attempts {
+			if l := s.st.Leases[lid]; l != nil && l.Result != nil && l.Result.Verdict == VerdictChecking && l.Result.DeliveredAt.After(last) {
+				last = l.Result.DeliveredAt
+			}
+		}
+		if last.IsZero() || now.Sub(last) < s.cfg.CheckTimeout {
+			continue
+		}
+		reason := fmt.Sprintf("no verdict from the submitter within %s of the result", s.cfg.CheckTimeout)
+		s.cfg.Log.Info("check timeout", "job", j.ID, "delivered_at", last.UTC().Format(time.RFC3339), "waited", now.Sub(last).Round(time.Second).String())
+		s.cancel(j, &Cancelled{By: "queue", Reason: &reason, At: now.UTC(), Code: CancelCheckTimeout})
+		s.st.CheckTimeouts++
+		changed = true
+	}
+	return changed
 }
 
 // RetryJob queues a failed or cancelled job again.

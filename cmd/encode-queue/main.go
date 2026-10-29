@@ -89,6 +89,7 @@ func run(cmd string) error {
 		DoneKeep:             retention(env),
 		MaxFailures:          env.Int("EQ_MAX_FAILURES", 0),
 		ExcludeBackoff:       env.Seconds("EQ_EXCLUDE_BACKOFF_S"),
+		CheckTimeout:         env.Duration("EQ_CHECK_TIMEOUT"),
 		ResultReserve:        env.Int64("EQ_RESULT_RESERVE_BYTES", 2<<30),
 		ReferenceWorker:      env.String("EQ_REFERENCE_WORKER", ""),
 		MaxParallelJobs:      env.Int("EQ_MAX_PARALLEL_JOBS", 0),

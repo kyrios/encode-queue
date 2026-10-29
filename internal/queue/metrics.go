@@ -22,6 +22,7 @@ func freeBytes(dir string) (int64, error) {
 var MetricHelp = []struct{ Name, Type, Help string }{
 	{"encode_queue_build_info", "gauge", "The queue's version, as a label; always 1."},
 	{"encode_queue_revision", "gauge", "The queue's revision: every change to a job raises it."},
+	{"encode_queue_check_timeouts_total", "counter", "Jobs the queue cancelled because their result waited longer than EQ_CHECK_TIMEOUT for a verdict (check_timeout)."},
 	{"encode_queue_result_room_bytes", "gauge", "Bytes of results a job of the priority can still claim: beside the max_bytes of the running leases of its priority and higher, the lower ones' uploads in flight and the reserve."},
 	{"encode_queue_jobs", "gauge", "Jobs by priority and state."},
 	{"encode_queue_workers", "gauge", "Workers by state (idle, working, paused, offline)."},
@@ -70,6 +71,7 @@ func (s *Store) WriteMetrics(w io.Writer, version string) {
 	}
 	add("encode_queue_build_info", fmt.Sprintf(`version="%s"`, esc(version)), 1)
 	add("encode_queue_revision", "", float64(s.st.Revision))
+	add("encode_queue_check_timeouts_total", "", float64(s.st.CheckTimeouts))
 	for c, r := range s.rooms() {
 		add("encode_queue_result_room_bytes", fmt.Sprintf(`priority="%s"`, Priorities[c]), float64(r))
 	}
