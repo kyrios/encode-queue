@@ -1193,7 +1193,7 @@ components:
           description: |
             What its accepted results earned (v0.2.15, 1.11.0; README, "Points"), by
             Punkte-Tabelle v1: one point is one minute of the Mac Studio's work, the same job the
-            same points on every machine. `today` and `week` (from Monday) follow Europe/Berlin.
+            same points on every machine. `today` and `week` (from Monday) follow the queue's `EQ_POINTS_TIMEZONE`.
             Points never steer which worker gets a job.
           properties:
             table: { type: string, examples: [v1] }

@@ -16,3 +16,21 @@ func TestDuration(t *testing.T) {
 		t.Fatalf("a bad value: %v", e.Problems)
 	}
 }
+
+func TestFloatAndLocation(t *testing.T) {
+	e := FromMap(map[string]string{"F": "25", "Z": "Europe/Berlin", "BADF": "x", "BADZ": "Mars/Base"})
+	if e.Float("F", 0) != 25 || e.Float("UNSET", 7) != 7 {
+		t.Error("Float")
+	}
+	if l := e.Location("Z"); l == nil || l.String() != "Europe/Berlin" {
+		t.Errorf("Location: %v", l)
+	}
+	if e.Location("UNSET") != nil {
+		t.Error("an unset zone is nil")
+	}
+	e.Float("BADF", 0)
+	e.Location("BADZ")
+	if len(e.Problems) != 2 {
+		t.Errorf("problems: %v", e.Problems)
+	}
+}

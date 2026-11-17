@@ -38,6 +38,12 @@ type env struct {
 	dir   string
 }
 
+// What infra sets for iphoneblog's queue: the values the code held before ADR-0008's package 1.
+var (
+	iphoneblogMasterFPS = 25.0
+	iphoneblogZone      = func() *time.Location { l, _ := time.LoadLocation("Europe/Berlin"); return l }()
+)
+
 func newEnv(t *testing.T, ref string) *env {
 	t.Helper()
 	dir := t.TempDir()
@@ -45,7 +51,9 @@ func newEnv(t *testing.T, ref string) *env {
 	cfg := Config{StateDir: filepath.Join(dir, "state"), SourceDir: filepath.Join(dir, "src"), ReferenceWorker: ref,
 		Subnet: netip.MustParsePrefix("10.10.20.0/24"), TunnelAddress: netip.MustParseAddr("10.10.20.1"),
 		ServerPublicKey: "c2VydmVyc2VydmVyc2VydmVyc2VydmVyc2VydmVyMDA=", Endpoint: "vpn.example.org:51821", API: "http://10.10.20.1:8090/v1",
-		Now: c.Now, FreeBytes: func(string) (int64, error) { return 1 << 40, nil }}
+		Now: c.Now, FreeBytes: func(string) (int64, error) { return 1 << 40, nil },
+		// iphoneblog's install, as infra's roles/encoder sets it (EQ_POINTS_MASTER_FPS, EQ_POINTS_TIMEZONE).
+		PointsMasterFPS: iphoneblogMasterFPS, PointsZone: iphoneblogZone}
 	os.MkdirAll(cfg.SourceDir, 0o755)
 	s, err := Open(cfg)
 	if err != nil {

@@ -216,7 +216,7 @@ func TestAlignPointsAndSpeed(t *testing.T) {
 	}
 	j := e.s.st.Jobs["a.align"]
 	j.Spec.Source.DurationS = 3600
-	if got := jobPoints(j, &Lease{}); math.Abs(got-0.66) > 1e-9 {
+	if got := jobPoints(j, &Lease{}, 25); math.Abs(got-0.66) > 1e-9 {
 		t.Fatalf("an hour earns %v", got)
 	}
 	if run, ok := e.s.runSeconds(e.s.st.Workers[mac], j); !ok || math.Abs(run-(1.5+40)) > 1e-9 {

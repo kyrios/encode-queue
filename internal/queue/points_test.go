@@ -48,40 +48,40 @@ func TestPunkteTabelleV1(t *testing.T) {
 	// times small's time) about 4.6.
 	j := &Job{whisper: &WhisperParams{Models: []string{SHALargeV3Turbo, SHAMedium}}}
 	j.Spec.Source.DurationS = 3600
-	if got := jobPoints(j, &Lease{Model: SHALargeV3Turbo}); !near(got, 3600/(12.761687001891676*60)) {
+	if got := jobPoints(j, &Lease{Model: SHALargeV3Turbo}, 25); !near(got, 3600/(12.761687001891676*60)) {
 		t.Errorf("an hour of turbo: %v", got)
 	}
-	if got := jobPoints(j, &Lease{Model: SHAMedium}); !near(got, 3600*2.5/(32.336355149617205*60)) {
+	if got := jobPoints(j, &Lease{Model: SHAMedium}, 25); !near(got, 3600*2.5/(32.336355149617205*60)) {
 		t.Errorf("an hour of medium: %v", got)
 	}
 	// Without the audio's length the queue cannot price it.
 	j.Spec.Source.DurationS = 0
-	if got := jobPoints(j, &Lease{Model: SHALargeV3Turbo}); got != 0 {
+	if got := jobPoints(j, &Lease{Model: SHALargeV3Turbo}, 25); got != 0 {
 		t.Errorf("whisper without duration_s: %v", got)
 	}
 	// Cut, remux and check earn too (Thorsten, 2026-10-28). A cut is an encode of its frames in
 	// its class: 30 s of a 25 fps 3840x1920 Folge at x264 veryfast, priced from 1280x720.
 	cut := &Job{cut: &CutParams{LengthS: 30, Preset: "veryfast"}}
 	cut.Spec.Source = SourceIn{DurationS: 1800, Frames: 45000, Width: 3840, Height: 1920}
-	if got, want := jobPoints(cut, &Lease{}), 750/(271.00387277325575*1280*720/(3840*1920)*60); !near(got, want) {
+	if got, want := jobPoints(cut, &Lease{}, 25), 750/(271.00387277325575*1280*720/(3840*1920)*60); !near(got, want) {
 		t.Errorf("a cut: %v, want %v", got, want)
 	}
 	// A remux and a check of a 2-hour 4K master: its frames at the measured speed.
 	remux := &Job{remux: &RemuxParams{}}
 	remux.Spec.Source = SourceIn{DurationS: 7200, Frames: 180000, Width: 3840, Height: 2160}
-	if got := jobPoints(remux, &Lease{}); !near(got, 180000/(39.0*60)) {
+	if got := jobPoints(remux, &Lease{}, 25); !near(got, 180000/(39.0*60)) {
 		t.Errorf("a remux: %v", got)
 	}
 	// The score check names no frames: its length at 25 fps; half the pixels, half the price.
 	check := &Job{check: &CheckParams{}}
 	check.Spec.Source = SourceIn{DurationS: 7200, Width: 3840, Height: 1080}
-	if got := jobPoints(check, &Lease{}); !near(got, 180000/(65.8*60)/2) {
+	if got := jobPoints(check, &Lease{}, 25); !near(got, 180000/(65.8*60)/2) {
 		t.Errorf("a score check: %v", got)
 	}
 	// An audio check names no size and earns nothing.
 	audio := &Job{check: &CheckParams{}}
 	audio.Spec.Source = SourceIn{DurationS: 3600}
-	if got := jobPoints(audio, &Lease{}); got != 0 {
+	if got := jobPoints(audio, &Lease{}, 25); got != 0 {
 		t.Errorf("an audio check: %v", got)
 	}
 }
@@ -253,11 +253,36 @@ func TestPointsDoNotSteerTheScoring(t *testing.T) {
 	e, enc, mac := scored(t)
 	e.rung("h264.2160-archive", "archive")
 	e.sized("h264.2160-archive", 400e6)
-	e.s.st.Workers[enc].Points = &PointsLedger{Total: 1e9, Days: map[string]float64{e.clock.Now().In(berlin).Format(dayLayout): 1e9}}
+	e.s.st.Workers[enc].Points = &PointsLedger{Total: 1e9, Days: map[string]float64{e.clock.Now().In(e.s.cfg.pointsZone()).Format(dayLayout): 1e9}}
 	if l := e.claim(enc); l != nil {
 		t.Fatalf("encoder took a job the Mac finishes in a third of the time: %+v", l)
 	}
 	if l, err := e.s.Claim(context.Background(), mac, LeaseRequest{}, 0); err != nil || l == nil {
 		t.Fatalf("the Mac: %+v %v", l, err)
+	}
+}
+
+// **The install names the rate and the clock** (ADR-0008, package 1). Without them a job that names
+// no frames earns nothing for its frames, and the days follow UTC; with iphoneblog's, the same
+// points and days as the code gave before.
+func TestPointsSettingsComeFromTheInstall(t *testing.T) {
+	check := &Job{check: &CheckParams{}}
+	check.Spec.Source = SourceIn{DurationS: 7200, Width: 3840, Height: 1080}
+	if got := jobPoints(check, &Lease{}, 0); got != 0 {
+		t.Errorf("no rate, no frames: %v", got)
+	}
+	if got := jobPoints(check, &Lease{}, 30); !near(got, 216000/(65.8*60)/2) {
+		t.Errorf("30 fps: %v", got)
+	}
+	framed := &Job{check: &CheckParams{}}
+	framed.Spec.Source = SourceIn{DurationS: 7200, Frames: 180000, Width: 3840, Height: 1080}
+	if a, b := jobPoints(framed, &Lease{}, 0), jobPoints(framed, &Lease{}, 25); a != b {
+		t.Errorf("a job that names its frames does not need the rate: %v, %v", a, b)
+	}
+	if z := (&Config{}).pointsZone(); z != time.UTC {
+		t.Errorf("no zone: %v", z)
+	}
+	if z := (&Config{PointsZone: iphoneblogZone}).pointsZone(); z.String() != "Europe/Berlin" {
+		t.Errorf("iphoneblog's zone: %v", z)
 	}
 }

@@ -239,14 +239,14 @@ All three are OpenAPI 3.1.
   and its preset, its length at the source's rate). A remux or check job pays its source's frames
   at the measured speed, scaled by the source's pixels, both measured on the Mac Studio with the
   worker's own commands (`TestMeasureRemuxAndCheck`, three runs on 2026-10-28). A job that names
-  no frames counts its length at 25 fps; an audio check names no size and earns nothing. The
+  no frames counts its length at `EQ_POINTS_MASTER_FPS` (none set: it earns nothing for its frames); an audio check names no size and earns nothing. The
   queue prices a job from the pipeline's own figures,
   the source's `frames` or `duration_s` and the job's settings, never from the worker's (a whisper
   job without `duration_s` earns nothing). Only a result its worker delivered while it held the
   lease earns: nothing for a rejected, failed, given back, expired, preempted or moved attempt,
   and nothing for moving bytes. Points are counted and shown and never steer the scoring. Every
   worker started at zero. `GET /v1/workers` gives each worker `points` (`today` and `week` from
-  Monday, both Europe/Berlin, and `total`) and `house` for encoder's own worker, each attempt its
+  Monday, both in `EQ_POINTS_TIMEZONE`, and `total`) and `house` for encoder's own worker, each attempt its
   `points`; a presence's answer gives the worker its own and its place today among every paired
   worker (`rank` of `of`, equal points sharing a place); the metric is
   `encode_queue_worker_points_total`.
@@ -381,6 +381,8 @@ Every address, port, subnet and path comes from the environment; the image has n
 | `EQ_WG_KEEPALIVE_S` | the keepalive workers get; default 25 |
 | `EQ_REFERENCE_WORKER` | the name of the worker whose tools jobs require by default |
 | `EQ_MIN_APP_VERSION` | workers below it get `426` |
+| `EQ_POINTS_MASTER_FPS` | the masters' rate, for a job that names its length but not its frames ("Points"); unset, such a job earns nothing for them |
+| `EQ_POINTS_TIMEZONE` | the clock the points' days and weeks follow, an IANA name (`Europe/Berlin`); unset, UTC |
 | `EQ_MAX_FAILURES` | default 3 |
 | `EQ_MAX_PARALLEL_JOBS` | the most normal slots any worker gets, whatever it asks for; default 2 (v0.2.9) |
 | `EQ_MAX_HIGH_PRIORITY_SLOTS` | the most high-priority slots any worker gets on top; default 2 (v0.2.14) |

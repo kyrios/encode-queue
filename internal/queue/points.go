@@ -4,7 +4,7 @@ import (
 	"math"
 	"sort"
 	"time"
-	_ "time/tzdata" // Europe/Berlin in the distroless image, which has no zoneinfo
+	_ "time/tzdata" // EQ_POINTS_TIMEZONE in the distroless image, which has no zoneinfo
 )
 
 // **Points** (v0.2.15; Thorsten, 2026-10-28). Every job the pipeline accepts earns its worker
@@ -58,10 +58,9 @@ const pointsAlignSpeed = 1 / 0.011
 // score check (every 5th frame on SSIM, PSNR-Y and VMAF) 3.76 to 3.80 s. Both mostly decode the
 // master, so another size scales by the pixels.
 const (
-	pointsRemuxFPS  = 39.0
-	pointsCheckFPS  = 65.8
-	pointsMasterPx  = 3840 * 2160
-	pointsMasterFPS = 25 // iPhoneblog's masters' rate, for a job that names its length but not its frames
+	pointsRemuxFPS = 39.0
+	pointsCheckFPS = 65.8
+	pointsMasterPx = 3840 * 2160
 )
 
 // rungPointsPerFrame is what one frame of a rung earns: 1 / (fps × 60) with its class's fps from
@@ -94,7 +93,9 @@ func rungPointsPerFrame(p *RungParams) float64 {
 }
 
 // jobPoints is what j earns for its attempt l, by the table; 0 for a job without the figures.
-func jobPoints(j *Job, l *Lease) float64 {
+// masterFPS is the masters' rate (Config.PointsMasterFPS), for a job that names its length but
+// not its frames; 0, such a job earns nothing for a remux, a check or a cut.
+func jobPoints(j *Job, l *Lease, masterFPS float64) float64 {
 	src := j.Spec.Source
 	switch {
 	case j.rung != nil:
@@ -102,16 +103,16 @@ func jobPoints(j *Job, l *Lease) float64 {
 	case j.cut != nil:
 		// A cut is priced like an encode of its frames in its class: libx264 at the source's size
 		// and the cut's preset, its length at the source's rate.
-		fps := float64(pointsMasterFPS)
+		fps := masterFPS
 		if src.Frames > 0 && src.DurationS > 0 {
 			fps = float64(src.Frames) / src.DurationS
 		}
 		return math.Round(j.cut.LengthS*fps) * rungPointsPerFrame(&RungParams{Codec: "libx264", Width: src.Width, Height: src.Height, Preset: j.cut.Preset})
 	case j.remux != nil:
-		return masterFrames(j) * masterPointsPerFrame(j, pointsRemuxFPS)
+		return masterFrames(j, masterFPS) * masterPointsPerFrame(j, pointsRemuxFPS)
 	case j.check != nil:
 		// An audio check names no size and earns nothing: its decode is seconds for an hour.
-		return masterFrames(j) * masterPointsPerFrame(j, pointsCheckFPS)
+		return masterFrames(j, masterFPS) * masterPointsPerFrame(j, pointsCheckFPS)
 	case j.whisper != nil:
 		m := l.Model
 		if m == "" {
@@ -128,12 +129,12 @@ func jobPoints(j *Job, l *Lease) float64 {
 
 // masterFrames is a job's source frames, or its length at the masters' rate when it names none
 // (the score check sends duration_s, width and height only).
-func masterFrames(j *Job) float64 {
+func masterFrames(j *Job, masterFPS float64) float64 {
 	src := j.Spec.Source
 	if src.Frames > 0 {
 		return float64(src.Frames)
 	}
-	return math.Round(src.DurationS * pointsMasterFPS)
+	return math.Round(src.DurationS * masterFPS)
 }
 
 // masterPointsPerFrame is a frame's price at fps on a 3840x2160 master, scaled by the job's
@@ -143,21 +144,21 @@ func masterPointsPerFrame(j *Job, fps float64) float64 {
 	return px / pointsMasterPx / (fps * 60)
 }
 
-// PointsLedger is a worker's points: in all and by day (Europe/Berlin), the days of the last two
-// weeks.
+// PointsLedger is a worker's points: in all and by day (in Config.PointsZone), the days of the
+// last two weeks.
 type PointsLedger struct {
 	Total float64            `json:"total"`
 	Days  map[string]float64 `json:"days,omitempty"`
 }
 
-// berlin is the clock the days and weeks follow: Funkhaus's.
-var berlin = func() *time.Location {
-	l, err := time.LoadLocation("Europe/Berlin")
-	if err != nil {
+// pointsZone is the clock the days and weeks follow: the install's (EQ_POINTS_TIMEZONE), UTC
+// when it names none.
+func (c *Config) pointsZone() *time.Location {
+	if c.PointsZone == nil {
 		return time.UTC
 	}
-	return l
-}()
+	return c.PointsZone
+}
 
 const dayLayout = "2006-01-02"
 
@@ -167,7 +168,7 @@ func (s *Store) award(w *Worker, j *Job, l *Lease) {
 	if w == nil || l.EndCode != "" || l.Points > 0 {
 		return
 	}
-	p := jobPoints(j, l)
+	p := jobPoints(j, l, s.cfg.PointsMasterFPS)
 	if p <= 0 {
 		return
 	}
@@ -178,7 +179,7 @@ func (s *Store) award(w *Worker, j *Job, l *Lease) {
 	if w.Points.Days == nil {
 		w.Points.Days = map[string]float64{}
 	}
-	now := s.cfg.Now().In(berlin)
+	now := s.cfg.Now().In(s.cfg.pointsZone())
 	w.Points.Total += p
 	w.Points.Days[now.Format(dayLayout)] += p
 	cut := now.AddDate(0, 0, -14).Format(dayLayout)
@@ -189,7 +190,7 @@ func (s *Store) award(w *Worker, j *Job, l *Lease) {
 	}
 }
 
-// PointsView is a worker's points today, this week (from Monday, Europe/Berlin) and in all.
+// PointsView is a worker's points today, this week (from Monday) and in all, in Config.PointsZone.
 type PointsView struct {
 	Table string  `json:"table"`
 	Today float64 `json:"today"`
@@ -202,7 +203,7 @@ func (s *Store) pointsView(w *Worker) PointsView {
 	if w.Points == nil {
 		return v
 	}
-	now := s.cfg.Now().In(berlin)
+	now := s.cfg.Now().In(s.cfg.pointsZone())
 	today := now.Format(dayLayout)
 	monday := now.AddDate(0, 0, -((int(now.Weekday()) + 6) % 7)).Format(dayLayout)
 	for d, p := range w.Points.Days {
