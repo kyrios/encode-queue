@@ -92,6 +92,7 @@ func run(cmd string) error {
 		CheckTimeout:         env.Duration("EQ_CHECK_TIMEOUT"),
 		ResultReserve:        env.Int64("EQ_RESULT_RESERVE_BYTES", 2<<30),
 		ReferenceWorker:      env.String("EQ_REFERENCE_WORKER", ""),
+		DefaultTenant:        env.String("EQ_DEFAULT_TENANT", queue.LegacyTenant),
 		MaxParallelJobs:      env.Int("EQ_MAX_PARALLEL_JOBS", 0),
 		MaxHighPrioritySlots: env.Int("EQ_MAX_HIGH_PRIORITY_SLOTS", 0),
 		HoldFactor:           float64(env.Int("EQ_HOLD_FACTOR", 0)),
@@ -118,6 +119,9 @@ func run(cmd string) error {
 	adminToken := env.SecretFile("EQ_ADMIN_TOKEN_FILE")
 	if err := env.Err(); err != nil {
 		return err
+	}
+	if !queue.TenantRe.MatchString(cfg.DefaultTenant) {
+		return fmt.Errorf("EQ_DEFAULT_TENANT=%q does not match %s", cfg.DefaultTenant, queue.TenantRe)
 	}
 	addr, err := netip.ParseAddr(addrText)
 	if err != nil {

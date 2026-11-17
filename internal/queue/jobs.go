@@ -13,12 +13,19 @@ import (
 	"github.com/kyrios/encode-queue/internal/aligner"
 )
 
+// LegacyTenant is the tenant of every job written before ADR-0008's package 3, which named
+// none: iphoneblog's (ADR-0008 §6). It is EQ_DEFAULT_TENANT's default only so that those old
+// jobs stay readable; an install with its own queue sets its own.
+const LegacyTenant = "iphoneblog"
+
 var (
 	jobIDRe      = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}\.[a-z0-9-]{1,32}$`)
 	resultNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-	inputNameRe  = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
-	sha256Re     = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	presets      = []string{"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"}
+	// TenantRe is a tenant's slug (ADR-0008 §6): fixed at setup, 2 to 24 of a-z, 0-9 and "-".
+	TenantRe    = regexp.MustCompile(`^[a-z0-9-]{2,24}$`)
+	inputNameRe = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+	sha256Re    = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	presets     = []string{"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"}
 )
 
 // state is the job's state, derived from its leases unless it is finished.
@@ -301,6 +308,9 @@ func (s *Store) validate(id string, spec *JobSubmit) error {
 	defaultMediaPriority(spec)
 	if prioIndex(spec.Priority) == len(Priorities) {
 		return errf(422, "invalid", "priority %q is not one of %v", spec.Priority, Priorities)
+	}
+	if spec.Tenant != "" && !TenantRe.MatchString(spec.Tenant) {
+		return errf(422, "invalid", "tenant %q does not match %s", spec.Tenant, TenantRe)
 	}
 	if spec.Stage != nil && *spec.Stage != 1 && *spec.Stage != 2 {
 		return errf(422, "invalid", "stage is 1, 2 or null")

@@ -37,6 +37,10 @@ type Config struct {
 
 	ReferenceWorker string // the worker whose tools jobs require by default; "" requires none
 
+	// DefaultTenant: the tenant of a job that names none (ADR-0008, package 3). The queue stores
+	// a job's tenant from package 3 on; sharing the queue fairly between tenants waits (step 5).
+	DefaultTenant string
+
 	// **A rogue worker cannot hold everything** (v0.2.9; security review M2, 2026-10-27): a
 	// worker sets its own max_parallel_jobs and reports its own calibrated speed, and a lease
 	// renewed every 30 s never ran out. MaxParallelJobs caps the normal slots of every worker (2),
