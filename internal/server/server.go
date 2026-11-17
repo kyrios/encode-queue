@@ -556,7 +556,7 @@ func (s *Server) AdminHandler(withMetrics bool) http.Handler {
 			}
 			return nil
 		}
-		f := queue.JobFilter{States: list("state"), Priorities: list("priority"), Kinds: list("kind"), UploadID: q.Get("upload_id")}
+		f := queue.JobFilter{States: list("state"), Priorities: list("priority"), Kinds: list("kind"), UploadID: q.Get("upload_id"), Tenant: q.Get("tenant")}
 		if v := q.Get("limit"); v != "" {
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 1 || n > 500 {

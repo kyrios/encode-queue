@@ -380,6 +380,7 @@ Every address, port, subnet and path comes from the environment; the image has n
 | `EQ_WG_PRIVATE_KEY_FILE` | the queue's WireGuard private key (base64, as `wg genkey` prints it); default `$EQ_STATE_DIR/wireguard.key`, made on first start when missing |
 | `EQ_WG_KEEPALIVE_S` | the keepalive workers get; default 25 |
 | `EQ_REFERENCE_WORKER` | the name of the worker whose tools jobs require by default |
+| `EQ_DEFAULT_TENANT` | the tenant of a job that names none (ADR-0008 §5), `[a-z0-9-]{2,24}`; default `iphoneblog`, the tenant of every job before the field existed |
 | `EQ_MIN_APP_VERSION` | workers below it get `426` |
 | `EQ_MAX_FAILURES` | default 3 |
 | `EQ_MAX_PARALLEL_JOBS` | the most normal slots any worker gets, whatever it asks for; default 2 (v0.2.9) |
