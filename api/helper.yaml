@@ -840,7 +840,7 @@ components:
           description: |
             This worker's points (v0.2.15, 1.7.0; README, "Points"): what its accepted results
             earned by Punkte-Tabelle v1, one point a minute of the Mac Studio's work, `today` and
-            `week` (from Monday) in Europe/Berlin, and `total`; and its place today among every
+            `week` (from Monday) in the queue's `EQ_POINTS_TIMEZONE`, and `total`; and its place today among every
             paired worker, `rank` of `of`, equal points sharing a place. The queue computes them;
             the worker only shows them (Slipstream's menu).
           required: [table, today, week, total, rank, of]

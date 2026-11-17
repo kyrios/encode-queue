@@ -98,6 +98,8 @@ func run(cmd string) error {
 		HoldMin:              env.Seconds("EQ_HOLD_MIN_S"),
 		HoldMax:              env.Seconds("EQ_HOLD_MAX_S"),
 		MinAppVersion:        env.String("EQ_MIN_APP_VERSION", ""),
+		PointsMasterFPS:      env.Float("EQ_POINTS_MASTER_FPS", 0),
+		PointsZone:           env.Location("EQ_POINTS_TIMEZONE"),
 		Endpoint:             env.Required("EQ_WG_ENDPOINT"),
 		Keepalive:            env.Int("EQ_WG_KEEPALIVE_S", 25),
 		Log:                  log,

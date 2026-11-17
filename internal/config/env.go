@@ -72,6 +72,33 @@ func (e *Env) Int64(k string, def int64) int64 {
 	return n
 }
 
+// Float is a number with a default.
+func (e *Env) Float(k string, def float64) float64 {
+	v, ok := e.get(k)
+	if !ok {
+		return def
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil || n < 0 {
+		e.Problems = append(e.Problems, fmt.Sprintf("%s=%q is not a number of 0 or more", k, v))
+	}
+	return n
+}
+
+// Location is a time zone by its IANA name (`Europe/Berlin`); nil when unset.
+func (e *Env) Location(k string) *time.Location {
+	v, ok := e.get(k)
+	if !ok {
+		return nil
+	}
+	l, err := time.LoadLocation(v)
+	if err != nil {
+		e.Problems = append(e.Problems, fmt.Sprintf("%s=%q is no time zone", k, v))
+		return nil
+	}
+	return l
+}
+
 // Seconds is a duration in whole seconds, 0 (the caller's default) when unset.
 func (e *Env) Seconds(k string) time.Duration {
 	return time.Duration(e.Int(k, 0)) * time.Second

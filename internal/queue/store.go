@@ -37,6 +37,12 @@ type Config struct {
 
 	ReferenceWorker string // the worker whose tools jobs require by default; "" requires none
 
+	// **The points' two settings of the install** (ADR-0008, package 1): the masters' rate, for
+	// a job that names its length but not its frames (0: such a job earns nothing for a remux,
+	// a check or a cut), and the clock the days and weeks follow (nil: UTC).
+	PointsMasterFPS float64
+	PointsZone      *time.Location
+
 	// **A rogue worker cannot hold everything** (v0.2.9; security review M2, 2026-10-27): a
 	// worker sets its own max_parallel_jobs and reports its own calibrated speed, and a lease
 	// renewed every 30 s never ran out. MaxParallelJobs caps the normal slots of every worker (2),
