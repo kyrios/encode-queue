@@ -142,6 +142,10 @@ paths:
         - name: upload_id
           in: query
           schema: { type: string }
+        - name: tenant
+          in: query
+          description: Only this tenant's jobs (ADR-0008 §5); a job that names none counts as the queue's default tenant.
+          schema: { $ref: '#/components/schemas/Tenant' }
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
@@ -844,6 +848,11 @@ components:
             frames: { type: integer, description: For progress. }
             width: { type: integer }
             height: { type: integer }
+    Tenant:
+      type: string
+      pattern: '^[a-z0-9-]{2,24}$'
+      description: A tenant's slug, fixed at setup (ADR-0008 §6).
+      examples: [iphoneblog]
     JobSubmit:
       type: object
       required: [kind, params, source, result]
@@ -853,6 +862,9 @@ components:
           $ref: '#/components/schemas/Priority'
           description: 'Required but for `peaks` and `strip` (v0.2.22) and `loudness` (v0.2.24), which are `now` without one.'
         upload_id: { type: string, examples: [one_528] }
+        tenant:
+          $ref: '#/components/schemas/Tenant'
+          description: 'The install the job is for (ADR-0008 §5 and §6). Optional: a job without one belongs to the queue''s default tenant (`EQ_DEFAULT_TENANT`). Kept as sent.'
         title: { type: string, examples: ['#one 528: Die Vorschau'] }
         stage: { type: [integer, 'null'], enum: [1, 2, null], description: 'The ladder stage the job belongs to, for the Encoder page ("Stufe").' }
         params:
@@ -958,6 +970,9 @@ components:
       properties:
         job_id: { $ref: '#/components/schemas/JobId' }
         upload_id: { type: [string, 'null'] }
+        tenant:
+          $ref: '#/components/schemas/Tenant'
+          description: The job's tenant, or the queue's default tenant for a job that names none.
         title: { type: [string, 'null'] }
         kind: { $ref: '#/components/schemas/JobKind' }
         type:

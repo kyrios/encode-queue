@@ -69,8 +69,10 @@ type AttemptView struct {
 type JobView struct {
 	ID       string  `json:"job_id"`
 	UploadID *string `json:"upload_id"`
-	Title    *string `json:"title"`
-	Kind     string  `json:"kind"`
+	// Tenant: the job's, or Config.DefaultTenant for a job that names none (ADR-0008 §5).
+	Tenant string  `json:"tenant"`
+	Title  *string `json:"title"`
+	Kind   string  `json:"kind"`
 	// Type and Detail: what the job makes, as Funkhaus's Encoder page names it (v0.2.20,
 	// jobtype.go): "Video" and "1080p · slower CRF 29", "Untertitel" and "turbo".
 	Type            string            `json:"type"`
@@ -161,7 +163,7 @@ func (s *Store) jobView(j *Job) JobView {
 
 func (s *Store) jobViewWith(j *Job, fc map[string]time.Time) JobView {
 	st := s.jobState(j)
-	v := JobView{ID: j.ID, UploadID: strp(j.Spec.UploadID), Title: strp(j.Spec.Title), Kind: j.Spec.Kind, Stage: j.Spec.Stage,
+	v := JobView{ID: j.ID, UploadID: strp(j.Spec.UploadID), Tenant: s.tenantOf(j), Title: strp(j.Spec.Title), Kind: j.Spec.Kind, Stage: j.Spec.Stage,
 		Priority: j.Priority, State: st, Params: j.Spec.Params, Source: j.Spec.Source, Inputs: j.Spec.Inputs,
 		ResultSpec: j.Spec.Result, Failures: j.Failures, QueuedAt: j.QueuedAt, FinishedAt: j.FinishedAt,
 		Revision: j.Revision, Attempts: []AttemptView{}, ExcludedWorkers: []WorkerRef{}}
@@ -774,6 +776,7 @@ type JobFilter struct {
 	Priorities []string
 	Kinds      []string
 	UploadID   string
+	Tenant     string
 	Limit      int
 	Cursor     int // an offset into the ordered list
 }
@@ -835,6 +838,9 @@ func (s *Store) ListJobs(f JobFilter) JobList {
 			continue
 		}
 		if f.UploadID != "" && j.Spec.UploadID != f.UploadID {
+			continue
+		}
+		if f.Tenant != "" && s.tenantOf(j) != f.Tenant {
 			continue
 		}
 		rows = append(rows, row{j, st})
@@ -994,3 +1000,11 @@ func (s *Store) Status(version string) Status {
 }
 
 func secs(d time.Duration) int { return int(d / time.Second) }
+
+// tenantOf is the job's tenant: its own, or the default for a job that names none (ADR-0008 §5).
+func (s *Store) tenantOf(j *Job) string {
+	if j.Spec.Tenant != "" {
+		return j.Spec.Tenant
+	}
+	return s.cfg.DefaultTenant
+}
