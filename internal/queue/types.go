@@ -244,9 +244,13 @@ type ResultSpec struct {
 
 // JobSubmit is a job as the pipeline puts it.
 type JobSubmit struct {
-	Kind        string            `json:"kind"`
-	Priority    string            `json:"priority"`
-	UploadID    string            `json:"upload_id,omitempty"`
+	Kind     string `json:"kind"`
+	Priority string `json:"priority"`
+	UploadID string `json:"upload_id,omitempty"`
+	// Tenant: the install the job is for (ADR-0008 §5 and §6, package 3), `[a-z0-9-]{2,24}`. A
+	// job without one, from a pipeline before package 3 or from the state file, belongs to
+	// Config.DefaultTenant. Kept as sent, so the hash of an old job's spec stays the same.
+	Tenant      string            `json:"tenant,omitempty"`
 	Title       string            `json:"title,omitempty"`
 	Stage       *int              `json:"stage,omitempty"`
 	Params      json.RawMessage   `json:"params"`
